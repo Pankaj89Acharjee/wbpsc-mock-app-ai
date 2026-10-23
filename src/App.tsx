@@ -31,10 +31,14 @@ import {
 } from "./firebase";
 import {
   INITIAL_EXAMS,
-  INITIAL_QUESTIONS,
   type SeedExam,
   type SeedQuestion,
 } from "./data/seedData";
+import {
+  buildFirestoreSeedQuestions,
+  LEGACY_FIRESTORE_QUESTION_IDS,
+} from "./data/firestoreSeed";
+import BulkImportPanel from "./admin/BulkImportPanel";
 import {
   BookOpen,
   Shield,
@@ -160,7 +164,12 @@ type ActiveNav =
   | "admin-console"
   | "testing-guide";
 
-type AdminSubTab = "users" | "exams" | "questions" | "cache-attempts";
+type AdminSubTab =
+  | "users"
+  | "exams"
+  | "questions"
+  | "cache-attempts"
+  | "bulk-import";
 
 export default function App() {
   // 1. Auth & User Profile State
@@ -291,11 +300,12 @@ export default function App() {
 
   const isUserAdmin = useMemo(() => {
     if (!firebaseUser) return false;
-    const isBootstrap =
+    // Single-admin policy: only the verified bootstrap email is ever an Admin
+    return (
       firebaseUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase() &&
-      firebaseUser.emailVerified;
-    return isBootstrap || userProfile?.role === "admin";
-  }, [firebaseUser, userProfile]);
+      firebaseUser.emailVerified
+    );
+  }, [firebaseUser]);
 
   const isEducatorOrAdmin = useMemo(() => {
     return isUserAdmin || userProfile?.role === "educator";
@@ -592,23 +602,32 @@ export default function App() {
     setSeedingBusy(true);
     setStatusBanner(null);
     try {
+      const seedQuestions = buildFirestoreSeedQuestions();
+      // Rules require createdAt to stay unchanged on update, so upsert instead of overwrite
+      const upsert = async (ref: ReturnType<typeof doc>, data: object) => {
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          await updateDoc(ref, { ...data, updatedAt: serverTimestamp() });
+        } else {
+          await setDoc(ref, {
+            ...data,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      };
       for (const ex of INITIAL_EXAMS) {
-        await setDoc(doc(db, "exams", ex.id), {
-          ...ex,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await upsert(doc(db, "exams", ex.id), ex);
       }
-      for (const q of INITIAL_QUESTIONS) {
-        await setDoc(doc(db, "questions", q.id), {
-          ...q,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+      for (const q of seedQuestions) {
+        await upsert(doc(db, "questions", q.id), q);
+      }
+      for (const legacyId of LEGACY_FIRESTORE_QUESTION_IDS) {
+        await deleteDoc(doc(db, "questions", legacyId));
       }
       setStatusBanner({
         type: "success",
-        text: `Seeded ${INITIAL_EXAMS.length} WBPSC Exams and ${INITIAL_QUESTIONS.length} Bilingual MCQs into Firestore.`,
+        text: `Seeded ${INITIAL_EXAMS.length} WBPSC Exams and ${seedQuestions.length} Bilingual MCQs into Firestore.`,
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, "exams/questions");
@@ -627,28 +646,16 @@ export default function App() {
     >
   ) => {
     if (!isUserAdmin || !firebaseUser) return;
+    // Single-admin policy: the Admin role cannot be granted or removed from the console
+    const isTargetBootstrap =
+      targetUser.email.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+    if (updates.role === "admin" || (updates.role && isTargetBootstrap)) return;
     const path = `users/${targetUser.uid}`;
     try {
       await updateDoc(doc(db, "users", targetUser.uid), {
         ...updates,
         updatedAt: serverTimestamp(),
       });
-
-      // Keep /admins/{uid} collection synchronized when promoting/demoting Admin role
-      if (updates.role === "admin") {
-        await setDoc(doc(db, "admins", targetUser.uid), {
-          uid: targetUser.uid,
-          email: targetUser.email,
-          grantedBy: firebaseUser.uid,
-          createdAt: serverTimestamp(),
-        });
-      } else if (updates.role && updates.role !== "admin") {
-        try {
-          await deleteDoc(doc(db, "admins", targetUser.uid));
-        } catch {
-          // Ignore if not present
-        }
-      }
 
       setStatusBanner({
         type: "success",
@@ -1399,7 +1406,7 @@ export default function App() {
               disabled={authBusy}
               className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-white font-semibold text-sm rounded-lg border border-slate-700 transition-colors cursor-pointer"
             >
-              Continue with Google (Instant Admin for {BOOTSTRAP_ADMIN_EMAIL})
+              ADMIN LOGIN
             </button>
 
             <div className="text-[11px] text-slate-400 leading-relaxed pt-2 border-t border-slate-800">
@@ -2504,7 +2511,20 @@ export default function App() {
                 4. AI Cache ({cachedNotes.length}) &amp; Attempts (
                 {allAttempts.length})
               </button>
+              <button
+                onClick={() => setAdminTab("bulk-import")}
+                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                  adminTab === "bulk-import"
+                    ? "bg-slate-800 text-white"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                5. Bulk Import &amp; Review
+              </button>
             </div>
+
+            {/* Sub-Tab 5: Bulk CSV/JSON Import → Staging → Review (PostgreSQL via api-core) */}
+            {adminTab === "bulk-import" && <BulkImportPanel />}
 
             {/* Sub-Tab 1: Users & RBAC Manager */}
             {adminTab === "users" && (
@@ -2532,19 +2552,30 @@ export default function App() {
                           </div>
                         </td>
                         <td className="py-3 px-4">
-                          <select
-                            value={u.role}
-                            onChange={(e) =>
-                              handleAdminUpdateUser(u, {
-                                role: e.target.value as UserRole,
-                              })
-                            }
-                            className="px-2.5 py-1 bg-slate-950 border border-slate-700 rounded text-white"
-                          >
-                            <option value="aspirant">aspirant</option>
-                            <option value="educator">educator</option>
-                            <option value="admin">admin</option>
-                          </select>
+                          {u.email.toLowerCase() ===
+                          BOOTSTRAP_ADMIN_EMAIL.toLowerCase() ? (
+                            <span className="px-2.5 py-1 text-amber-400 font-semibold">
+                              admin
+                            </span>
+                          ) : (
+                            <select
+                              value={u.role}
+                              onChange={(e) =>
+                                handleAdminUpdateUser(u, {
+                                  role: e.target.value as UserRole,
+                                })
+                              }
+                              className="px-2.5 py-1 bg-slate-950 border border-slate-700 rounded text-white"
+                            >
+                              {u.role === "admin" && (
+                                <option value="admin" disabled>
+                                  admin (revoked — pick a role)
+                                </option>
+                              )}
+                              <option value="aspirant">aspirant</option>
+                              <option value="educator">educator</option>
+                            </select>
+                          )}
                         </td>
                         <td className="py-3 px-4">
                           <select

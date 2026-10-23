@@ -1,0 +1,189 @@
+[
+  {
+    "examSlug": "wbcs-prelims",
+    "subjects": [
+      {
+        "slug": "history-national-movement",
+        "name": { "en": "History of India & National Movement", "bn": "ভারতের ইতিহাস ও জাতীয় আন্দোলন" },
+        "chapters": [
+          {
+            "slug": "colonial-era-governance",
+            "name": { "en": "Colonial Era Governance", "bn": "ঔপনিবেশিক যুগের শাসনব্যবস্থা" },
+            "subtopics": [
+              { "slug": "dual-government-bengal-1772", "name": { "en": "Dual System of Government in Bengal (1765-1772)", "bn": "বাংলায় দ্বৈত শাসন ব্যবস্থা (১৭৬৫-১৭৭২)" } },
+              { "slug": "governor-generals-viceroys", "name": { "en": "Governor-Generals & Viceroys", "bn": "গভর্নর-জেনারেল ও ভাইসরয়" } }
+            ]
+          },
+          {
+            "slug": "revolt-1857",
+            "name": { "en": "Revolt of 1857", "bn": "১৮৫৭ সালের মহাবিদ্রোহ" },
+            "subtopics": [
+              { "slug": "causes-1857-revolt", "name": { "en": "Causes of the 1857 Revolt", "bn": "১৮৫৭ সালের বিদ্রোহের কারণ" } }
+            ]
+          },
+          {
+            "slug": "bengal-renaissance",
+            "name": { "en": "Bengal Renaissance", "bn": "বাংলার নবজাগরণ" },
+            "subtopics": [
+              { "slug": "brahmo-samaj-reformers", "name": { "en": "Brahmo Samaj & Social Reformers", "bn": "ব্রাহ্মসমাজ ও সমাজ সংস্কারক" } },
+              { "slug": "widow-remarriage-act-1856", "name": { "en": "Hindu Widows' Remarriage Act, 1856", "bn": "হিন্দু বিধবা পুনর্বিবাহ আইন, ১৮৫৬" } }
+            ]
+          },
+          {
+            "slug": "freedom-movement-phases",
+            "name": { "en": "Phases of the Freedom Movement", "bn": "স্বাধীনতা আন্দোলনের পর্যায়" },
+            "subtopics": [
+              { "slug": "non-cooperation-movement-1920", "name": { "en": "Non-Cooperation Movement (1920)", "bn": "অসহযোগ আন্দোলন (১৯২০)" } },
+              { "slug": "khilafat-movement", "name": { "en": "Khilafat Movement", "bn": "খিলাফত আন্দোলন" } },
+              { "slug": "salt-satyagraha-dandi-march", "name": { "en": "Salt Satyagraha & Dandi March", "bn": "লবণ সত্যাগ্রহ ও ডান্ডি অভিযান" } },
+              { "slug": "quit-india-movement-1942", "name": { "en": "Quit India Movement (1942)", "bn": "ভারত ছাড়ো আন্দোলন (১৯৪২)" } }
+            ]
+          },
+          {
+            "slug": "partition-independence",
+            "name": { "en": "Partition & Independence", "bn": "বঙ্গভঙ্গ ও স্বাধীনতা" },
+            "subtopics": [
+              { "slug": "partition-bengal-1905", "name": { "en": "Partition of Bengal (1905)", "bn": "বঙ্গভঙ্গ (১৯০৫)" } }
+            ]
+          }
+        ]
+      },
+      {
+        "slug": "polity-constitution",
+        "name": { "en": "Indian Polity & Constitution", "bn": "ভারতের সংবিধান ও রাজনীতি" },
+        "chapters": [
+          {
+            "slug": "fundamental-rights-duties",
+            "name": { "en": "Fundamental Rights & Duties", "bn": "মৌলিক অধিকার ও কর্তব্য" },
+            "subtopics": [
+              { "slug": "fundamental-rights-articles", "name": { "en": "Fundamental Rights Articles", "bn": "মৌলিক অধিকার সংক্রান্ত অনুচ্ছেদ" } }
+            ]
+          },
+          {
+            "slug": "directive-principles",
+            "name": { "en": "Directive Principles of State Policy", "bn": "রাষ্ট্র পরিচালনার নির্দেশমূলক নীতি" },
+            "subtopics": [
+              { "slug": "dpsp-articles", "name": { "en": "DPSP Articles (Part IV)", "bn": "নির্দেশমূলক নীতির অনুচ্ছেদ (চতুর্থ অংশ)" } }
+            ]
+          },
+          {
+            "slug": "parliamentary-system",
+            "name": { "en": "Parliamentary System", "bn": "সংসদীয় ব্যবস্থা" },
+            "subtopics": [
+              { "slug": "rajya-sabha-composition", "name": { "en": "Rajya Sabha Composition", "bn": "রাজ্যসভার গঠন" } }
+            ]
+          },
+          {
+            "slug": "emergency-provisions",
+            "name": { "en": "Emergency Provisions", "bn": "জরুরি অবস্থা সংক্রান্ত বিধান" },
+            "subtopics": [
+              { "slug": "national-emergency-article-352", "name": { "en": "National Emergency (Article 352)", "bn": "জাতীয় জরুরি অবস্থা (অনুচ্ছেদ ৩৫২)" } }
+            ]
+          },
+          {
+            "slug": "constitutional-bodies",
+            "name": { "en": "Constitutional Bodies", "bn": "সাংবিধানিক সংস্থা" },
+            "subtopics": [
+              { "slug": "election-commission-of-india", "name": { "en": "Election Commission of India", "bn": "ভারতের নির্বাচন কমিশন" } }
+            ]
+          },
+          {
+            "slug": "constitutional-amendments",
+            "name": { "en": "Constitutional Amendments", "bn": "সংবিধান সংশোধনী" },
+            "subtopics": [
+              { "slug": "important-constitutional-amendments", "name": { "en": "Important Constitutional Amendments", "bn": "গুরুত্বপূর্ণ সংবিধান সংশোধনী" } }
+            ]
+          },
+          {
+            "slug": "panchayati-raj-local-bodies",
+            "name": { "en": "Panchayati Raj & Local Bodies", "bn": "পঞ্চায়েতি রাজ ও স্থানীয় স্বায়ত্তশাসন" },
+            "subtopics": [
+              { "slug": "73rd-74th-constitutional-amendment", "name": { "en": "73rd & 74th Constitutional Amendment Acts", "bn": "৭৩তম ও ৭৪তম সংবিধান সংশোধনী আইন" } }
+            ]
+          }
+        ]
+      },
+      {
+        "slug": "indian-economy",
+        "name": { "en": "Indian Economy", "bn": "ভারতের অর্থনীতি" },
+        "chapters": [
+          {
+            "slug": "banking-monetary-policy",
+            "name": { "en": "Banking & Monetary Policy", "bn": "ব্যাংকিং ও মুদ্রানীতি" },
+            "subtopics": [
+              { "slug": "rbi-monetary-policy-instruments", "name": { "en": "RBI & Monetary Policy Instruments", "bn": "রিজার্ভ ব্যাংক ও মুদ্রানীতির উপকরণ" } }
+            ]
+          }
+        ]
+      },
+      {
+        "slug": "general-science-environment",
+        "name": { "en": "General Science & Environment", "bn": "সাধারণ বিজ্ঞান ও পরিবেশ" },
+        "chapters": [
+          {
+            "slug": "biology-human-health",
+            "name": { "en": "Biology & Human Health", "bn": "জীববিদ্যা ও মানব স্বাস্থ্য" },
+            "subtopics": [
+              { "slug": "vitamins-enzymes-nutrition", "name": { "en": "Vitamins, Enzymes & Human Nutrition", "bn": "ভিটামিন, উৎসেচক ও মানব পুষ্টি" } }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "examSlug": "wbpsc-clerkship-part1",
+    "subjects": [
+      {
+        "slug": "general-studies-clerkship",
+        "name": { "en": "General Studies & Bengal Heritage", "bn": "সাধারণ জ্ঞান ও বাংলার ঐতিহ্য" },
+        "chapters": [
+          {
+            "slug": "bengal-renaissance",
+            "name": { "en": "Bengal Renaissance", "bn": "বাংলার নবজাগরণ" },
+            "subtopics": [
+              { "slug": "brahmo-samaj-reformers", "name": { "en": "Brahmo Samaj & Social Reformers", "bn": "ব্রাহ্মসমাজ ও সমাজ সংস্কারক" } }
+            ]
+          },
+          {
+            "slug": "bengal-geography",
+            "name": { "en": "Geography of West Bengal", "bn": "পশ্চিমবঙ্গের ভূগোল" },
+            "subtopics": [
+              { "slug": "physiography-rivers-west-bengal", "name": { "en": "Physiography & Rivers of West Bengal", "bn": "পশ্চিমবঙ্গের ভূপ্রকৃতি ও নদনদী" } },
+              { "slug": "districts-of-west-bengal", "name": { "en": "Districts of West Bengal", "bn": "পশ্চিমবঙ্গের জেলাসমূহ" } }
+            ]
+          },
+          {
+            "slug": "general-science-clerkship",
+            "name": { "en": "General Science", "bn": "সাধারণ বিজ্ঞান" },
+            "subtopics": [
+              { "slug": "vitamins-enzymes-nutrition", "name": { "en": "Vitamins, Enzymes & Human Nutrition", "bn": "ভিটামিন, উৎসেচক ও মানব পুষ্টি" } }
+            ]
+          },
+          {
+            "slug": "west-bengal-government",
+            "name": { "en": "West Bengal Government & Administration", "bn": "পশ্চিমবঙ্গ সরকার ও প্রশাসন" },
+            "subtopics": [
+              { "slug": "west-bengal-legislature", "name": { "en": "West Bengal Legislature", "bn": "পশ্চিমবঙ্গ বিধানসভা" } }
+            ]
+          }
+        ]
+      },
+      {
+        "slug": "bengali-language-clerkship",
+        "name": { "en": "Bengali Language & Literature", "bn": "বাংলা ভাষা ও সাহিত্য" },
+        "chapters": [
+          {
+            "slug": "bengali-grammar-composition",
+            "name": { "en": "Bengali Grammar & Literature", "bn": "বাংলা ব্যাকরণ ও সাহিত্য" },
+            "subtopics": [
+              { "slug": "rabindranath-works", "name": { "en": "Works of Rabindranath Tagore", "bn": "রবীন্দ্রনাথ ঠাকুরের রচনা" } }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  { "examSlug": "wbpsc-food-si", "subjects": [] },
+  { "examSlug": "wbpsc-miscellaneous", "subjects": [] }
+]

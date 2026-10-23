@@ -74,6 +74,29 @@ export const masteryBandEnum = pgEnum("mastery_band", [
   "exam_ready",        // Accuracy >= 85%
 ]);
 
+export const ingestionSourceEnum = pgEnum("ingestion_source", [
+  "csv_upload",    // Pipeline 1: Educator uploaded a CSV/Excel file
+  "json_upload",   // Pipeline 1: Educator uploaded a JSON file
+  "pdf_extract",   // Pipeline 2: PYQ PDF/image extracted via Gemini Vision
+  "ai_generated",  // Pipeline 3: AI PYQ-clone generator
+  "manual",        // Direct entry via Admin Console form
+]);
+
+export const ingestionStatusEnum = pgEnum("ingestion_status", [
+  "pending_ai",      // Submitted to api-ai for enrichment/extraction
+  "pending_review",  // AI enrichment done — awaiting educator approval
+  "approved",        // Educator approved — queued for bulk insert
+  "rejected",        // Educator rejected the question
+  "inserted",        // Successfully saved to questions table
+  "failed",          // Error during AI processing or DB insert
+]);
+
+export const questionSourceEnum = pgEnum("question_source", [
+  "pyq",           // Real previous-year question (WBCS / Clerkship / Food SI papers)
+  "educator",      // Framed by an educator / admin
+  "ai_generated",  // Pipeline 3 PYQ-clone generator (always educator-reviewed)
+]);
+
 // ============================================================================
 // 2. Users Table
 // ============================================================================
@@ -300,7 +323,21 @@ export const questions = pgTable(
     })
       .notNull()
       .default("0.25"),
+    /** Display label, e.g. "WBCS Prelims 2022" (derived from pyqExamSlug + pyqYear for new rows) */
     previousYearTag: varchar("previous_year_tag", { length: 100 }),
+    source: questionSourceEnum("source").notNull().default("educator"),
+    // Structured PYQ metadata so a full year paper can be rebuilt as a test
+    pyqExamSlug: examSlugEnum("pyq_exam_slug"),
+    pyqYear: integer("pyq_year"),
+    /** PYQ answers must match the official WBPSC answer key before going live */
+    answerKeyVerified: boolean("answer_key_verified").notNull().default(false),
+    /**
+     * SHA-256 of normalised English stem + sorted options — blocks duplicate
+     * PYQs across PDFs/CSVs. Nullable for rows created before hashing existed.
+     */
+    contentHash: varchar("content_hash", { length: 64 }),
+    // Staging row this question was approved from (null for seed / manual rows)
+    ingestionJobId: uuid("ingestion_job_id"),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -310,6 +347,9 @@ export const questions = pgTable(
     index("questions_exam_active_idx").on(table.examId, table.isActive),
     index("questions_subtopic_active_idx").on(table.subtopicId, table.isActive),
     index("questions_subject_chapter_idx").on(table.subjectId, table.chapterId),
+    uniqueIndex("questions_content_hash_unique_idx").on(table.contentHash),
+    index("questions_source_idx").on(table.source),
+    index("questions_pyq_idx").on(table.pyqExamSlug, table.pyqYear),
   ]
 );
 
@@ -581,3 +621,139 @@ export const testAttemptsRelations = relations(
     answers: many(attemptAnswers),
   })
 );
+
+// ============================================================================
+// 9. Question Ingestion Jobs (3-Pipeline Staging Table)
+// All pipelines land here first — human review required before live insert.
+// ============================================================================
+
+export const questionIngestionJobs = pgTable(
+  "question_ingestion_jobs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuid_generate_v4()`),
+
+    // Who uploaded / triggered this job
+    uploadedBy: uuid("uploaded_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+
+    // Which pipeline produced this row
+    source: ingestionSourceEnum("source").notNull(),
+
+    // Current lifecycle state
+    status: ingestionStatusEnum("status").notNull().default("pending_ai"),
+
+    /**
+     * Groups rows from one upload session / PDF / generation run.
+     * Format: `<source>-<timestamp-ms>` e.g. "csv_upload-1698067200000"
+     */
+    batchId: varchar("batch_id", { length: 80 }).notNull(),
+
+    /**
+     * The raw input as received — CSV row object, PDF page JSON, or
+     * manually entered partial question. Stored so we can re-process.
+     */
+    rawData: jsonb("raw_data").notNull(),
+
+    /**
+     * AI-enriched full bilingual MCQ ready to insert into questions table.
+     * Null until api-ai completes enrichment.
+     */
+    enrichedData: jsonb("enriched_data"),
+
+    // Resolved FK IDs after AI auto-tagging (null until api-ai resolves them)
+    examId: uuid("exam_id").references(() => exams.id, { onDelete: "set null" }),
+    subjectId: uuid("subject_id").references(() => subjects.id, {
+      onDelete: "set null",
+    }),
+    chapterId: uuid("chapter_id").references(() => chapters.id, {
+      onDelete: "set null",
+    }),
+    subtopicId: uuid("subtopic_id").references(() => subtopics.id, {
+      onDelete: "set null",
+    }),
+
+    // PYQ metadata (Pipeline 2 & 3)
+    pyqYear: integer("pyq_year"),
+    pyqExamName: varchar("pyq_exam_name", { length: 160 }),
+
+    /**
+     * AI confidence 0.00–1.00. Low confidence (<0.70) rows are highlighted
+     * in the Review Table for closer educator attention.
+     */
+    aiConfidenceScore: numeric("ai_confidence_score", {
+      precision: 4,
+      scale: 2,
+    }),
+
+    // Same hash as questions.content_hash — catches duplicates before approval
+    contentHash: varchar("content_hash", { length: 64 }),
+
+    // Educator notes added during the review step
+    reviewNotes: text("review_notes"),
+
+    // Set after successful insert into questions table
+    insertedQuestionId: uuid("inserted_question_id"),
+
+    // Error details if status = 'failed'
+    errorMessage: text("error_message"),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("ingestion_jobs_batch_idx").on(table.batchId),
+    index("ingestion_jobs_status_idx").on(table.status),
+    index("ingestion_jobs_uploader_idx").on(table.uploadedBy),
+    index("ingestion_jobs_exam_idx").on(table.examId),
+    index("ingestion_jobs_content_hash_idx").on(table.contentHash),
+  ]
+);
+
+export const questionIngestionJobsRelations = relations(
+  questionIngestionJobs,
+  ({ one }) => ({
+    uploadedBy: one(users, {
+      fields: [questionIngestionJobs.uploadedBy],
+      references: [users.id],
+    }),
+    exam: one(exams, {
+      fields: [questionIngestionJobs.examId],
+      references: [exams.id],
+    }),
+    subject: one(subjects, {
+      fields: [questionIngestionJobs.subjectId],
+      references: [subjects.id],
+    }),
+    chapter: one(chapters, {
+      fields: [questionIngestionJobs.chapterId],
+      references: [chapters.id],
+    }),
+    subtopic: one(subtopics, {
+      fields: [questionIngestionJobs.subtopicId],
+      references: [subtopics.id],
+    }),
+  })
+);
+
+// ============================================================================
+// 10. Convenience Type Aliases (used by seed scripts & API services)
+// ============================================================================
+
+/** Inferred union type from examSlugEnum — use instead of raw string */
+export type ExamSlugType = (typeof examSlugEnum.enumValues)[number];
+
+/** Inferred union type from difficultyEnum */
+export type DifficultyType = (typeof difficultyEnum.enumValues)[number];
+
+/** Inferred union type from ingestionStatusEnum */
+export type IngestionStatusType =
+  (typeof ingestionStatusEnum.enumValues)[number];
+
+/** Inferred union type from ingestionSourceEnum */
+export type IngestionSourceType =
+  (typeof ingestionSourceEnum.enumValues)[number];

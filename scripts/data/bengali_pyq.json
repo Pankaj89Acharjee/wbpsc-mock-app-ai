@@ -1,0 +1,132 @@
+[
+  {
+    "examSlug": "wbpsc-clerkship-part1",
+    "subjectSlug": "general-studies-clerkship",
+    "chapterSlug": "bengal-renaissance",
+    "subtopicSlug": "brahmo-samaj-reformers",
+    "stem": {
+      "en": "Who founded the 'Atmiya Sabha' in Kolkata in 1815 to propagate monotheistic Hindu Vedanta ideals?",
+      "bn": "১৮১৫ সালে কলকাতায় একেশ্বরবাদী বেদান্ত দর্শনের প্রচারের জন্য কে 'আত্মীয় সভা' প্রতিষ্ঠা করেন?"
+    },
+    "options": {
+      "A": { "en": "Ishwar Chandra Vidyasagar", "bn": "ঈশ্বরচন্দ্র বিদ্যাসাগর" },
+      "B": { "en": "Raja Rammohan Roy", "bn": "রাজা রামমোহন রায়" },
+      "C": { "en": "Debendranath Tagore", "bn": "দেবেন্দ্রনাথ ঠাকুর" },
+      "D": { "en": "Keshab Chandra Sen", "bn": "কেশবচন্দ্র সেন" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "Raja Rammohan Roy founded the Atmiya Sabha in 1815 in Kolkata to promote Vedantic monotheism and oppose idol worship and social evils. It was the precursor to the Brahmo Sabha (1828), which later became the Brahmo Samaj.",
+      "bn": "রাজা রামমোহন রায় ১৮১৫ সালে কলকাতায় বৈদান্তিক একেশ্বরবাদের প্রচার এবং মূর্তিপূজা ও সামাজিক কুপ্রথার বিরোধিতার জন্য 'আত্মীয় সভা' প্রতিষ্ঠা করেন। এটি ব্রাহ্ম সভার (১৮২৮) অগ্রদূত, যা পরবর্তীতে ব্রাহ্মসমাজ নামে পরিচিত হয়।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.25,
+    "previousYearTag": "WBPSC Clerkship 2020",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbpsc-clerkship-part1",
+    "subjectSlug": "general-studies-clerkship",
+    "chapterSlug": "bengal-geography",
+    "subtopicSlug": "physiography-rivers-west-bengal",
+    "stem": {
+      "en": "The 'Tilpara Barrage' in West Bengal is constructed across which of the following rivers?",
+      "bn": "পশ্চিমবঙ্গের 'তিলপাড়া ব্যারেজ' কোন নদীর ওপর নির্মিত হয়েছে?"
+    },
+    "options": {
+      "A": { "en": "Damodar River", "bn": "দামোদর নদ" },
+      "B": { "en": "Mayurakshi River", "bn": "ময়ূরাক্ষী নদী" },
+      "C": { "en": "Kangsabati River", "bn": "কংসাবতী নদী" },
+      "D": { "en": "Teesta River", "bn": "তিস্তা নদী" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "Tilpara Barrage is situated near Suri in Birbhum district across the Mayurakshi River. The Massanjore Dam (Canada Dam) is located upstream on the same river. Both are part of the Mayurakshi River Project for irrigation in Birbhum and Murshidabad districts.",
+      "bn": "তিলপাড়া ব্যারেজ বীরভূম জেলার সিউড়ির কাছে ময়ূরাক্ষী নদীর ওপর নির্মিত। মাসানজোর বাঁধ (কানাডা ড্যাম) একই নদীর উজানে অবস্থিত। উভয়ই বীরভূম ও মুর্শিদাবাদ জেলায় সেচের জন্য ময়ূরাক্ষী নদী প্রকল্পের অংশ।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.25,
+    "previousYearTag": "WBCS Prelims 2021 | WBPSC Clerkship 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbpsc-clerkship-part1",
+    "subjectSlug": "general-studies-clerkship",
+    "chapterSlug": "general-science-clerkship",
+    "subtopicSlug": "vitamins-enzymes-nutrition",
+    "stem": {
+      "en": "Which vitamin is also known as 'Ascorbic Acid' and its deficiency causes Scurvy?",
+      "bn": "কোন ভিটামিনকে 'অ্যাসকরবিক অ্যাসিড'ও বলা হয় এবং এর অভাবে স্কার্ভি রোগ হয়?"
+    },
+    "options": {
+      "A": { "en": "Vitamin A", "bn": "ভিটামিন A" },
+      "B": { "en": "Vitamin B12", "bn": "ভিটামিন B12" },
+      "C": { "en": "Vitamin C", "bn": "ভিটামিন C" },
+      "D": { "en": "Vitamin D", "bn": "ভিটামিন D" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "Vitamin C (Ascorbic Acid) deficiency causes Scurvy, characterized by bleeding gums, skin hemorrhages, and poor wound healing. Good sources include citrus fruits, amla (Indian gooseberry), guava. Vitamin A deficiency → Night Blindness; Vitamin B12 → Pernicious Anemia; Vitamin D → Rickets (children) / Osteomalacia (adults).",
+      "bn": "ভিটামিন C (অ্যাসকরবিক অ্যাসিড)-এর অভাবে স্কার্ভি রোগ হয়, যার বৈশিষ্ট্য হল মাড়ি থেকে রক্তপাত, ত্বকে রক্তক্ষরণ এবং ক্ষত নিরাময়ে বিলম্ব। ভালো উৎসের মধ্যে লেবুজাতীয় ফল, আমলা, পেয়ারা উল্লেখযোগ্য। ভিটামিন A-এর অভাব → রাতকানা; ভিটামিন B12 → পার্নিশিয়াস অ্যানিমিয়া; ভিটামিন D → রিকেট (শিশু) / অস্টিওম্যালেশিয়া (প্রাপ্তবয়স্ক)।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.25,
+    "previousYearTag": "WBPSC Clerkship 2021 | WBCS Prelims 2020",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbpsc-clerkship-part1",
+    "subjectSlug": "bengali-language-clerkship",
+    "chapterSlug": "bengali-grammar-composition",
+    "subtopicSlug": "rabindranath-works",
+    "stem": {
+      "en": "Rabindranath Tagore was awarded the Nobel Prize in Literature in 1913 for which collection of poems?",
+      "bn": "রবীন্দ্রনাথ ঠাকুর ১৯১৩ সালে কোন কাব্যগ্রন্থের জন্য সাহিত্যে নোবেল পুরস্কার পান?"
+    },
+    "options": {
+      "A": { "en": "Manasi", "bn": "মানসী" },
+      "B": { "en": "Sonar Tari", "bn": "সোনার তরী" },
+      "C": { "en": "Gitanjali", "bn": "গীতাঞ্জলি" },
+      "D": { "en": "Balaka", "bn": "বলাকা" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "Rabindranath Tagore received the 1913 Nobel Prize in Literature for 'Gitanjali (Song Offerings)', the English prose translation of his Bengali poetry collection. He was the first non-European and first Asian to win the Nobel Prize in Literature. W.B. Yeats wrote the introduction to the English Gitanjali.",
+      "bn": "রবীন্দ্রনাথ ঠাকুর তাঁর বাংলা কবিতা সংকলনের ইংরেজি গদ্য অনুবাদ 'গীতাঞ্জলি (Song Offerings)'-এর জন্য ১৯১৩ সালে সাহিত্যে নোবেল পুরস্কার পান। তিনি ছিলেন প্রথম অ-ইউরোপীয় এবং প্রথম এশীয় যিনি সাহিত্যে নোবেল পুরস্কার পান। ইংরেজি গীতাঞ্জলির ভূমিকা লিখেছিলেন ডব্লিউ.বি. ইয়েটস।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.25,
+    "previousYearTag": "WBPSC Clerkship 2019 | WBPSC Food SI 2020",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbpsc-clerkship-part1",
+    "subjectSlug": "general-studies-clerkship",
+    "chapterSlug": "bengal-geography",
+    "subtopicSlug": "districts-of-west-bengal",
+    "stem": {
+      "en": "Which is the largest district (by area) in West Bengal?",
+      "bn": "পশ্চিমবঙ্গের বৃহত্তম জেলা (ক্ষেত্রফলের হিসেবে) কোনটি?"
+    },
+    "options": {
+      "A": { "en": "Purba Medinipur", "bn": "পূর্ব মেদিনীপুর" },
+      "B": { "en": "Bankura", "bn": "বাঁকুড়া" },
+      "C": { "en": "South 24 Parganas", "bn": "দক্ষিণ ২৪ পরগনা" },
+      "D": { "en": "Paschim Bardhaman", "bn": "পশ্চিম বর্ধমান" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "South 24 Parganas is the largest district in West Bengal by area (9,960 sq. km), which includes the Sundarbans mangrove delta. Bankura is the second largest. By population, Murshidabad is the most populous district in West Bengal.",
+      "bn": "দক্ষিণ ২৪ পরগনা পশ্চিমবঙ্গের বৃহত্তম জেলা (৯,৯৬০ বর্গ কিমি), যার মধ্যে সুন্দরবন ম্যানগ্রোভ বদ্বীপ অন্তর্ভুক্ত। বাঁকুড়া দ্বিতীয় বৃহত্তম। জনসংখ্যার হিসেবে পশ্চিমবঙ্গের সবচেয়ে জনবহুল জেলা হল মুর্শিদাবাদ।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.25,
+    "previousYearTag": "WBPSC Clerkship 2022 | WBPSC Food SI 2021",
+    "isActive": true
+  }
+]

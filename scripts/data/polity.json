@@ -1,0 +1,210 @@
+[
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "fundamental-rights-duties",
+    "subtopicSlug": "fundamental-rights-articles",
+    "stem": {
+      "en": "Which Article of the Indian Constitution guarantees the 'Right to Constitutional Remedies'?",
+      "bn": "ভারতীয় সংবিধানের কোন অনুচ্ছেদ 'সাংবিধানিক প্রতিকারের অধিকার' নিশ্চিত করে?"
+    },
+    "options": {
+      "A": { "en": "Article 19", "bn": "অনুচ্ছেদ ১৯" },
+      "B": { "en": "Article 21", "bn": "অনুচ্ছেদ ২১" },
+      "C": { "en": "Article 32", "bn": "অনুচ্ছেদ ৩২" },
+      "D": { "en": "Article 226", "bn": "অনুচ্ছেদ ২২৬" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "Article 32 is the 'Right to Constitutional Remedies', which empowers citizens to directly approach the Supreme Court for enforcement of Fundamental Rights. Dr. B.R. Ambedkar called it the 'heart and soul' of the Constitution. Article 226 grants similar power to High Courts but is not a Fundamental Right.",
+      "bn": "অনুচ্ছেদ ৩২ হল 'সাংবিধানিক প্রতিকারের অধিকার', যা নাগরিকদের মৌলিক অধিকার প্রয়োগের জন্য সরাসরি সুপ্রিম কোর্টে যাওয়ার ক্ষমতা দেয়। ডাঃ বি. আর. আম্বেদকর এটিকে সংবিধানের 'হৃদয় ও আত্মা' বলেছিলেন। অনুচ্ছেদ ২২৬ হাইকোর্টকে একই ক্ষমতা দেয়, কিন্তু এটি মৌলিক অধিকার নয়।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2023",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "parliamentary-system",
+    "subtopicSlug": "rajya-sabha-composition",
+    "stem": {
+      "en": "What is the maximum strength of the Rajya Sabha as per the Indian Constitution?",
+      "bn": "ভারতীয় সংবিধান অনুযায়ী রাজ্যসভার সর্বোচ্চ সদস্য সংখ্যা কত?"
+    },
+    "options": {
+      "A": { "en": "238", "bn": "২৩৮" },
+      "B": { "en": "245", "bn": "২৪৫" },
+      "C": { "en": "250", "bn": "২৫০" },
+      "D": { "en": "260", "bn": "২৬০" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "The maximum strength of the Rajya Sabha is 250 — 238 members representing States and Union Territories (elected indirectly) and 12 members nominated by the President (distinguished persons in literature, science, art, and social service). Currently 245 seats are operational.",
+      "bn": "রাজ্যসভার সর্বোচ্চ সদস্য সংখ্যা ২৫০ — ২৩৮ জন সদস্য রাজ্য ও কেন্দ্রশাসিত অঞ্চলের প্রতিনিধিত্ব করেন (পরোক্ষভাবে নির্বাচিত) এবং ১২ জন সদস্য রাষ্ট্রপতি কর্তৃক মনোনীত হন (সাহিত্য, বিজ্ঞান, শিল্পকলা ও সমাজসেবায় বিশিষ্ট ব্যক্তিত্ব)। বর্তমানে ২৪৫টি আসন সক্রিয়।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2022 | WBPSC Miscellaneous 2020",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "panchayati-raj-local-bodies",
+    "subtopicSlug": "73rd-74th-constitutional-amendment",
+    "stem": {
+      "en": "The 73rd Constitutional Amendment Act (1992) deals with:",
+      "bn": "৭৩তম সংবিধান সংশোধনী আইন (১৯৯২) কীসের সাথে সম্পর্কিত?"
+    },
+    "options": {
+      "A": { "en": "Urban Local Bodies (Municipalities)", "bn": "শহুরে স্থানীয় সংস্থা (পৌরসভা)" },
+      "B": { "en": "Panchayati Raj Institutions (PRIs)", "bn": "পঞ্চায়েতি রাজ প্রতিষ্ঠান (PRIs)" },
+      "C": { "en": "Establishment of Finance Commission", "bn": "অর্থ কমিশন প্রতিষ্ঠা" },
+      "D": { "en": "Reservation for OBC in legislative bodies", "bn": "আইনসভায় ওবিসিদের জন্য সংরক্ষণ" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "The 73rd Constitutional Amendment Act (1992) added Part IX (Articles 243–243O) and the 11th Schedule to the Constitution, giving constitutional status to Panchayati Raj Institutions. The 74th Amendment dealt with Urban Local Bodies (Municipalities) and added Part IX-A and the 12th Schedule.",
+      "bn": "৭৩তম সংবিধান সংশোধনী আইন (১৯৯২) সংবিধানে নবম ভাগ (অনুচ্ছেদ ২৪৩–২৪৩ঙ) এবং একাদশ তফসিল যোগ করে পঞ্চায়েতি রাজ প্রতিষ্ঠানকে সাংবিধানিক মর্যাদা দেয়। ৭৪তম সংশোধনী শহুরে স্থানীয় সংস্থার (পৌরসভা) সাথে সম্পর্কিত এবং নবম-ক ভাগ ও দ্বাদশ তফসিল যোগ করে।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2023 | WBPSC Food SI 2021",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "directive-principles",
+    "subtopicSlug": "dpsp-articles",
+    "stem": {
+      "en": "Which Part and Articles of the Indian Constitution contain the Directive Principles of State Policy (DPSP)?",
+      "bn": "ভারতীয় সংবিধানের কোন ভাগ ও অনুচ্ছেদে রাষ্ট্র পরিচালনার নির্দেশমূলক নীতি (DPSP) আছে?"
+    },
+    "options": {
+      "A": { "en": "Part III, Articles 12–35", "bn": "তৃতীয় ভাগ, অনুচ্ছেদ ১২–৩৫" },
+      "B": { "en": "Part IV, Articles 36–51", "bn": "চতুর্থ ভাগ, অনুচ্ছেদ ৩৬–৫১" },
+      "C": { "en": "Part IV-A, Article 51A", "bn": "চতুর্থ-ক ভাগ, অনুচ্ছেদ ৫১ক" },
+      "D": { "en": "Part V, Articles 52–78", "bn": "পঞ্চম ভাগ, অনুচ্ছেদ ৫২–৭৮" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "The Directive Principles of State Policy (DPSP) are contained in Part IV, Articles 36–51 of the Indian Constitution. They are inspired by the Irish Constitution. Unlike Fundamental Rights (Part III), DPSPs are non-justiciable (cannot be enforced in a court of law) but are fundamental to the governance of the country.",
+      "bn": "রাষ্ট্র পরিচালনার নির্দেশমূলক নীতি (DPSP) ভারতীয় সংবিধানের চতুর্থ ভাগে অনুচ্ছেদ ৩৬–৫১-এ আছে। এগুলি আয়ারল্যান্ডের সংবিধান দ্বারা অনুপ্রাণিত। মৌলিক অধিকারের (তৃতীয় ভাগ) বিপরীতে, নির্দেশমূলক নীতিগুলি বিচারযোগ্য নয় (আদালতে প্রয়োগযোগ্য নয়), কিন্তু দেশ পরিচালনায় মৌলিক।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2020 | WBPSC Clerkship 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "emergency-provisions",
+    "subtopicSlug": "national-emergency-article-352",
+    "stem": {
+      "en": "Under Article 352, a National Emergency can be proclaimed by the President on the grounds of:",
+      "bn": "অনুচ্ছেদ ৩৫২ অনুযায়ী, রাষ্ট্রপতি কোন ভিত্তিতে জাতীয় জরুরি অবস্থা ঘোষণা করতে পারেন?"
+    },
+    "options": {
+      "A": { "en": "War, External Aggression, or Armed Rebellion only", "bn": "শুধুমাত্র যুদ্ধ, বাহ্যিক আগ্রাসন বা সশস্ত্র বিদ্রোহ" },
+      "B": { "en": "War or External Aggression only", "bn": "শুধুমাত্র যুদ্ধ বা বাহ্যিক আগ্রাসন" },
+      "C": { "en": "Constitutional breakdown in any state", "bn": "যেকোনো রাজ্যে সাংবিধানিক বিপর্যয়" },
+      "D": { "en": "Economic or Financial Emergency", "bn": "অর্থনৈতিক বা আর্থিক জরুরি অবস্থা" }
+    },
+    "correctOption": "A",
+    "explanation": {
+      "en": "Article 352 allows the President to proclaim a National Emergency on three grounds: (1) War, (2) External Aggression, or (3) Armed Rebellion (the term 'Internal Disturbance' was replaced by 'Armed Rebellion' by the 44th Amendment, 1978). Article 356 covers State Emergency (President's Rule), and Article 360 covers Financial Emergency.",
+      "bn": "অনুচ্ছেদ ৩৫২ তিনটি ভিত্তিতে রাষ্ট্রপতিকে জাতীয় জরুরি অবস্থা ঘোষণার ক্ষমতা দেয়: (১) যুদ্ধ, (২) বাহ্যিক আগ্রাসন, বা (৩) সশস্ত্র বিদ্রোহ ('অভ্যন্তরীণ বিঘ্ন' শব্দটি ৪৪তম সংশোধনী, ১৯৭৮ দ্বারা 'সশস্ত্র বিদ্রোহ' দিয়ে প্রতিস্থাপিত হয়েছে)। অনুচ্ছেদ ৩৫৬ রাজ্য জরুরি অবস্থা (রাষ্ট্রপতির শাসন) এবং অনুচ্ছেদ ৩৬০ আর্থিক জরুরি অবস্থা নিয়ন্ত্রণ করে।"
+    },
+    "difficulty": "hard",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "constitutional-bodies",
+    "subtopicSlug": "election-commission-of-india",
+    "stem": {
+      "en": "Who appoints the Chief Election Commissioner of India?",
+      "bn": "ভারতের মুখ্য নির্বাচন কমিশনারকে কে নিয়োগ করেন?"
+    },
+    "options": {
+      "A": { "en": "The Prime Minister", "bn": "প্রধানমন্ত্রী" },
+      "B": { "en": "The Parliament", "bn": "সংসদ" },
+      "C": { "en": "The President", "bn": "রাষ্ট্রপতি" },
+      "D": { "en": "The Supreme Court", "bn": "সুপ্রিম কোর্ট" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "The Chief Election Commissioner (CEC) and other Election Commissioners are appointed by the President of India (Article 324). As per the Chief Election Commissioner and Other Election Commissioners (Appointment, Conditions of Service and Term of Office) Act, 2023, a selection committee comprising the PM, a Cabinet Minister, and Leader of Opposition recommends the appointment.",
+      "bn": "মুখ্য নির্বাচন কমিশনার (CEC) এবং অন্যান্য নির্বাচন কমিশনারদের ভারতের রাষ্ট্রপতি নিয়োগ করেন (অনুচ্ছেদ ৩২৪)। ২০২৩ সালের মুখ্য নির্বাচন কমিশনার ও অন্যান্য নির্বাচন কমিশনার (নিয়োগ, সেবার শর্ত ও পদের মেয়াদ) আইন অনুযায়ী, প্রধানমন্ত্রী, একজন মন্ত্রিসভা সদস্য ও বিরোধী দলনেতা সমন্বয়ে একটি বাছাই কমিটি নিয়োগের সুপারিশ করে।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2021 | WBPSC Food SI 2023",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "constitutional-amendments",
+    "subtopicSlug": "important-constitutional-amendments",
+    "stem": {
+      "en": "Which Constitutional Amendment lowered the voting age from 21 to 18 years in India?",
+      "bn": "কোন সংবিধান সংশোধনী ভারতে ভোট দেওয়ার বয়স ২১ থেকে কমিয়ে ১৮ বছর করেছে?"
+    },
+    "options": {
+      "A": { "en": "42nd Amendment, 1976", "bn": "৪২তম সংশোধনী, ১৯৭৬" },
+      "B": { "en": "44th Amendment, 1978", "bn": "৪৪তম সংশোধনী, ১৯৭৮" },
+      "C": { "en": "61st Amendment, 1988", "bn": "৬১তম সংশোধনী, ১৯৮৮" },
+      "D": { "en": "73rd Amendment, 1992", "bn": "৭৩তম সংশোধনী, ১৯৯২" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "The 61st Constitutional Amendment Act, 1988 amended Article 326 to lower the minimum voting age from 21 years to 18 years. This was done to give the youth a greater say in the democratic process. It came into effect from 28 March 1989.",
+      "bn": "৬১তম সংবিধান সংশোধনী আইন, ১৯৮৮ অনুচ্ছেদ ৩২৬ সংশোধন করে ন্যূনতম ভোটের বয়স ২১ বছর থেকে কমিয়ে ১৮ বছর করে। গণতান্ত্রিক প্রক্রিয়ায় যুবদের আরও বেশি অংশগ্রহণ নিশ্চিত করতে এটি করা হয়। এটি ১৯৮৯ সালের ২৮ মার্চ থেকে কার্যকর হয়।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2019 | WBPSC Miscellaneous 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbpsc-clerkship-part1",
+    "subjectSlug": "general-studies-clerkship",
+    "chapterSlug": "west-bengal-government",
+    "subtopicSlug": "west-bengal-legislature",
+    "stem": {
+      "en": "The West Bengal Legislative Assembly (Vidhan Sabha) has how many seats?",
+      "bn": "পশ্চিমবঙ্গ বিধানসভার কতটি আসন আছে?"
+    },
+    "options": {
+      "A": { "en": "252", "bn": "২৫২" },
+      "B": { "en": "294", "bn": "২৯৪" },
+      "C": { "en": "300", "bn": "৩০০" },
+      "D": { "en": "315", "bn": "৩১৫" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "The West Bengal Legislative Assembly (Vidhan Sabha) has 294 seats (constituencies). It is a unicameral legislature. Out of 294, 68 seats are reserved for Scheduled Castes (SC) and 16 seats for Scheduled Tribes (ST).",
+      "bn": "পশ্চিমবঙ্গ বিধানসভায় ২৯৪টি আসন (কেন্দ্র) আছে। এটি একটি এককক্ষ বিশিষ্ট আইনসভা। ২৯৪টির মধ্যে ৬৮টি আসন তফসিলি জাতির (SC) জন্য এবং ১৬টি আসন তফসিলি উপজাতির (ST) জন্য সংরক্ষিত।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.25,
+    "previousYearTag": "WBPSC Clerkship 2019 | WBPSC Food SI 2022",
+    "isActive": true
+  }
+]

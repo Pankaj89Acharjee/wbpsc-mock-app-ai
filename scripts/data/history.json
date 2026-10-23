@@ -1,0 +1,262 @@
+[
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "colonial-era-governance",
+    "subtopicSlug": "dual-government-bengal-1772",
+    "stem": {
+      "en": "Who among the following abolished the Dual System of Government in Bengal in 1772?",
+      "bn": "নিম্নলিখিতদের মধ্যে কে ১৭৭২ সালে বাংলায় দ্বৈত শাসন ব্যবস্থার অবসান ঘটান?"
+    },
+    "options": {
+      "A": { "en": "Robert Clive", "bn": "রবার্ট ক্লাইভ" },
+      "B": { "en": "Warren Hastings", "bn": "ওয়ারেন হেস্টিংস" },
+      "C": { "en": "Lord Cornwallis", "bn": "লর্ড কর্নওয়ালিস" },
+      "D": { "en": "Lord Wellesley", "bn": "লর্ড ওয়েলেসলি" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "Warren Hastings abolished the Dual System of Government in 1772, which had been introduced by Robert Clive after the Treaty of Allahabad (1765). Under the dual system, the East India Company had Diwani rights but the Nawab retained Nizamat (law and order). Hastings ended this and took direct control.",
+      "bn": "১৭৬৫ সালে এলাহাবাদের সন্ধির পর রবার্ট ক্লাইভ প্রবর্তিত দ্বৈত শাসন ব্যবস্থা ১৭৭২ সালে ওয়ারেন হেস্টিংস বাতিল করেন। এই ব্যবস্থায় ইস্ট ইন্ডিয়া কোম্পানি দেওয়ানি অধিকার পেলেও নিজামত (আইনশৃঙ্খলা) নবাবের হাতে ছিল। হেস্টিংস এই ব্যবস্থা বাতিল করে সরাসরি নিয়ন্ত্রণ নেন।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "revolt-1857",
+    "subtopicSlug": "causes-1857-revolt",
+    "stem": {
+      "en": "The immediate cause of the Revolt of 1857 was:",
+      "bn": "১৮৫৭ সালের মহাবিদ্রোহের তাৎক্ষণিক কারণ ছিল:"
+    },
+    "options": {
+      "A": { "en": "The Doctrine of Lapse policy of Lord Dalhousie", "bn": "লর্ড ডালহৌসির স্বত্ববিলোপ নীতি" },
+      "B": { "en": "Introduction of Enfield rifles with greased cartridges", "bn": "চর্বি মাখানো কার্তুজ সহ এনফিল্ড রাইফেলের প্রবর্তন" },
+      "C": { "en": "Abolition of the practice of Sati by British", "bn": "ব্রিটিশদের দ্বারা সতীদাহ প্রথার বিলোপ" },
+      "D": { "en": "Introduction of Widow Remarriage Act", "bn": "বিধবা বিবাহ আইনের প্রবর্তন" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "The immediate cause of the 1857 revolt was the introduction of the new Enfield rifle. Its cartridges were rumoured to be greased with cow and pig fat, which had to be bitten off before loading. This was deeply offensive to both Hindu and Muslim sepoys. The revolt began at Meerut on 10 May 1857.",
+      "bn": "১৮৫৭ সালের মহাবিদ্রোহের তাৎক্ষণিক কারণ ছিল নতুন এনফিল্ড রাইফেলের প্রবর্তন। এই রাইফেলের কার্তুজে গরু ও শূকরের চর্বি মাখানো আছে বলে গুজব ছিল, যা ব্যবহারের আগে দাঁত দিয়ে কাটতে হতো। এটি হিন্দু ও মুসলমান উভয় সিপাইদের কাছেই গভীরভাবে আপত্তিকর ছিল। বিদ্রোহ ১৮৫৭ সালের ১০ মে মিরাটে শুরু হয়।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2023",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "bengal-renaissance",
+    "subtopicSlug": "brahmo-samaj-reformers",
+    "stem": {
+      "en": "Who founded the 'Brahmo Sabha' in Kolkata in 1828, which later became the Brahmo Samaj?",
+      "bn": "কে ১৮২৮ সালে কলকাতায় 'ব্রাহ্ম সভা' প্রতিষ্ঠা করেন, যা পরে ব্রাহ্মসমাজ নামে পরিচিত হয়?"
+    },
+    "options": {
+      "A": { "en": "Debendranath Tagore", "bn": "দেবেন্দ্রনাথ ঠাকুর" },
+      "B": { "en": "Keshab Chandra Sen", "bn": "কেশবচন্দ্র সেন" },
+      "C": { "en": "Raja Rammohan Roy", "bn": "রাজা রামমোহন রায়" },
+      "D": { "en": "Ishwar Chandra Vidyasagar", "bn": "ঈশ্বরচন্দ্র বিদ্যাসাগর" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "Raja Rammohan Roy founded the Brahmo Sabha in Kolkata in 1828. In 1843, Debendranath Tagore reorganised it into the Brahmo Samaj. Later, Keshab Chandra Sen joined and split to form the Brahmo Samaj of India (1866), while Debendranath's group became the Adi Brahmo Samaj.",
+      "bn": "রাজা রামমোহন রায় ১৮২৮ সালে কলকাতায় ব্রাহ্ম সভা প্রতিষ্ঠা করেন। ১৮৪৩ সালে দেবেন্দ্রনাথ ঠাকুর এটিকে পুনর্গঠিত করে ব্রাহ্মসমাজ নাম দেন। পরে কেশবচন্দ্র সেন যোগ দিয়ে ১৮৬৬ সালে ভারতবর্ষীয় ব্রাহ্মসমাজ গঠন করেন, এবং দেবেন্দ্রনাথের দল আদি ব্রাহ্মসমাজ নামে পরিচিত হয়।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2021",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "freedom-movement-phases",
+    "subtopicSlug": "non-cooperation-movement-1920",
+    "stem": {
+      "en": "At which session of the Indian National Congress was the Non-Cooperation Movement formally adopted?",
+      "bn": "ভারতীয় জাতীয় কংগ্রেসের কোন অধিবেশনে অসহযোগ আন্দোলন আনুষ্ঠানিকভাবে গৃহীত হয়?"
+    },
+    "options": {
+      "A": { "en": "Nagpur Session, 1920", "bn": "নাগপুর অধিবেশন, ১৯২০" },
+      "B": { "en": "Lucknow Session, 1916", "bn": "লক্ষ্ণৌ অধিবেশন, ১৯১৬" },
+      "C": { "en": "Calcutta Special Session, 1920", "bn": "কলকাতা বিশেষ অধিবেশন, ১৯২০" },
+      "D": { "en": "Amritsar Session, 1919", "bn": "অমৃতসর অধিবেশন, ১৯১৯" }
+    },
+    "correctOption": "A",
+    "explanation": {
+      "en": "The Non-Cooperation Movement was first proposed by Gandhiji and approved at the Calcutta Special Session (September 1920). It was then formally and fully adopted at the Nagpur Session (December 1920) of the Indian National Congress. The Nagpur session also changed the INC constitution significantly.",
+      "bn": "অসহযোগ আন্দোলন প্রথমে কলকাতা বিশেষ অধিবেশনে (সেপ্টেম্বর ১৯২০) গান্ধীজির প্রস্তাবে অনুমোদিত হয়, তারপর ডিসেম্বর ১৯২০ সালে নাগপুর অধিবেশনে আনুষ্ঠানিকভাবে সম্পূর্ণ গৃহীত হয়। নাগপুর অধিবেশনে INC-র গঠনতন্ত্রেও উল্লেখযোগ্য পরিবর্তন আনা হয়।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2020",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "freedom-movement-phases",
+    "subtopicSlug": "quit-india-movement-1942",
+    "stem": {
+      "en": "Which slogan was given by Mahatma Gandhi during the Quit India Movement of 1942?",
+      "bn": "১৯৪২ সালের ভারত ছাড়ো আন্দোলনের সময় মহাত্মা গান্ধী কোন স্লোগান দিয়েছিলেন?"
+    },
+    "options": {
+      "A": { "en": "Purna Swaraj (Complete Independence)", "bn": "পূর্ণ স্বরাজ (সম্পূর্ণ স্বাধীনতা)" },
+      "B": { "en": "Swaraj is my birthright", "bn": "স্বরাজ আমার জন্মগত অধিকার" },
+      "C": { "en": "Do or Die (Karo ya Maro)", "bn": "করো অথবা মরো (কর‌ো ইয়া মার‌ো)" },
+      "D": { "en": "Jai Hind", "bn": "জয় হিন্দ" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "During the Quit India Movement launched on 8 August 1942, Mahatma Gandhi gave the historic slogan 'Do or Die' (Karo ya Maro) at the Gowalia Tank Maidan (now August Kranti Maidan) in Mumbai. The movement was a mass civil disobedience movement demanding immediate independence from British rule.",
+      "bn": "১৯৪২ সালের ৮ আগস্ট ভারত ছাড়ো আন্দোলনের সময় মহাত্মা গান্ধী মুম্বাইয়ের গোয়ালিয়া ট্যাঙ্ক ময়দানে (এখন অগাস্ট ক্রান্তি ময়দান) ঐতিহাসিক স্লোগান 'করো অথবা মরো' (Karo ya Maro) দিয়েছিলেন। এই আন্দোলন ছিল ব্রিটিশ শাসন থেকে অবিলম্বে স্বাধীনতার দাবিতে একটি গণ-অসহযোগ আন্দোলন।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2019 | WBPSC Clerkship 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "partition-independence",
+    "subtopicSlug": "partition-bengal-1905",
+    "stem": {
+      "en": "The Partition of Bengal (1905) was annulled by the British Government in which year?",
+      "bn": "বঙ্গভঙ্গ (১৯০৫) ব্রিটিশ সরকার কত সালে বাতিল করেছিল?"
+    },
+    "options": {
+      "A": { "en": "1909", "bn": "১৯০৯" },
+      "B": { "en": "1911", "bn": "১৯১১" },
+      "C": { "en": "1913", "bn": "১৯১৩" },
+      "D": { "en": "1916", "bn": "১৯১৬" }
+    },
+    "correctOption": "B",
+    "explanation": {
+      "en": "The Partition of Bengal was carried out on 16 October 1905 by Viceroy Lord Curzon, dividing Bengal into East Bengal (with Assam) and West Bengal. Massive protests, including the Swadeshi movement, led to its annulment on 12 December 1911 during the Delhi Durbar of King George V.",
+      "bn": "১৯০৫ সালের ১৬ অক্টোবর ভাইসরয় লর্ড কার্জন বাংলাকে পূর্ববঙ্গ (আসামসহ) ও পশ্চিমবঙ্গে বিভক্ত করেন। স্বদেশী আন্দোলনসহ ব্যাপক প্রতিবাদের ফলে ১৯১১ সালের ১২ ডিসেম্বর পঞ্চম জর্জের দিল্লি দরবারে বঙ্গভঙ্গ বাতিল ঘোষণা করা হয়।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2023 | WBPSC Food SI 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "colonial-era-governance",
+    "subtopicSlug": "governor-generals-viceroys",
+    "stem": {
+      "en": "Who was the first Governor-General of independent India?",
+      "bn": "স্বাধীন ভারতের প্রথম গভর্নর জেনারেল কে ছিলেন?"
+    },
+    "options": {
+      "A": { "en": "Lord Mountbatten", "bn": "লর্ড মাউন্টব্যাটেন" },
+      "B": { "en": "C. Rajagopalachari", "bn": "সি. রাজাগোপালাচারী" },
+      "C": { "en": "Jawaharlal Nehru", "bn": "জওহরলাল নেহরু" },
+      "D": { "en": "Sardar Vallabhbhai Patel", "bn": "সর্দার বল্লভভাই প্যাটেল" }
+    },
+    "correctOption": "A",
+    "explanation": {
+      "en": "Lord Mountbatten became the first Governor-General of independent India (15 August 1947 – 21 June 1948). He was succeeded by C. Rajagopalachari (Rajaji), who became the last and only Indian Governor-General (21 June 1948 – 26 January 1950). On 26 January 1950, India became a Republic with Dr. Rajendra Prasad as the first President.",
+      "bn": "লর্ড মাউন্টব্যাটেন স্বাধীন ভারতের প্রথম গভর্নর জেনারেল হন (১৫ আগস্ট ১৯৪৭ – ২১ জুন ১৯৪৮)। তাঁর পরে সি. রাজাগোপালাচারী (রাজাজি) ভারতের শেষ এবং একমাত্র ভারতীয় গভর্নর জেনারেল হন (২১ জুন ১৯৪৮ – ২৬ জানুয়ারি ১৯৫০)। ২৬ জানুয়ারি ১৯৫০ সালে ভারত প্রজাতন্ত্র হয় এবং ডাঃ রাজেন্দ্র প্রসাদ প্রথম রাষ্ট্রপতি হন।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2022 | WBPSC Miscellaneous 2021",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "freedom-movement-phases",
+    "subtopicSlug": "salt-satyagraha-dandi-march",
+    "stem": {
+      "en": "On which date did Mahatma Gandhi start the historic Dandi March (Salt Satyagraha)?",
+      "bn": "মহাত্মা গান্ধী কত তারিখে ঐতিহাসিক ডান্ডি অভিযান (লবণ সত্যাগ্রহ) শুরু করেন?"
+    },
+    "options": {
+      "A": { "en": "12 March 1930", "bn": "১২ মার্চ ১৯৩০" },
+      "B": { "en": "6 April 1930", "bn": "৬ এপ্রিল ১৯৩০" },
+      "C": { "en": "26 January 1930", "bn": "২৬ জানুয়ারি ১৯৩০" },
+      "D": { "en": "1 August 1920", "bn": "১ আগস্ট ১৯২০" }
+    },
+    "correctOption": "A",
+    "explanation": {
+      "en": "Mahatma Gandhi started the Dandi March on 12 March 1930 from Sabarmati Ashram (Ahmedabad) with 78 followers, covering 241 miles to the coastal village of Dandi. He reached Dandi on 6 April 1930 and broke the Salt Law by picking up salt from the seashore, launching the Civil Disobedience Movement.",
+      "bn": "মহাত্মা গান্ধী ১৯৩০ সালের ১২ মার্চ ৭৮ জন অনুগামী নিয়ে সবরমতী আশ্রম (আহমেদাবাদ) থেকে ডান্ডি অভিযান শুরু করেন এবং ২৪১ মাইল পথ পেরিয়ে উপকূলীয় গ্রাম ডান্ডিতে পৌঁছান। ১৯৩০ সালের ৬ এপ্রিল সমুদ্র সৈকত থেকে লবণ তুলে লবণ আইন ভঙ্গ করেন এবং আইন অমান্য আন্দোলন শুরু করেন।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2018 | WBPSC Clerkship 2019",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "bengal-renaissance",
+    "subtopicSlug": "widow-remarriage-act-1856",
+    "stem": {
+      "en": "The Hindu Widows' Remarriage Act of 1856 was passed during the tenure of which Governor-General?",
+      "bn": "হিন্দু বিধবা বিবাহ আইন ১৮৫৬ কোন গভর্নর জেনারেলের আমলে পাস হয়েছিল?"
+    },
+    "options": {
+      "A": { "en": "Lord Dalhousie", "bn": "লর্ড ডালহৌসি" },
+      "B": { "en": "Lord Canning", "bn": "লর্ড ক্যানিং" },
+      "C": { "en": "Lord Bentinck", "bn": "লর্ড বেন্টিঙ্ক" },
+      "D": { "en": "Lord Ripon", "bn": "লর্ড রিপন" }
+    },
+    "correctOption": "A",
+    "explanation": {
+      "en": "The Hindu Widows' Remarriage Act was passed on 26 July 1856 during the tenure of Lord Dalhousie (1848–1856). It was largely due to the relentless campaign by Ishwar Chandra Vidyasagar. This act legitimised the remarriage of Hindu widows across India.",
+      "bn": "হিন্দু বিধবা বিবাহ আইন ১৮৫৬ সালের ২৬ জুলাই লর্ড ডালহৌসির আমলে (১৮৪৮-১৮৫৬) পাস হয়। মূলত ঈশ্বরচন্দ্র বিদ্যাসাগরের অক্লান্ত প্রচেষ্টায় এই আইন কার্যকর হয়। এই আইন ভারতে হিন্দু বিধবাদের পুনর্বিবাহকে আইনসিদ্ধ করে।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBPSC Clerkship 2021 | WBCS Prelims 2020",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "history-national-movement",
+    "chapterSlug": "freedom-movement-phases",
+    "subtopicSlug": "khilafat-movement",
+    "stem": {
+      "en": "The Khilafat Movement in India (1919-1924) was launched to protest against the:",
+      "bn": "ভারতে খিলাফত আন্দোলন (১৯১৯-১৯২৪) কীসের বিরুদ্ধে প্রতিবাদে শুরু হয়েছিল?"
+    },
+    "options": {
+      "A": { "en": "Partition of Bengal by Lord Curzon", "bn": "লর্ড কার্জনের বঙ্গভঙ্গ" },
+      "B": { "en": "Jallianwala Bagh Massacre of 1919", "bn": "১৯১৯ সালের জালিয়ানওয়ালাবাগ হত্যাকাণ্ড" },
+      "C": { "en": "Dismemberment of the Ottoman Caliphate (Khalifa) after WWI", "bn": "প্রথম বিশ্বযুদ্ধের পরে অটোমান খিলাফতের (খলিফা) বিভক্তি" },
+      "D": { "en": "Implementation of the Rowlatt Act of 1919", "bn": "১৯১৯ সালের রওলাট আইনের প্রয়োগ" }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "The Khilafat Movement was launched by Mohammed Ali and Shaukat Ali (the Ali Brothers) to protest against the dismemberment of the Ottoman Empire and the abolition of the Caliphate after World War I. Gandhiji supported it to forge Hindu-Muslim unity and merged it with the Non-Cooperation Movement.",
+      "bn": "খিলাফত আন্দোলন মহম্মদ আলি ও শওকত আলি (আলি ভ্রাতৃদ্বয়) প্রথম বিশ্বযুদ্ধের পরে অটোমান সাম্রাজ্যের বিভক্তি ও খিলাফত বিলুপ্তির প্রতিবাদে শুরু করেন। গান্ধীজি হিন্দু-মুসলিম ঐক্যের জন্য এই আন্দোলনকে সমর্থন করেন এবং অসহযোগ আন্দোলনের সাথে একীভূত করেন।"
+    },
+    "difficulty": "moderate",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2021",
+    "isActive": true
+  }
+]

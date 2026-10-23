@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { examRoutes } from "./routes/exam";
+import { ingestionRoutes } from "./routes/ingestion";
 import { closeDbConnection } from "./db/index";
 
 const app = Fastify({
@@ -18,8 +19,31 @@ app.get("/health", async () => {
   };
 });
 
+// CORS for the web admin console (origins from CORS_ALLOWED_ORIGINS, comma-separated)
+const allowedOrigins = new Set(
+  (process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean)
+);
+app.addHook("onRequest", async (request, reply) => {
+  const origin = request.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    reply.header("Access-Control-Allow-Origin", origin);
+    reply.header("Vary", "Origin");
+    reply.header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+    reply.header("Access-Control-Allow-Headers", "Content-Type,x-admin-key");
+  }
+  if (request.method === "OPTIONS") {
+    return reply.status(204).send();
+  }
+});
+
 // Register deterministic exam & grading routes
 app.register(examRoutes);
+
+// Bulk question import → staging → educator review (admin only)
+app.register(ingestionRoutes, { prefix: "/admin/ingestion" });
 
 // Graceful shutdown for Google Cloud Run SIGTERM
 const shutdown = async (signal: string) => {

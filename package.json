@@ -20,12 +20,18 @@
     "lint": "tsc --noEmit",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
+    "infra:reset": "docker compose down -v && docker compose up -d",
     "infra:logs": "docker compose logs -f",
     "dev:web": "npm --workspace=apps/web run dev",
     "dev:api-core": "npm --workspace=apps/api-core run dev",
     "dev:mobile:lan": "npm --workspace=apps/mobile run start -- --lan",
     "dev:api-ai": "cd apps/api-ai && uvicorn app.main:app --reload --host 0.0.0.0 --port 8081",
-    "typecheck:shared": "npm --workspace=@wbpsc/shared-types run typecheck"
+    "typecheck:shared": "npm --workspace=@wbpsc/shared-types run typecheck",
+    "db:push": "npm --workspace=apps/api-core run db:push",
+    "seed:syllabus": "tsx scripts/seed-syllabus.ts",
+    "seed": "tsx scripts/seed-postgres.ts",
+    "seed:dry": "tsx scripts/seed-postgres.ts --dry-run",
+    "seed:file": "tsx scripts/seed-postgres.ts --file="
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

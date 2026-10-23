@@ -1,0 +1,116 @@
+[
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "polity-constitution",
+    "chapterSlug": "panchayati-raj-local-bodies",
+    "subtopicSlug": "73rd-74th-constitutional-amendment",
+    "stem": {
+      "en": "Which Schedule was added to the Constitution of India by the 73rd Constitutional Amendment Act, 1992?",
+      "bn": "১৯৯২ সালের ৭৩তম সংবিধান সংশোধনী আইনের মাধ্যমে ভারতীয় সংবিধানে কোন তফসিলটি (Schedule) যুক্ত করা হয়েছে?"
+    },
+    "options": {
+      "A": {
+        "en": "9th Schedule",
+        "bn": "নবম তফসিল (9th Schedule)"
+      },
+      "B": {
+        "en": "10th Schedule",
+        "bn": "দশম তফসিল (10th Schedule)"
+      },
+      "C": {
+        "en": "11th Schedule",
+        "bn": "একাদশ তফসিল (11th Schedule)"
+      },
+      "D": {
+        "en": "12th Schedule",
+        "bn": "দ্বাদশ তফসিল (12th Schedule)"
+      }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "The 73rd Amendment Act (1992) added Part IX (Articles 243 to 243-O) and the 11th Schedule containing 29 functional items of the Panchayats.",
+      "bn": "১৯৯২ সালের ৭৩তম সংবিধান সংশোধনী আইনের মাধ্যমে সংবিধানে একাদশ তফসিল (11th Schedule) যুক্ত হয়, যেখানে পঞ্চায়েতের ২৯টি কার্যকরী বিষয়ের উল্লেখ আছে।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2023",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "indian-economy",
+    "chapterSlug": "banking-monetary-policy",
+    "subtopicSlug": "rbi-monetary-policy-instruments",
+    "stem": {
+      "en": "On the recommendation of which Commission was the Reserve Bank of India (RBI) established under the RBI Act, 1934?",
+      "bn": "কোন কমিশনের সুপারিশে ১৯৩৪ সালের আরবিআই আইন অনুযায়ী ভারতীয় রিজার্ভ ব্যাংক (RBI) প্রতিষ্ঠিত হয়েছিল?"
+    },
+    "options": {
+      "A": {
+        "en": "Hilton Young Commission",
+        "bn": "হিলটন ইয়ং কমিশন"
+      },
+      "B": {
+        "en": "Nariman Committee",
+        "bn": "নরিম্যান কমিটি"
+      },
+      "C": {
+        "en": "Narasimham Committee",
+        "bn": "নরসিমহম কমিটি"
+      },
+      "D": {
+        "en": "C. Rangarajan Committee",
+        "bn": "সি. রঙ্গরাজন কমিটি"
+      }
+    },
+    "correctOption": "A",
+    "explanation": {
+      "en": "RBI was established on 1 April 1935 in Kolkata based on the recommendations of the Royal Commission on Indian Currency and Finance (Hilton Young Commission, 1926).",
+      "bn": "১৯২৬ সালের হিলটন ইয়ং কমিশনের (Royal Commission on Indian Currency and Finance) সুপারিশে ১৯৩৫ সালের ১লা এপ্রিল কলকাতায় ভারতীয় রিজার্ভ ব্যাংক প্রতিষ্ঠিত হয়।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBCS Prelims 2022",
+    "isActive": true
+  },
+  {
+    "examSlug": "wbcs-prelims",
+    "subjectSlug": "general-science-environment",
+    "chapterSlug": "biology-human-health",
+    "subtopicSlug": "vitamins-enzymes-nutrition",
+    "stem": {
+      "en": "Which metal ion is present at the core of the Vitamin B12 (Cyanocobalamin) molecule?",
+      "bn": "ভিটামিন B12 (সায়ানোকোবালামিন) অণুর কেন্দ্রে কোন ধাতব আয়নটি উপস্থিত থাকে?"
+    },
+    "options": {
+      "A": {
+        "en": "Magnesium (Mg)",
+        "bn": "ম্যাগনেসিয়াম (Mg)"
+      },
+      "B": {
+        "en": "Iron (Fe)",
+        "bn": "লোহা (Fe)"
+      },
+      "C": {
+        "en": "Cobalt (Co)",
+        "bn": "কোবাল্ট (Co)"
+      },
+      "D": {
+        "en": "Zinc (Zn)",
+        "bn": "জিঙ্ক (Zn)"
+      }
+    },
+    "correctOption": "C",
+    "explanation": {
+      "en": "Vitamin B12 is chemically known as Cyanocobalamin because it contains a Cobalt (Co) ion coordinated at the center of a corrin ring.",
+      "bn": "ভিটামিন B12-এর রাসায়নিক নাম সায়ানোকোবালামিন, যার করিন বলয়ের কেন্দ্রে কোবাল্ট (Cobalt) ধাতব আয়ন থাকে।"
+    },
+    "difficulty": "easy",
+    "marksPositive": 1,
+    "marksNegative": 0.33,
+    "previousYearTag": "WBPSC Clerkship / WBCS 2021",
+    "isActive": true
+  }
+]

@@ -38,9 +38,15 @@ service cloud.firestore {
         && request.auth.token.email == 'pankaj2007acharjee@gmail.com';
     }
 
+    // Single-admin policy: only the verified bootstrap email is ever an Admin
+    // (the /admins collection is informational and grants nothing).
     function isAdmin() {
-      return isBootstrapAdmin()
-        || (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+      return isBootstrapAdmin();
+    }
+
+    // The 'admin' role may only sit on the bootstrap admin's own profile
+    function isAllowedRole(d, userId) {
+      return d.role != 'admin' || (isOwner(userId) && isBootstrapAdmin());
     }
 
     function isEducatorOrAdmin() {
@@ -446,6 +452,7 @@ service cloud.firestore {
         && incoming().uid == userId
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
+        && isAllowedRole(incoming(), userId)
         && (
           // Action 1: Self-Registration as standard Aspirant (Zero-Trust: cannot self-assign admin/pro)
           (isOwner(userId)
@@ -465,6 +472,7 @@ service cloud.firestore {
         && incoming().email == existing().email
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
+        && isAllowedRole(incoming(), userId)
         && (
           // Action 1: Aspirant updating own preferences or AI quota counter (cannot touch role, subscriptionTier, or isActive)
           (isOwner(userId)
