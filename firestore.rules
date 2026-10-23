@@ -1,0 +1,726 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Hardened Primitives
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Bootstrapped Admin (Runtime user email with strictly verified token) OR /admins/{uid} document lookup
+    function isBootstrapAdmin() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'pankaj2007acharjee@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin()
+        || (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isEducatorOrAdmin() {
+      return isAdmin()
+        || (isSignedIn()
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'educator'
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true);
+    }
+
+    function isValidExamSlug(slug) {
+      return slug is string && slug in [
+        'wbcs-prelims',
+        'wbcs-mains',
+        'wbpsc-clerkship-part1',
+        'wbpsc-clerkship-part2',
+        'wbpsc-miscellaneous',
+        'wbpsc-food-si',
+        'wbp-constable-si'
+      ];
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Anti-Update-Gap)
+    // =========================================================================
+
+    function isValidUserProfile(d) {
+      return d.keys().hasAll([
+          'uid',
+          'email',
+          'displayName',
+          'role',
+          'subscriptionTier',
+          'preferredLanguage',
+          'targetExamSlug',
+          'dailyAiQueriesUsed',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && d.keys().hasOnly([
+          'uid',
+          'email',
+          'displayName',
+          'role',
+          'subscriptionTier',
+          'preferredLanguage',
+          'targetExamSlug',
+          'dailyAiQueriesUsed',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(d.uid)
+        && d.email is string && d.email.size() >= 3 && d.email.size() <= 254
+        && d.displayName is string && d.displayName.size() >= 1 && d.displayName.size() <= 120
+        && d.role is string && d.role in ['aspirant', 'educator', 'admin']
+        && d.subscriptionTier is string && d.subscriptionTier in ['free', 'pro_prelims', 'wbcs_executive_pass']
+        && d.preferredLanguage is string && d.preferredLanguage in ['en', 'bn']
+        && isValidExamSlug(d.targetExamSlug)
+        && d.dailyAiQueriesUsed is int && d.dailyAiQueriesUsed >= 0 && d.dailyAiQueriesUsed <= 1000
+        && d.isActive is bool
+        && d.createdAt is timestamp
+        && d.updatedAt is timestamp;
+    }
+
+    function isValidAdminRegistry(d) {
+      return d.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt'])
+        && d.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt'])
+        && isValidId(d.uid)
+        && d.email is string && d.email.size() >= 3 && d.email.size() <= 254
+        && d.grantedBy is string && d.grantedBy.size() >= 1 && d.grantedBy.size() <= 128
+        && d.createdAt is timestamp;
+    }
+
+    function isValidExamConfig(d) {
+      return d.keys().hasAll([
+          'id',
+          'slug',
+          'titleEn',
+          'titleBn',
+          'descriptionEn',
+          'descriptionBn',
+          'totalQuestions',
+          'durationMinutes',
+          'marksPerCorrect',
+          'negativeMarksPerWrong',
+          'estimatedCutoffMarks',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && d.keys().hasOnly([
+          'id',
+          'slug',
+          'titleEn',
+          'titleBn',
+          'descriptionEn',
+          'descriptionBn',
+          'totalQuestions',
+          'durationMinutes',
+          'marksPerCorrect',
+          'negativeMarksPerWrong',
+          'estimatedCutoffMarks',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(d.id)
+        && isValidExamSlug(d.slug)
+        && d.titleEn is string && d.titleEn.size() >= 2 && d.titleEn.size() <= 200
+        && d.titleBn is string && d.titleBn.size() >= 2 && d.titleBn.size() <= 200
+        && d.descriptionEn is string && d.descriptionEn.size() >= 2 && d.descriptionEn.size() <= 600
+        && d.descriptionBn is string && d.descriptionBn.size() >= 2 && d.descriptionBn.size() <= 600
+        && d.totalQuestions is int && d.totalQuestions >= 1 && d.totalQuestions <= 300
+        && d.durationMinutes is int && d.durationMinutes >= 5 && d.durationMinutes <= 360
+        && (d.marksPerCorrect is int || d.marksPerCorrect is float) && d.marksPerCorrect > 0 && d.marksPerCorrect <= 10
+        && (d.negativeMarksPerWrong is int || d.negativeMarksPerWrong is float) && d.negativeMarksPerWrong >= 0 && d.negativeMarksPerWrong <= 5
+        && (d.estimatedCutoffMarks is int || d.estimatedCutoffMarks is float) && d.estimatedCutoffMarks >= 0 && d.estimatedCutoffMarks <= 1000
+        && d.isActive is bool
+        && d.createdAt is timestamp
+        && d.updatedAt is timestamp;
+    }
+
+    function isValidBilingualQuestion(d) {
+      return d.keys().hasAll([
+          'id',
+          'examId',
+          'examSlug',
+          'subjectNameEn',
+          'subjectNameBn',
+          'subtopicSlug',
+          'subtopicNameEn',
+          'subtopicNameBn',
+          'stemEn',
+          'stemBn',
+          'optionAEn',
+          'optionABn',
+          'optionBEn',
+          'optionBBn',
+          'optionCEn',
+          'optionCBn',
+          'optionDEn',
+          'optionDBn',
+          'correctOption',
+          'explanationEn',
+          'explanationBn',
+          'difficulty',
+          'marksPositive',
+          'marksNegative',
+          'previousYearTag',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && d.keys().hasOnly([
+          'id',
+          'examId',
+          'examSlug',
+          'subjectNameEn',
+          'subjectNameBn',
+          'subtopicSlug',
+          'subtopicNameEn',
+          'subtopicNameBn',
+          'stemEn',
+          'stemBn',
+          'optionAEn',
+          'optionABn',
+          'optionBEn',
+          'optionBBn',
+          'optionCEn',
+          'optionCBn',
+          'optionDEn',
+          'optionDBn',
+          'correctOption',
+          'explanationEn',
+          'explanationBn',
+          'difficulty',
+          'marksPositive',
+          'marksNegative',
+          'previousYearTag',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(d.id)
+        && isValidId(d.examId)
+        && isValidExamSlug(d.examSlug)
+        && d.subjectNameEn is string && d.subjectNameEn.size() >= 2 && d.subjectNameEn.size() <= 160
+        && d.subjectNameBn is string && d.subjectNameBn.size() >= 2 && d.subjectNameBn.size() <= 160
+        && isValidId(d.subtopicSlug)
+        && d.subtopicNameEn is string && d.subtopicNameEn.size() >= 2 && d.subtopicNameEn.size() <= 200
+        && d.subtopicNameBn is string && d.subtopicNameBn.size() >= 2 && d.subtopicNameBn.size() <= 200
+        && d.stemEn is string && d.stemEn.size() >= 5 && d.stemEn.size() <= 1500
+        && d.stemBn is string && d.stemBn.size() >= 5 && d.stemBn.size() <= 1500
+        && d.optionAEn is string && d.optionAEn.size() >= 1 && d.optionAEn.size() <= 500
+        && d.optionABn is string && d.optionABn.size() >= 1 && d.optionABn.size() <= 500
+        && d.optionBEn is string && d.optionBEn.size() >= 1 && d.optionBEn.size() <= 500
+        && d.optionBBn is string && d.optionBBn.size() >= 1 && d.optionBBn.size() <= 500
+        && d.optionCEn is string && d.optionCEn.size() >= 1 && d.optionCEn.size() <= 500
+        && d.optionCBn is string && d.optionCBn.size() >= 1 && d.optionCBn.size() <= 500
+        && d.optionDEn is string && d.optionDEn.size() >= 1 && d.optionDEn.size() <= 500
+        && d.optionDBn is string && d.optionDBn.size() >= 1 && d.optionDBn.size() <= 500
+        && d.correctOption is string && d.correctOption in ['A', 'B', 'C', 'D']
+        && d.explanationEn is string && d.explanationEn.size() >= 5 && d.explanationEn.size() <= 2000
+        && d.explanationBn is string && d.explanationBn.size() >= 5 && d.explanationBn.size() <= 2000
+        && d.difficulty is string && d.difficulty in ['easy', 'moderate', 'hard']
+        && (d.marksPositive is int || d.marksPositive is float) && d.marksPositive > 0 && d.marksPositive <= 10
+        && (d.marksNegative is int || d.marksNegative is float) && d.marksNegative >= 0 && d.marksNegative <= 5
+        && d.previousYearTag is string && d.previousYearTag.size() >= 1 && d.previousYearTag.size() <= 120
+        && d.isActive is bool
+        && d.createdAt is timestamp
+        && d.updatedAt is timestamp;
+    }
+
+    function isValidTestAttempt(d) {
+      return d.keys().hasAll([
+          'id',
+          'userId',
+          'userEmail',
+          'userName',
+          'examId',
+          'examSlug',
+          'examTitleEn',
+          'examTitleBn',
+          'totalQuestions',
+          'attemptedCount',
+          'correctCount',
+          'incorrectCount',
+          'unansweredCount',
+          'finalNetScore',
+          'maxPossibleScore',
+          'accuracyPercentage',
+          'totalTimeSpentSeconds',
+          'cutoffCleared',
+          'weakSubtopicsCount',
+          'status',
+          'createdAt'
+        ])
+        && d.keys().hasOnly([
+          'id',
+          'userId',
+          'userEmail',
+          'userName',
+          'examId',
+          'examSlug',
+          'examTitleEn',
+          'examTitleBn',
+          'totalQuestions',
+          'attemptedCount',
+          'correctCount',
+          'incorrectCount',
+          'unansweredCount',
+          'finalNetScore',
+          'maxPossibleScore',
+          'accuracyPercentage',
+          'totalTimeSpentSeconds',
+          'cutoffCleared',
+          'weakSubtopicsCount',
+          'status',
+          'createdAt'
+        ])
+        && isValidId(d.id)
+        && isValidId(d.userId)
+        && d.userEmail is string && d.userEmail.size() >= 3 && d.userEmail.size() <= 254
+        && d.userName is string && d.userName.size() >= 1 && d.userName.size() <= 120
+        && isValidId(d.examId)
+        && isValidExamSlug(d.examSlug)
+        && d.examTitleEn is string && d.examTitleEn.size() >= 2 && d.examTitleEn.size() <= 200
+        && d.examTitleBn is string && d.examTitleBn.size() >= 2 && d.examTitleBn.size() <= 200
+        && d.totalQuestions is int && d.totalQuestions >= 1 && d.totalQuestions <= 300
+        && d.attemptedCount is int && d.attemptedCount >= 0 && d.attemptedCount <= 300
+        && d.correctCount is int && d.correctCount >= 0 && d.correctCount <= 300
+        && d.incorrectCount is int && d.incorrectCount >= 0 && d.incorrectCount <= 300
+        && d.unansweredCount is int && d.unansweredCount >= 0 && d.unansweredCount <= 300
+        && (d.finalNetScore is int || d.finalNetScore is float) && d.finalNetScore >= -300 && d.finalNetScore <= 1000
+        && (d.maxPossibleScore is int || d.maxPossibleScore is float) && d.maxPossibleScore > 0 && d.maxPossibleScore <= 1000
+        && (d.accuracyPercentage is int || d.accuracyPercentage is float) && d.accuracyPercentage >= 0 && d.accuracyPercentage <= 100
+        && d.totalTimeSpentSeconds is int && d.totalTimeSpentSeconds >= 0 && d.totalTimeSpentSeconds <= 86400
+        && d.cutoffCleared is bool
+        && d.weakSubtopicsCount is int && d.weakSubtopicsCount >= 0 && d.weakSubtopicsCount <= 100
+        && d.status is string && d.status == 'submitted'
+        && d.createdAt is timestamp;
+    }
+
+    function isValidSubtopicMastery(d) {
+      return d.keys().hasAll([
+          'id',
+          'userId',
+          'examId',
+          'examSlug',
+          'subtopicSlug',
+          'subtopicNameEn',
+          'subtopicNameBn',
+          'subjectNameEn',
+          'subjectNameBn',
+          'totalEncountered',
+          'totalCorrect',
+          'totalIncorrect',
+          'accuracyPercentage',
+          'avgTimeSeconds',
+          'masteryBand',
+          'aiNoteCacheKey',
+          'updatedAt'
+        ])
+        && d.keys().hasOnly([
+          'id',
+          'userId',
+          'examId',
+          'examSlug',
+          'subtopicSlug',
+          'subtopicNameEn',
+          'subtopicNameBn',
+          'subjectNameEn',
+          'subjectNameBn',
+          'totalEncountered',
+          'totalCorrect',
+          'totalIncorrect',
+          'accuracyPercentage',
+          'avgTimeSeconds',
+          'masteryBand',
+          'aiNoteCacheKey',
+          'updatedAt'
+        ])
+        && isValidId(d.id)
+        && isValidId(d.userId)
+        && isValidId(d.examId)
+        && isValidExamSlug(d.examSlug)
+        && isValidId(d.subtopicSlug)
+        && d.subtopicNameEn is string && d.subtopicNameEn.size() >= 2 && d.subtopicNameEn.size() <= 200
+        && d.subtopicNameBn is string && d.subtopicNameBn.size() >= 2 && d.subtopicNameBn.size() <= 200
+        && d.subjectNameEn is string && d.subjectNameEn.size() >= 2 && d.subjectNameEn.size() <= 160
+        && d.subjectNameBn is string && d.subjectNameBn.size() >= 2 && d.subjectNameBn.size() <= 160
+        && d.totalEncountered is int && d.totalEncountered >= 1 && d.totalEncountered <= 10000
+        && d.totalCorrect is int && d.totalCorrect >= 0 && d.totalCorrect <= 10000
+        && d.totalIncorrect is int && d.totalIncorrect >= 0 && d.totalIncorrect <= 10000
+        && (d.accuracyPercentage is int || d.accuracyPercentage is float) && d.accuracyPercentage >= 0 && d.accuracyPercentage <= 100
+        && (d.avgTimeSeconds is int || d.avgTimeSeconds is float) && d.avgTimeSeconds >= 0 && d.avgTimeSeconds <= 7200
+        && d.masteryBand is string && d.masteryBand in ['critical_weakness', 'needs_revision', 'proficient', 'exam_ready']
+        && d.aiNoteCacheKey is string && d.aiNoteCacheKey.size() >= 5 && d.aiNoteCacheKey.size() <= 320
+        && d.updatedAt is timestamp;
+    }
+
+    function isValidAiNoteCache(d) {
+      return d.keys().hasAll([
+          'id',
+          'canonicalKey',
+          'examSlug',
+          'topicSlug',
+          'topicTitleEn',
+          'topicTitleBn',
+          'language',
+          'contentMarkdown',
+          'mnemonicsText',
+          'modelUsed',
+          'hitCount',
+          'createdByUid',
+          'createdAt',
+          'updatedAt'
+        ])
+        && d.keys().hasOnly([
+          'id',
+          'canonicalKey',
+          'examSlug',
+          'topicSlug',
+          'topicTitleEn',
+          'topicTitleBn',
+          'language',
+          'contentMarkdown',
+          'mnemonicsText',
+          'modelUsed',
+          'hitCount',
+          'createdByUid',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(d.id)
+        && d.canonicalKey is string && d.canonicalKey.size() >= 5 && d.canonicalKey.size() <= 320
+        && isValidExamSlug(d.examSlug)
+        && isValidId(d.topicSlug)
+        && d.topicTitleEn is string && d.topicTitleEn.size() >= 2 && d.topicTitleEn.size() <= 240
+        && d.topicTitleBn is string && d.topicTitleBn.size() >= 2 && d.topicTitleBn.size() <= 240
+        && d.language is string && d.language in ['en', 'bn']
+        && d.contentMarkdown is string && d.contentMarkdown.size() >= 10 && d.contentMarkdown.size() <= 20000
+        && d.mnemonicsText is string && d.mnemonicsText.size() >= 2 && d.mnemonicsText.size() <= 2000
+        && d.modelUsed is string && d.modelUsed.size() >= 2 && d.modelUsed.size() <= 80
+        && d.hitCount is int && d.hitCount >= 1 && d.hitCount <= 1000000
+        && isValidId(d.createdByUid)
+        && d.createdAt is timestamp
+        && d.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection 1: /users/{userId} (PII Isolated & RBAC Hardened)
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && isAdmin();
+
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Self-Registration as standard Aspirant (Zero-Trust: cannot self-assign admin/pro)
+          (isOwner(userId)
+            && incoming().role == 'aspirant'
+            && incoming().subscriptionTier == 'free'
+            && incoming().dailyAiQueriesUsed == 0
+            && incoming().isActive == true)
+          ||
+          // Action 2: Bootstrap Admin or existing Admin provisioning a profile
+          isAdmin()
+        );
+
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Aspirant updating own preferences or AI quota counter (cannot touch role, subscriptionTier, or isActive)
+          (isOwner(userId)
+            && incoming().role == existing().role
+            && incoming().subscriptionTier == existing().subscriptionTier
+            && incoming().isActive == existing().isActive
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName',
+              'preferredLanguage',
+              'targetExamSlug',
+              'dailyAiQueriesUsed',
+              'updatedAt'
+            ]))
+          ||
+          // Action 2: Admin managing user role, subscription tier, or active status
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName',
+              'role',
+              'subscriptionTier',
+              'preferredLanguage',
+              'targetExamSlug',
+              'dailyAiQueriesUsed',
+              'isActive',
+              'updatedAt'
+            ]))
+        );
+
+      allow delete: if isSignedIn() && isValidId(userId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 2: /admins/{adminUid} (Zero-Trust Admin Lookup Table)
+    // =========================================================================
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
+      allow list: if isSignedIn() && isAdmin();
+
+      allow create: if isSignedIn()
+        && isValidId(adminUid)
+        && isValidAdminRegistry(incoming())
+        && incoming().uid == adminUid
+        && incoming().grantedBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && isAdmin();
+
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(adminUid) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 3: /exams/{examId} (WBPSC Exam Configurations)
+    // =========================================================================
+    match /exams/{examId} {
+      allow get: if isSignedIn() && isValidId(examId) && (existing().isActive == true || isAdmin());
+      allow list: if isSignedIn() && (existing().isActive == true || isAdmin());
+
+      allow create: if isSignedIn()
+        && isValidId(examId)
+        && isValidExamConfig(incoming())
+        && incoming().id == examId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isAdmin();
+
+      allow update: if isSignedIn()
+        && isValidId(examId)
+        && isValidExamConfig(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'slug',
+          'titleEn',
+          'titleBn',
+          'descriptionEn',
+          'descriptionBn',
+          'totalQuestions',
+          'durationMinutes',
+          'marksPerCorrect',
+          'negativeMarksPerWrong',
+          'estimatedCutoffMarks',
+          'isActive',
+          'updatedAt'
+        ])
+        && isAdmin();
+
+      allow delete: if isSignedIn() && isValidId(examId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 4: /questions/{questionId} (Bilingual MCQ Bank)
+    // =========================================================================
+    match /questions/{questionId} {
+      allow get: if isSignedIn() && isValidId(questionId) && (existing().isActive == true || isEducatorOrAdmin());
+      allow list: if isSignedIn() && (existing().isActive == true || isEducatorOrAdmin());
+
+      allow create: if isSignedIn()
+        && isValidId(questionId)
+        && isValidBilingualQuestion(incoming())
+        && incoming().id == questionId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isEducatorOrAdmin()
+        && exists(/databases/$(database)/documents/exams/$(incoming().examId));
+
+      allow update: if isSignedIn()
+        && isValidId(questionId)
+        && isValidBilingualQuestion(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'examId',
+          'examSlug',
+          'subjectNameEn',
+          'subjectNameBn',
+          'subtopicSlug',
+          'subtopicNameEn',
+          'subtopicNameBn',
+          'stemEn',
+          'stemBn',
+          'optionAEn',
+          'optionABn',
+          'optionBEn',
+          'optionBBn',
+          'optionCEn',
+          'optionCBn',
+          'optionDEn',
+          'optionDBn',
+          'correctOption',
+          'explanationEn',
+          'explanationBn',
+          'difficulty',
+          'marksPositive',
+          'marksNegative',
+          'previousYearTag',
+          'isActive',
+          'updatedAt'
+        ])
+        && isEducatorOrAdmin()
+        && exists(/databases/$(database)/documents/exams/$(incoming().examId));
+
+      allow delete: if isSignedIn() && isValidId(questionId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 5: /attempts/{attemptId} (Submitted Mock Test Attempts)
+    // =========================================================================
+    match /attempts/{attemptId} {
+      allow get: if isSignedIn() && isValidId(attemptId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn()
+        && isValidId(attemptId)
+        && isValidTestAttempt(incoming())
+        && incoming().id == attemptId
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/exams/$(incoming().examId));
+
+      // Terminal State Lock: Once submitted, only Admin can override/adjust an attempt
+      allow update: if isSignedIn()
+        && isValidId(attemptId)
+        && isValidTestAttempt(incoming())
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().examId == existing().examId
+        && incoming().createdAt == existing().createdAt
+        && isAdmin();
+
+      allow delete: if isSignedIn() && isValidId(attemptId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 6: /mastery/{masteryId} (Subtopic Mastery & Weakness Records)
+    // =========================================================================
+    match /mastery/{masteryId} {
+      allow get: if isSignedIn() && isValidId(masteryId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn()
+        && isValidId(masteryId)
+        && isValidSubtopicMastery(incoming())
+        && incoming().id == masteryId
+        && (incoming().userId == request.auth.uid || isAdmin())
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/exams/$(incoming().examId));
+
+      allow update: if isSignedIn()
+        && isValidId(masteryId)
+        && isValidSubtopicMastery(incoming())
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().examId == existing().examId
+        && incoming().subtopicSlug == existing().subtopicSlug
+        && incoming().updatedAt == request.time
+        && (
+          (existing().userId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'totalEncountered',
+              'totalCorrect',
+              'totalIncorrect',
+              'accuracyPercentage',
+              'avgTimeSeconds',
+              'masteryBand',
+              'updatedAt'
+            ]))
+          || isAdmin()
+        );
+
+      allow delete: if isSignedIn() && isValidId(masteryId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 7: /aiNotesCache/{noteId} (Shared L2 Cached Study Notes)
+    // =========================================================================
+    match /aiNotesCache/{noteId} {
+      allow get: if isSignedIn() && isValidId(noteId) && existing().language in ['en', 'bn'];
+      allow list: if isSignedIn() && existing().language in ['en', 'bn'];
+
+      allow create: if isSignedIn()
+        && isValidId(noteId)
+        && isValidAiNoteCache(incoming())
+        && incoming().id == noteId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(noteId)
+        && isValidAiNoteCache(incoming())
+        && incoming().id == existing().id
+        && incoming().canonicalKey == existing().canonicalKey
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Increment cache hit count on L2 cache read
+          (incoming().diff(existing()).affectedKeys().hasOnly(['hitCount', 'updatedAt'])
+            && incoming().hitCount == existing().hitCount + 1)
+          ||
+          // Action 2: Admin or Educator curating/updating cached note content
+          (isEducatorOrAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'topicTitleEn',
+              'topicTitleBn',
+              'contentMarkdown',
+              'mnemonicsText',
+              'modelUsed',
+              'hitCount',
+              'updatedAt'
+            ]))
+        );
+
+      allow delete: if isSignedIn() && isValidId(noteId) && isAdmin();
+    }
+  }
+}

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8" />
+  <title>WBPSC Daily Current Affairs — {{ edition_date }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Bengali:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 14mm 12mm 16mm 12mm;
+      @bottom-left {
+        content: "WBPSC AI Mock Test & Tutor • wbcs-prelims | clerkship | food-si | misc";
+        font-family: "Inter", "Noto Sans Bengali", sans-serif;
+        font-size: 7.5pt;
+        color: #64748b;
+      }
+      @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-family: "Inter", sans-serif;
+        font-size: 7.5pt;
+        font-weight: 600;
+        color: #334155;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Inter", "Noto Sans Bengali", sans-serif;
+      font-size: 9.5pt;
+      line-height: 1.52;
+      color: #0f172a;
+      background-color: #ffffff;
+      font-variant-ligatures: normal;
+      text-rendering: optimizeLegibility;
+    }
+
+    .bn-text {
+      font-family: "Noto Sans Bengali", "Inter", sans-serif;
+      line-height: 1.62;
+    }
+
+    /* Header Banner */
+    .header-banner {
+      border: 1.5px solid #0f172a;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: #f8fafc;
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand-title {
+      font-size: 15pt;
+      font-weight: 800;
+      color: #0f172a;
+      letter-spacing: -0.3px;
+    }
+
+    .brand-subtitle {
+      font-size: 9pt;
+      color: #047857;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    .meta-box {
+      text-align: right;
+    }
+
+    .date-badge {
+      display: inline-block;
+      background: #0f172a;
+      color: #ffffff;
+      font-size: 8.5pt;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 4px;
+    }
+
+    .exam-tags {
+      font-size: 7.5pt;
+      color: #475569;
+      margin-top: 4px;
+      font-weight: 600;
+    }
+
+    /* Section Headings */
+    .section-header {
+      background: #0f172a;
+      color: #ffffff;
+      padding: 6px 12px;
+      border-radius: 5px;
+      font-size: 10.5pt;
+      font-weight: 700;
+      margin: 12px 0 10px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* News Item Card */
+    .news-card {
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #059669;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      page-break-inside: avoid;
+      background: #ffffff;
+    }
+
+    .news-card.wb-special {
+      border-left-color: #d97706;
+      background: #fffbeb;
+    }
+
+    .news-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+
+    .category-label {
+      font-size: 7.5pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #047857;
+      letter-spacing: 0.4px;
+    }
+
+    .news-card.wb-special .category-label {
+      color: #b45309;
+    }
+
+    .syllabus-tag {
+      font-size: 7.5pt;
+      color: #475569;
+      font-weight: 600;
+    }
+
+    .headline-en {
+      font-size: 10.5pt;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 2px;
+    }
+
+    .headline-bn {
+      font-family: "Noto Sans Bengali", sans-serif;
+      font-size: 10.5pt;
+      font-weight: 700;
+      color: #065f46;
+      margin-bottom: 6px;
+    }
+
+    .bilingual-grid {
+      display: table;
+      width: 100%;
+      table-layout: fixed;
+      border-top: 1px dashed #cbd5e1;
+      padding-top: 6px;
+    }
+
+    .bilingual-col {
+      display: table-cell;
+      width: 50%;
+      vertical-align: top;
+      padding-right: 8px;
+    }
+
+    .bilingual-col + .bilingual-col {
+      padding-right: 0;
+      padding-left: 8px;
+      border-left: 1px solid #e2e8f0;
+    }
+
+    .col-label {
+      font-size: 7.5pt;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+      margin-bottom: 3px;
+    }
+
+    ul.bullet-list {
+      padding-left: 14px;
+      margin: 0;
+    }
+
+    ul.bullet-list li {
+      margin-bottom: 3px;
+      font-size: 8.8pt;
+    }
+
+    .static-gk-bar {
+      margin-top: 6px;
+      padding: 5px 8px;
+      background: #f1f5f9;
+      border-radius: 4px;
+      font-size: 8.2pt;
+      color: #1e293b;
+    }
+
+    /* Daily 5 MCQs Section */
+    .mcq-card {
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 9px 12px;
+      margin-bottom: 8px;
+      page-break-inside: avoid;
+    }
+
+    .mcq-stem-en {
+      font-weight: 700;
+      font-size: 9.2pt;
+      color: #0f172a;
+    }
+
+    .mcq-stem-bn {
+      font-family: "Noto Sans Bengali", sans-serif;
+      font-weight: 600;
+      font-size: 9.2pt;
+      color: #1e293b;
+      margin-bottom: 6px;
+    }
+
+    .options-grid {
+      display: table;
+      width: 100%;
+      table-layout: fixed;
+      margin-top: 4px;
+    }
+
+    .options-row {
+      display: table-row;
+    }
+
+    .option-cell {
+      display: table-cell;
+      width: 50%;
+      padding: 2px 6px 2px 0;
+      font-size: 8.5pt;
+      color: #334155;
+    }
+
+    .answer-key-box {
+      margin-top: 10px;
+      border: 1.5px solid #0f172a;
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: #f8fafc;
+      page-break-inside: avoid;
+    }
+
+    .answer-item {
+      margin-bottom: 5px;
+      font-size: 8.4pt;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header-banner">
+    <div>
+      <div class="brand-title">WBPSC AI Mock Test &amp; Tutor</div>
+      <div class="brand-subtitle bn-text">
+        দৈনিক কারেন্ট অ্যাফেয়ার্স ও সম্ভাব্য প্রশ্নোত্তর (Bilingual Daily Digest)
+      </div>
+    </div>
+    <div class="meta-box">
+      <div class="date-badge">{{ edition_date }}</div>
+      <div class="exam-tags">WBCS • Clerkship • Food SI • Miscellaneous</div>
+    </div>
+  </div>
+
+  <!-- Section 1: National & West Bengal Bilingual News Capsules -->
+  <div class="section-header">
+    <span>1. HIGH-YIELD EXAM BULLET POINTS (NATIONAL &amp; WEST BENGAL)</span>
+    <span class="bn-text">জাতীয় ও পশ্চিমবঙ্গ বিশেষ কারেন্ট অ্যাফেয়ার্স</span>
+  </div>
+
+  {% for item in digest.news_capsules %}
+  <div class="news-card {% if item.is_west_bengal_focus %}wb-special{% endif %}">
+    <div class="news-meta">
+      <span class="category-label">
+        {% if item.is_west_bengal_focus %}★ WEST BENGAL FOCUS / পশ্চিমবঙ্গ বিশেষ{% else %}{{ item.category }}{% endif %}
+      </span>
+      <span class="syllabus-tag">Syllabus: {{ item.wbpsc_syllabus_tag }}</span>
+    </div>
+
+    <div class="headline-en">{{ loop.index }}. {{ item.headline.en }}</div>
+    <div class="headline-bn">{{ loop.index }}. {{ item.headline.bn }}</div>
+
+    <div class="bilingual-grid">
+      <div class="bilingual-col">
+        <div class="col-label">Key Exam Points (English)</div>
+        <ul class="bullet-list">
+          {% for pt in item.exam_bullets_en %}
+          <li>{{ pt }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div class="bilingual-col bn-text">
+        <div class="col-label">পরীক্ষার জন্য গুরুত্বপূর্ণ তথ্য (বাংলা)</div>
+        <ul class="bullet-list">
+          {% for pt in item.exam_bullets_bn %}
+          <li>{{ pt }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+
+    <div class="static-gk-bar bn-text">
+      <strong>📌 WBPSC Static GK Link:</strong>
+      {{ item.static_gk_link.en }} | {{ item.static_gk_link.bn }}
+    </div>
+  </div>
+  {% endfor %}
+
+  <!-- Section 2: 5 Daily Current Affairs MCQs -->
+  <div class="section-header">
+    <span>2. DAILY 5 PYQ-STYLE CURRENT AFFAIRS MCQs</span>
+    <span class="bn-text">আজকের ৫টি বাছাই করা সম্ভাব্য MCQ</span>
+  </div>
+
+  {% for mcq in digest.daily_mcqs %}
+  <div class="mcq-card">
+    <div class="mcq-stem-en">Q{{ loop.index }}. {{ mcq.stem.en }}</div>
+    <div class="mcq-stem-bn">প্রশ্ন {{ loop.index }}। {{ mcq.stem.bn }}</div>
+
+    <div class="options-grid bn-text">
+      <div class="options-row">
+        <div class="option-cell">
+          <strong>(A)</strong> {{ mcq.options.A.en }} / {{ mcq.options.A.bn }}
+        </div>
+        <div class="option-cell">
+          <strong>(B)</strong> {{ mcq.options.B.en }} / {{ mcq.options.B.bn }}
+        </div>
+      </div>
+      <div class="options-row">
+        <div class="option-cell">
+          <strong>(C)</strong> {{ mcq.options.C.en }} / {{ mcq.options.C.bn }}
+        </div>
+        <div class="option-cell">
+          <strong>(D)</strong> {{ mcq.options.D.en }} / {{ mcq.options.D.bn }}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  <!-- Answer Key & Bilingual Explanations -->
+  <div class="answer-key-box bn-text">
+    <div style="font-weight: 800; font-size: 9.5pt; margin-bottom: 6px;">
+      ✅ উত্তরপত্র ও সংক্ষিপ্ত ব্যাখ্যা (Answer Key &amp; Bilingual Explanations)
+    </div>
+    {% for mcq in digest.daily_mcqs %}
+    <div class="answer-item">
+      <strong>Q{{ loop.index }}: ({{ mcq.correct_option }})</strong> —
+      {{ mcq.explanation.en }} <br />
+      <span style="color: #065f46;"><strong>বাংলা ব্যাখ্যা:</strong> {{ mcq.explanation.bn }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</body>
+</html>

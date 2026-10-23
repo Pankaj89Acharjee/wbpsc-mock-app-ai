@@ -1,0 +1,77 @@
+version: "3.9"
+
+name: wbpsc-ai-prep
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16
+    container_name: wbpsc_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wbpsc_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wbpsc_local_dev_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-wbpsc_prep}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=96MB"
+      - "-c"
+      - "work_mem=4MB"
+      - "-c"
+      - "maintenance_work_mem=32MB"
+      - "-c"
+      - "effective_cache_size=192MB"
+      - "-c"
+      - "max_connections=40"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "1.0"
+        reservations:
+          memory: 192M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wbpsc_admin} -d ${POSTGRES_DB:-wbpsc_prep}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: wbpsc_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 96mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --appendonly no
+      --requirepass ${REDIS_PASSWORD:-wbpsc_redis_local_2026}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.50"
+        reservations:
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-wbpsc_redis_local_2026}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local

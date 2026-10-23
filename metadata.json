@@ -1,0 +1,6 @@
+{
+  "name": "WBPSC AI Mock Test & Tutor",
+  "description": "Bilingual (Bengali & English) AI Mock Test, Deterministic Evaluation & Tutor platform for WBPSC exams.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
