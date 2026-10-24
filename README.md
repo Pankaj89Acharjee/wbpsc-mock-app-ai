@@ -193,4 +193,47 @@ cp .env.example .env && nano .env
 
 ---
 
+## **Important Commands**
+---
+
+1. To check the running containers with name of **service**
+```bash
+C="docker compose -f docker-compose.prod.yml"
+$C ps
+```
+
+2. Read the Logs / Crash Logs
+```bash
+C="docker compose -f docker-compose.prod.yml"
+$C logs --tail 50 web
+```
+
+3. Rebuild and Restart - If you updated some code and pushed code in Github, you then need that code in Oracle VM to deploy the changes.
+
+```bash
+cd ~/wbpsc-mock-app-ai
+git pull
+C="docker compose -f docker-compose.prod.yml"
+$C up -d --build api-core        # if api-core service needs to rebuild
+$C logs --tail 20 api-core       # should end with "wbpsc-api-core listening on http://0.0.0.0:8080"
+```
+
+Next test from Git Bash
+```bash
+curl http://129.225.127.229/api/health
+
+```
+
+4. Check the Backend Logs - To see if the Express server actually received the request, you can check the live Docker logs on your Oracle VM. Go to the terminal connected to your VM and run:
+
+```bash
+docker compose -f docker-compose.prod.yml logs -f web
+```
+
+5. Check the Status Code
+Run the curl command with the -i flag (lowercase i shows both headers AND the body). This will tell you if the API is returning a 200 OK, a 404 Not Found, or a 502 Bad Gateway:
+
+```bash
+curl -i http://129.225.127.229/api/health
+```
 
