@@ -1,8 +1,8 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/index";
-import { exams, subjects, chapters, subtopics } from "../db/schema";
+import { exams, subjects, chapters, subtopics, questions } from "../db/schema";
 import {
   ExamConfigInputSchema,
   ExamSlugSchema,
@@ -14,22 +14,71 @@ import {
   type BilingualText,
   type ExamConfigInput,
   type ExamDto,
+  type SyllabusRow,
   type SyllabusUploadResult,
 } from "../../../../packages/shared-types/src/index";
 import { formatIssues } from "../lib/validation";
 import { requireAdmin } from "../lib/auth";
 import { loadSyllabus, nodeMatches, toTreeDto } from "../lib/syllabus";
+import {
+  ensureBilingualSyllabusNames,
+  generateExamSyllabusWithAi,
+} from "../lib/aiEnrichment";
+
+type LoadedSyllabusMap = Awaited<ReturnType<typeof loadSyllabus>>;
+type LoadedExam = NonNullable<ReturnType<LoadedSyllabusMap["get"]>>;
 
 // ============================================================================
 // Request Validation Schemas (Zod)
 // ============================================================================
 
 const ExamParamsSchema = z.object({ slug: ExamSlugSchema });
+const NodeIdParamsSchema = z.object({ id: z.string().uuid() });
 
 const SyllabusUploadBodySchema = z.object({
   fileName: z.string().max(200).optional(),
   content: z.string().min(1, "File is empty").max(2_000_000),
 });
+
+const GenerateAiSyllabusBodySchema = z.object({
+  focusSubjects: z.array(z.string().trim().min(1)).optional(),
+  subjectsFocus: z.array(z.string().trim().min(1)).optional(),
+  customInstructions: z.string().trim().max(1000).optional(),
+});
+
+const ManualNodeRowSchema = z.object({
+  subject_en: z.string().trim().min(1, "Subject (English) is required"),
+  subject_bn: z.string().trim().optional().default(""),
+  chapter_en: z.string().trim().min(1, "Chapter (English) is required"),
+  chapter_bn: z.string().trim().optional().default(""),
+  subtopic_en: z.string().trim().min(1, "Subtopic (English) is required"),
+  subtopic_bn: z.string().trim().optional().default(""),
+});
+
+const SingleManualNodeSchema = z.object({
+  subjectEn: z.string().trim().min(1, "Subject (English) is required"),
+  subjectBn: z.string().trim().optional().default(""),
+  chapterEn: z.string().trim().min(1, "Chapter (English) is required"),
+  chapterBn: z.string().trim().optional().default(""),
+  subtopicEn: z.string().trim().min(1, "Subtopic (English) is required"),
+  subtopicBn: z.string().trim().optional().default(""),
+});
+
+const ManualNodesBodySchema = z.union([
+  z.object({ rows: z.array(ManualNodeRowSchema).min(1).max(200) }),
+  SingleManualNodeSchema,
+]);
+
+const UpdateNodeNameBodySchema = z.union([
+  z.object({
+    en: z.string().trim().min(1, "English name is required").max(200),
+    bn: z.string().trim().max(200).optional().default(""),
+  }),
+  z.object({
+    nameEn: z.string().trim().min(1, "English name is required").max(200),
+    nameBn: z.string().trim().max(200).optional().default(""),
+  }),
+]);
 
 type ExamRow = typeof exams.$inferSelect;
 
@@ -74,12 +123,6 @@ function uniqueSlug(base: string, taken: string[]): string {
   return slug;
 }
 
-/**
- * New names to store for a matched node, or null to leave it alone.
- * Rows carrying the slug (e.g. an edited copy of the downloaded syllabus) may
- * rename freely; rows matched by name only fix the Bengali name, so a casing
- * or "&"/"and" variant never renames an existing node.
- */
 function renameTo(
   existing: BilingualText,
   incoming: BilingualText,
@@ -91,6 +134,127 @@ function renameTo(
   return existing.en === incoming.en && existing.bn !== incoming.bn
     ? { en: existing.en, bn: incoming.bn }
     : null;
+}
+
+/**
+ * Shared transactional upsert for syllabus rows (used by CSV upload, AI generator,
+ * and manual guided entry).
+ */
+async function upsertSyllabusRows(
+  exam: LoadedExam,
+  rows: Array<{ rowNumber: number; row: SyllabusRow }>
+): Promise<SyllabusUploadResult> {
+  const result: SyllabusUploadResult = {
+    created: { subjects: 0, chapters: 0, subtopics: 0 },
+    updated: 0,
+    errors: [],
+  };
+
+  await db.transaction(async (tx) => {
+    for (const { rowNumber, row } of rows) {
+      const subjectName = { en: row.subject_en, bn: row.subject_bn };
+      const chapterName = { en: row.chapter_en, bn: row.chapter_bn };
+      const subtopicName = { en: row.subtopic_en, bn: row.subtopic_bn };
+      const generated = {
+        subject: row.subject_slug ?? slugify(row.subject_en),
+        chapter: row.chapter_slug ?? slugify(row.chapter_en),
+        subtopic: row.subtopic_slug ?? slugify(row.subtopic_en),
+      };
+      if (!generated.subject || !generated.chapter || !generated.subtopic) {
+        result.errors.push({
+          rowNumber,
+          message: "English names must contain letters or digits (used to build slugs)",
+        });
+        continue;
+      }
+
+      // Subject
+      let subject = exam.subjects.find((s) =>
+        row.subject_slug ? s.slug === row.subject_slug : nodeMatches(s, row.subject_en)
+      );
+      if (!subject) {
+        const slug = uniqueSlug(
+          generated.subject,
+          exam.subjects.map((s) => s.slug)
+        );
+        const [ins] = await tx
+          .insert(subjects)
+          .values({
+            examId: exam.id,
+            slug,
+            name: subjectName,
+            displayOrder: exam.subjects.length + 1,
+          })
+          .returning({ id: subjects.id });
+        subject = { id: ins.id, slug, name: subjectName, chapters: [] };
+        exam.subjects.push(subject);
+        result.created.subjects++;
+      } else {
+        const name = renameTo(subject.name, subjectName, !!row.subject_slug);
+        if (name) {
+          await tx.update(subjects).set({ name }).where(eq(subjects.id, subject.id));
+          subject.name = name;
+          result.updated++;
+        }
+      }
+
+      // Chapter
+      let chapter = subject.chapters.find((c) =>
+        row.chapter_slug ? c.slug === row.chapter_slug : nodeMatches(c, row.chapter_en)
+      );
+      if (!chapter) {
+        const slug = uniqueSlug(
+          generated.chapter,
+          subject.chapters.map((c) => c.slug)
+        );
+        const [ins] = await tx
+          .insert(chapters)
+          .values({
+            subjectId: subject.id,
+            slug,
+            name: chapterName,
+            displayOrder: subject.chapters.length + 1,
+          })
+          .returning({ id: chapters.id });
+        chapter = { id: ins.id, slug, name: chapterName, subtopics: [] };
+        subject.chapters.push(chapter);
+        result.created.chapters++;
+      } else {
+        const name = renameTo(chapter.name, chapterName, !!row.chapter_slug);
+        if (name) {
+          await tx.update(chapters).set({ name }).where(eq(chapters.id, chapter.id));
+          chapter.name = name;
+          result.updated++;
+        }
+      }
+
+      // Subtopic
+      const subtopic = chapter.subtopics.find((t) =>
+        row.subtopic_slug ? t.slug === row.subtopic_slug : nodeMatches(t, row.subtopic_en)
+      );
+      if (!subtopic) {
+        const slug = uniqueSlug(
+          generated.subtopic,
+          chapter.subtopics.map((t) => t.slug)
+        );
+        const [ins] = await tx
+          .insert(subtopics)
+          .values({ chapterId: chapter.id, subjectId: subject.id, slug, name: subtopicName })
+          .returning({ id: subtopics.id });
+        chapter.subtopics.push({ id: ins.id, slug, name: subtopicName, questionCount: 0 });
+        result.created.subtopics++;
+      } else {
+        const name = renameTo(subtopic.name, subtopicName, !!row.subtopic_slug);
+        if (name) {
+          await tx.update(subtopics).set({ name }).where(eq(subtopics.id, subtopic.id));
+          subtopic.name = name;
+          result.updated++;
+        }
+      }
+    }
+  });
+
+  return result;
 }
 
 // ============================================================================
@@ -180,6 +344,36 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
   });
 
   /**
+   * 3b. DELETE /admin/syllabus/exams/:slug
+   * Deletes an exam if no live questions exist on it.
+   */
+  fastify.delete("/exams/:slug", async (request, reply) => {
+    const params = ExamParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid exam slug" });
+
+    const [examRow] = await db
+      .select()
+      .from(exams)
+      .where(eq(exams.slug, params.data.slug))
+      .limit(1);
+    if (!examRow) return reply.status(404).send({ error: "Exam not found" });
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(questions)
+      .where(eq(questions.examId, examRow.id));
+
+    if (count > 0) {
+      return reply.status(409).send({
+        error: `Cannot delete "${examRow.title.en}" because it has ${count} live questions. Mark it Inactive instead.`,
+      });
+    }
+
+    await db.delete(exams).where(eq(exams.id, examRow.id));
+    return { deleted: true };
+  });
+
+  /**
    * 4. GET /admin/syllabus/exams/:slug/tree
    * Subject → Chapter → Subtopic tree with question counts.
    */
@@ -197,9 +391,7 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
 
   /**
    * 5. POST /admin/syllabus/exams/:slug/upload  { content: "<csv>" }
-   * Adds/renames subjects, chapters and subtopics from a CSV (one subtopic
-   * per row). Existing nodes are matched by slug or name, so re-uploading
-   * an edited file never creates duplicates. Nothing is deleted.
+   * Adds/renames subjects, chapters and subtopics from a CSV.
    */
   fastify.post("/exams/:slug/upload", async (request, reply) => {
     const params = ExamParamsSchema.safeParse(request.params);
@@ -226,117 +418,321 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
       return reply.status(404).send({ error: "Exam not found" });
     }
 
-    const result: SyllabusUploadResult = {
-      created: { subjects: 0, chapters: 0, subtopics: 0 },
-      updated: 0,
-      errors: [],
-    };
+    const validatedRows: Array<{ rowNumber: number; row: SyllabusRow }> = [];
+    const preErrors: Array<{ rowNumber: number; message: string }> = [];
 
-    await db.transaction(async (tx) => {
-      for (const { rowNumber, record } of records) {
-        const parsed = SyllabusRowSchema.safeParse(record);
-        if (!parsed.success) {
-          result.errors.push({ rowNumber, message: formatIssues(parsed.error.issues) });
-          continue;
-        }
-        const row = parsed.data;
-        const subjectName = { en: row.subject_en, bn: row.subject_bn };
-        const chapterName = { en: row.chapter_en, bn: row.chapter_bn };
-        const subtopicName = { en: row.subtopic_en, bn: row.subtopic_bn };
-        const generated = {
-          subject: row.subject_slug ?? slugify(row.subject_en),
-          chapter: row.chapter_slug ?? slugify(row.chapter_en),
-          subtopic: row.subtopic_slug ?? slugify(row.subtopic_en),
-        };
-        if (!generated.subject || !generated.chapter || !generated.subtopic) {
-          result.errors.push({
-            rowNumber,
-            message: "English names must contain letters or digits (used to build slugs)",
-          });
-          continue;
-        }
-
-        // Subject
-        let subject = exam.subjects.find((s) =>
-          row.subject_slug ? s.slug === row.subject_slug : nodeMatches(s, row.subject_en)
-        );
-        if (!subject) {
-          const slug = uniqueSlug(generated.subject, exam.subjects.map((s) => s.slug));
-          const [ins] = await tx
-            .insert(subjects)
-            .values({
-              examId: exam.id,
-              slug,
-              name: subjectName,
-              displayOrder: exam.subjects.length + 1,
-            })
-            .returning({ id: subjects.id });
-          subject = { id: ins.id, slug, name: subjectName, chapters: [] };
-          exam.subjects.push(subject);
-          result.created.subjects++;
-        } else {
-          const name = renameTo(subject.name, subjectName, !!row.subject_slug);
-          if (name) {
-            await tx.update(subjects).set({ name }).where(eq(subjects.id, subject.id));
-            subject.name = name;
-            result.updated++;
-          }
-        }
-
-        // Chapter
-        let chapter = subject.chapters.find((c) =>
-          row.chapter_slug ? c.slug === row.chapter_slug : nodeMatches(c, row.chapter_en)
-        );
-        if (!chapter) {
-          const slug = uniqueSlug(generated.chapter, subject.chapters.map((c) => c.slug));
-          const [ins] = await tx
-            .insert(chapters)
-            .values({
-              subjectId: subject.id,
-              slug,
-              name: chapterName,
-              displayOrder: subject.chapters.length + 1,
-            })
-            .returning({ id: chapters.id });
-          chapter = { id: ins.id, slug, name: chapterName, subtopics: [] };
-          subject.chapters.push(chapter);
-          result.created.chapters++;
-        } else {
-          const name = renameTo(chapter.name, chapterName, !!row.chapter_slug);
-          if (name) {
-            await tx.update(chapters).set({ name }).where(eq(chapters.id, chapter.id));
-            chapter.name = name;
-            result.updated++;
-          }
-        }
-
-        // Subtopic
-        const subtopic = chapter.subtopics.find((t) =>
-          row.subtopic_slug ? t.slug === row.subtopic_slug : nodeMatches(t, row.subtopic_en)
-        );
-        if (!subtopic) {
-          const slug = uniqueSlug(generated.subtopic, chapter.subtopics.map((t) => t.slug));
-          const [ins] = await tx
-            .insert(subtopics)
-            .values({ chapterId: chapter.id, subjectId: subject.id, slug, name: subtopicName })
-            .returning({ id: subtopics.id });
-          chapter.subtopics.push({ id: ins.id, slug, name: subtopicName, questionCount: 0 });
-          result.created.subtopics++;
-        } else {
-          const name = renameTo(subtopic.name, subtopicName, !!row.subtopic_slug);
-          if (name) {
-            await tx.update(subtopics).set({ name }).where(eq(subtopics.id, subtopic.id));
-            subtopic.name = name;
-            result.updated++;
-          }
-        }
+    for (const { rowNumber, record } of records) {
+      const parsed = SyllabusRowSchema.safeParse(record);
+      if (!parsed.success) {
+        preErrors.push({ rowNumber, message: formatIssues(parsed.error.issues) });
+        continue;
       }
-    });
+      validatedRows.push({ rowNumber, row: parsed.data });
+    }
+
+    const result = await upsertSyllabusRows(exam, validatedRows);
+    result.errors.unshift(...preErrors);
 
     request.log.info(
       { exam: exam.slug, ...result.created, errors: result.errors.length },
       "Syllabus CSV applied"
     );
     return { result, tree: toTreeDto(exam) };
+  });
+
+  /**
+   * 6. POST /admin/syllabus/exams/:slug/generate-ai
+   * Uses Gemini to generate a complete bilingual syllabus (History, Geography,
+   * Polity, Science, Mathematics, Reasoning, English, Current Affairs, GK, etc.)
+   * and saves it directly into the database.
+   */
+  fastify.post("/exams/:slug/generate-ai", async (request, reply) => {
+    const params = ExamParamsSchema.safeParse(request.params);
+    const body = GenerateAiSyllabusBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.status(400).send({ error: "Invalid AI syllabus generation request" });
+    }
+
+    const [examRow] = await db
+      .select()
+      .from(exams)
+      .where(eq(exams.slug, params.data.slug))
+      .limit(1);
+    if (!examRow) return reply.status(404).send({ error: "Exam not found" });
+
+    let generatedSubjects;
+    try {
+      generatedSubjects = await generateExamSyllabusWithAi({
+        examSlug: examRow.slug,
+        examTitleEn: examRow.title.en,
+        examDescriptionEn: examRow.description.en,
+        focusSubjects: body.data.focusSubjects ?? body.data.subjectsFocus ?? [],
+        customInstructions: body.data.customInstructions,
+      });
+    } catch (err) {
+      return reply.status(502).send({ error: (err as Error).message });
+    }
+
+    const flatRows: Array<{ rowNumber: number; row: SyllabusRow }> = [];
+    let rowNumber = 1;
+    for (const subj of generatedSubjects) {
+      for (const chap of subj.chapters) {
+        for (const st of chap.subtopics) {
+          if (subj.subject_en.trim() && chap.chapter_en.trim() && st.subtopic_en.trim()) {
+            flatRows.push({
+              rowNumber: rowNumber++,
+              row: {
+                subject_en: subj.subject_en.trim(),
+                subject_bn: subj.subject_bn.trim() || subj.subject_en.trim(),
+                chapter_en: chap.chapter_en.trim(),
+                chapter_bn: chap.chapter_bn.trim() || chap.chapter_en.trim(),
+                subtopic_en: st.subtopic_en.trim(),
+                subtopic_bn: st.subtopic_bn.trim() || st.subtopic_en.trim(),
+              },
+            });
+          }
+        }
+      }
+    }
+
+    if (flatRows.length === 0) {
+      return reply.status(502).send({ error: "AI did not return any syllabus topics. Try again." });
+    }
+
+    const exam = (await loadSyllabus()).get(params.data.slug)!;
+    const result = await upsertSyllabusRows(exam, flatRows);
+
+    return { result, tree: toTreeDto(exam), modelUsed: "gemini-2.5-flash" };
+  });
+
+  /**
+   * 7. POST /admin/syllabus/exams/:slug/nodes
+   * Guided manual or preset addition of Subject → Chapter → Subtopic rows.
+   * Automatically translates missing Bengali names in the background.
+   */
+  fastify.post("/exams/:slug/nodes", async (request, reply) => {
+    const params = ExamParamsSchema.safeParse(request.params);
+    const body = ManualNodesBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.status(400).send({
+        error: body.success ? "Invalid exam slug" : formatIssues(body.error.issues),
+      });
+    }
+
+    const exam = (await loadSyllabus()).get(params.data.slug);
+    if (!exam) return reply.status(404).send({ error: "Exam not found" });
+
+    const inputRows =
+      "rows" in body.data
+        ? body.data.rows
+        : [
+            {
+              subject_en: body.data.subjectEn,
+              subject_bn: body.data.subjectBn,
+              chapter_en: body.data.chapterEn,
+              chapter_bn: body.data.chapterBn,
+              subtopic_en: body.data.subtopicEn,
+              subtopic_bn: body.data.subtopicBn,
+            },
+          ];
+
+    const enrichedRows: Array<{ rowNumber: number; row: SyllabusRow }> = [];
+    for (const [idx, r] of inputRows.entries()) {
+      const bn = await ensureBilingualSyllabusNames({
+        subjectEn: r.subject_en,
+        subjectBn: r.subject_bn,
+        chapterEn: r.chapter_en,
+        chapterBn: r.chapter_bn,
+        subtopicEn: r.subtopic_en,
+        subtopicBn: r.subtopic_bn,
+      });
+      enrichedRows.push({
+        rowNumber: idx + 1,
+        row: {
+          subject_en: r.subject_en,
+          subject_bn: bn.subjectBn,
+          chapter_en: r.chapter_en,
+          chapter_bn: bn.chapterBn,
+          subtopic_en: r.subtopic_en,
+          subtopic_bn: bn.subtopicBn,
+        },
+      });
+    }
+
+    const result = await upsertSyllabusRows(exam, enrichedRows);
+    return { result, tree: toTreeDto(exam) };
+  });
+
+  /** Helper to reload the tree of the exam containing a subjectId */
+  async function reloadTreeByExamId(examId: string) {
+    const syllabus = await loadSyllabus();
+    for (const e of syllabus.values()) {
+      if (e.id === examId) return toTreeDto(e);
+    }
+    return null;
+  }
+
+  /**
+   * 8. PATCH & DELETE for individual Subject / Chapter / Subtopic nodes (CRUD)
+   */
+  fastify.patch("/subjects/:id", async (request, reply) => {
+    const params = NodeIdParamsSchema.safeParse(request.params);
+    const body = UpdateNodeNameBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.status(400).send({ error: "Invalid subject update" });
+    }
+    const nameEn = "en" in body.data ? body.data.en : body.data.nameEn;
+    const nameBn = "bn" in body.data ? body.data.bn : body.data.nameBn;
+    const bn = await ensureBilingualSyllabusNames({
+      subjectEn: nameEn,
+      subjectBn: nameBn,
+    });
+    const [updated] = await db
+      .update(subjects)
+      .set({ name: { en: nameEn, bn: bn.subjectBn } })
+      .where(eq(subjects.id, params.data.id))
+      .returning();
+    if (!updated) return reply.status(404).send({ error: "Subject not found" });
+    const tree = await reloadTreeByExamId(updated.examId);
+    return { subject: updated, tree };
+  });
+
+  fastify.delete("/subjects/:id", async (request, reply) => {
+    const params = NodeIdParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid subject id" });
+
+    const [subj] = await db
+      .select()
+      .from(subjects)
+      .where(eq(subjects.id, params.data.id))
+      .limit(1);
+    if (!subj) return reply.status(404).send({ error: "Subject not found" });
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(questions)
+      .where(eq(questions.subjectId, params.data.id));
+    if (count > 0) {
+      return reply.status(409).send({
+        error: `Cannot delete this Subject because ${count} live question(s) are linked to it.`,
+      });
+    }
+    await db.delete(subjects).where(eq(subjects.id, params.data.id));
+    const tree = await reloadTreeByExamId(subj.examId);
+    return { deleted: true, tree };
+  });
+
+  fastify.patch("/chapters/:id", async (request, reply) => {
+    const params = NodeIdParamsSchema.safeParse(request.params);
+    const body = UpdateNodeNameBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.status(400).send({ error: "Invalid chapter update" });
+    }
+    const nameEn = "en" in body.data ? body.data.en : body.data.nameEn;
+    const nameBn = "bn" in body.data ? body.data.bn : body.data.nameBn;
+    const bn = await ensureBilingualSyllabusNames({
+      chapterEn: nameEn,
+      chapterBn: nameBn,
+    });
+    const [updated] = await db
+      .update(chapters)
+      .set({ name: { en: nameEn, bn: bn.chapterBn } })
+      .where(eq(chapters.id, params.data.id))
+      .returning();
+    if (!updated) return reply.status(404).send({ error: "Chapter not found" });
+    const [subj] = await db
+      .select({ examId: subjects.examId })
+      .from(subjects)
+      .where(eq(subjects.id, updated.subjectId))
+      .limit(1);
+    const tree = subj ? await reloadTreeByExamId(subj.examId) : null;
+    return { chapter: updated, tree };
+  });
+
+  fastify.delete("/chapters/:id", async (request, reply) => {
+    const params = NodeIdParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid chapter id" });
+
+    const [chap] = await db
+      .select()
+      .from(chapters)
+      .where(eq(chapters.id, params.data.id))
+      .limit(1);
+    if (!chap) return reply.status(404).send({ error: "Chapter not found" });
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(questions)
+      .where(eq(questions.chapterId, params.data.id));
+    if (count > 0) {
+      return reply.status(409).send({
+        error: `Cannot delete this Chapter because ${count} live question(s) are linked to it.`,
+      });
+    }
+    await db.delete(chapters).where(eq(chapters.id, params.data.id));
+    const [subj] = await db
+      .select({ examId: subjects.examId })
+      .from(subjects)
+      .where(eq(subjects.id, chap.subjectId))
+      .limit(1);
+    const tree = subj ? await reloadTreeByExamId(subj.examId) : null;
+    return { deleted: true, tree };
+  });
+
+  fastify.patch("/subtopics/:id", async (request, reply) => {
+    const params = NodeIdParamsSchema.safeParse(request.params);
+    const body = UpdateNodeNameBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.status(400).send({ error: "Invalid subtopic update" });
+    }
+    const nameEn = "en" in body.data ? body.data.en : body.data.nameEn;
+    const nameBn = "bn" in body.data ? body.data.bn : body.data.nameBn;
+    const bn = await ensureBilingualSyllabusNames({
+      subtopicEn: nameEn,
+      subtopicBn: nameBn,
+    });
+    const [updated] = await db
+      .update(subtopics)
+      .set({ name: { en: nameEn, bn: bn.subtopicBn } })
+      .where(eq(subtopics.id, params.data.id))
+      .returning();
+    if (!updated) return reply.status(404).send({ error: "Subtopic not found" });
+    const [subj] = await db
+      .select({ examId: subjects.examId })
+      .from(subjects)
+      .where(eq(subjects.id, updated.subjectId))
+      .limit(1);
+    const tree = subj ? await reloadTreeByExamId(subj.examId) : null;
+    return { subtopic: updated, tree };
+  });
+
+  fastify.delete("/subtopics/:id", async (request, reply) => {
+    const params = NodeIdParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid subtopic id" });
+
+    const [sub] = await db
+      .select()
+      .from(subtopics)
+      .where(eq(subtopics.id, params.data.id))
+      .limit(1);
+    if (!sub) return reply.status(404).send({ error: "Subtopic not found" });
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(questions)
+      .where(eq(questions.subtopicId, params.data.id));
+    if (count > 0) {
+      return reply.status(409).send({
+        error: `Cannot delete this Subtopic because ${count} live question(s) are linked to it.`,
+      });
+    }
+    await db.delete(subtopics).where(eq(subtopics.id, params.data.id));
+    const [subj] = await db
+      .select({ examId: subjects.examId })
+      .from(subjects)
+      .where(eq(subjects.id, sub.subjectId))
+      .limit(1);
+    const tree = subj ? await reloadTreeByExamId(subj.examId) : null;
+    return { deleted: true, tree };
   });
 };

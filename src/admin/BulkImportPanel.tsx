@@ -1,10 +1,12 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
+  FileUp,
+  Languages,
   Plus,
   RefreshCw,
   Save,
@@ -13,6 +15,7 @@ import {
   XCircle,
 } from "lucide-react";
 import {
+  AI_QUESTION_COUNT_OPTIONS,
   BULK_IMPORT_CSV_COLUMNS,
   BULK_IMPORT_MAX_ROWS,
   BULK_IMPORT_TEMPLATE_EXAMPLES,
@@ -24,6 +27,7 @@ import {
   pyqLabel,
   toCsv,
   type ExamDto,
+  type ExtractMediaQuestionsResult,
   type GenerateQuestionsInput,
   type GenerateQuestionsResult,
   type IngestionBatchSummary,
@@ -37,9 +41,7 @@ import { adminApi, downloadCsv, type SyllabusTrees } from "./adminApi";
 import SyllabusPicker from "./SyllabusPicker";
 
 // ============================================================================
-// Admin Console → Question Bank → Import & Review
-// CSV/JSON upload or one-by-one entry → api-core staging table →
-// educator edits/approves → live PostgreSQL question bank
+// Admin Console → Tab 4: Question Bank (Add · Bulk · AI · PDF/Image Paper)
 // ============================================================================
 
 const PAGE_SIZE = 50;
@@ -64,7 +66,6 @@ const STATUS_BADGE: Record<IngestionStatus, string> = {
   failed: "bg-rose-500/15 text-rose-300 border-rose-500/30",
 };
 
-/** Failed rows are editable only when they parsed into a draft (e.g. unknown syllabus path). */
 const isEditable = (job: IngestionJobDto) =>
   job.status === "pending_ai" ||
   job.status === "pending_review" ||
@@ -112,7 +113,6 @@ export default function BulkImportPanel({
   trees,
   onQuestionsChanged,
 }: {
-  /** Exam being worked on — scopes the queue and new questions */
   exam: ExamDto;
   exams: ExamDto[];
   trees: SyllabusTrees;
@@ -129,6 +129,7 @@ export default function BulkImportPanel({
   const [uploadResult, setUploadResult] = useState<IngestionUploadResult | null>(null);
   const [creating, setCreating] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [extractingPaper, setExtractingPaper] = useState(false);
 
   const [batches, setBatches] = useState<IngestionBatchSummary[]>([]);
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -173,6 +174,10 @@ export default function BulkImportPanel({
       setLoading(false);
     }
   }, [ingestionApi, exam.slug, batchId, statusFilter, offset]);
+
+  React.useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = e.target.files?.[0];
@@ -296,15 +301,15 @@ export default function BulkImportPanel({
       try {
         const { job: updated } = await ingestionApi<{ job: IngestionJobDto }>(`/jobs/${job.id}`, {
           method: "PATCH",
-          body: { draft, reviewNotes: reviewNotes.trim() || null },
+          body: { draft, reviewNotes: reviewNotes.trim() || null, autoTranslate: true },
         });
         setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
         setNotice({
           kind: "success",
           text:
             updated.status === "pending_review"
-              ? `Saved — ready for approval`
-              : `Saved — still missing Bengali or explanation text`,
+              ? `Saved (with automatic Bengali translation if any field was blank) — ready for approval`
+              : `Saved — still missing required text`,
         });
         return true;
       } catch (err) {
@@ -313,24 +318,41 @@ export default function BulkImportPanel({
       }
     };
 
-  const saveNew = async (draft: StagedQuestionDraft, reviewNotes: string): Promise<boolean> => {
+  const saveNew = async (
+    draft: StagedQuestionDraft,
+    reviewNotes: string,
+    insertLive = false
+  ): Promise<boolean> => {
     try {
       const { job } = await ingestionApi<{ job: IngestionJobDto }>("/jobs", {
         method: "POST",
-        body: { draft, reviewNotes: reviewNotes.trim() || null },
+        body: {
+          draft,
+          reviewNotes: reviewNotes.trim() || null,
+          autoTranslate: true,
+          insertLive,
+        },
       });
       setCreating(false);
       setBatchId(job.batchId);
-      setStatusFilter(job.status === "pending_review" ? "pending_review" : "pending_ai");
+      setStatusFilter(
+        job.status === "inserted"
+          ? "inserted"
+          : job.status === "pending_review"
+            ? "pending_review"
+            : "pending_ai"
+      );
       setOffset(0);
       setNotice({
         kind: "success",
         text:
-          job.status === "pending_review"
-            ? "Question added — approve it below to make it live"
-            : "Question added — fill the Bengali / explanation before approving",
+          job.status === "inserted"
+            ? "Question translated to Bengali & published directly to the Live Question Bank!"
+            : job.status === "pending_review"
+              ? "Question added (Bengali auto-translated) — approve it below to make it live"
+              : "Question added — fill any remaining fields before approving",
       });
-      await refresh();
+      await Promise.all([refresh(), onQuestionsChanged()]);
       return true;
     } catch (err) {
       setNotice({ kind: "error", text: (err as Error).message });
@@ -350,7 +372,7 @@ export default function BulkImportPanel({
 
   return (
     <div className="space-y-5">
-      {/* ── Step 1: Upload or add ──────────────────────────────────────── */}
+      {/* ── Step 1: Add, Upload Paper (PDF/Image), Generate AI, or CSV ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
           <div className="flex flex-wrap gap-2">
@@ -358,20 +380,35 @@ export default function BulkImportPanel({
               onClick={() => {
                 setCreating(true);
                 setGenerating(false);
+                setExtractingPaper(false);
               }}
               className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" /> Add one question
             </button>
+
+            <button
+              onClick={() => {
+                setExtractingPaper(true);
+                setCreating(false);
+                setGenerating(false);
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 rounded-lg cursor-pointer"
+            >
+              <FileUp className="w-3.5 h-3.5" /> Upload Question Paper (PDF / Image)
+            </button>
+
             <button
               onClick={() => {
                 setGenerating(true);
                 setCreating(false);
+                setExtractingPaper(false);
               }}
               className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-violet-500 hover:bg-violet-400 text-white rounded-lg cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" /> Generate with AI
             </button>
+
             <button
               onClick={() =>
                 downloadCsv(
@@ -381,17 +418,17 @@ export default function BulkImportPanel({
               }
               className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5" /> Generic template (examples)
+              <Download className="w-3.5 h-3.5" /> Generic CSV template
             </button>
           </div>
 
           <div>
             <h3 className="text-sm font-bold text-white">Bulk upload (CSV or JSON)</h3>
             <p className="text-xs text-slate-400 mt-1 max-w-xl">
-              Easiest: click <strong>Question template for this exam</strong> above — every
-              subtopic is pre-filled, just type questions next to them (empty rows are ignored).
-              Names or codes both work; typos get a “Did you mean…” hint and can be fixed below
-              with dropdowns.
+              Upload a spreadsheet (`.csv` or `.json`) or click{" "}
+              <strong>Upload Question Paper (PDF / Image)</strong> above to extract questions
+              directly from a scanned question paper or photo and insert them into the database by
+              category.
             </p>
           </div>
 
@@ -401,9 +438,7 @@ export default function BulkImportPanel({
               {file ? file.name : "Choose a .csv (Excel → CSV UTF-8) or .json file"}
             </span>
             {file && (
-              <span className="text-[11px] text-slate-400">
-                {file.rowCount} row(s) detected
-              </span>
+              <span className="text-[11px] text-slate-400">{file.rowCount} row(s) detected</span>
             )}
             <input
               type="file"
@@ -431,11 +466,17 @@ export default function BulkImportPanel({
             <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs space-y-2">
               <p className="text-white font-semibold">
                 {uploadResult.total} rows staged ·{" "}
-                <span className="text-sky-300">{uploadResult.pendingReview} ready for review</span> ·{" "}
-                <span className="text-amber-300">{uploadResult.pendingAi} need Bengali/explanation</span> ·{" "}
-                <span className="text-rose-300">{uploadResult.failed} need fixing</span>
+                <span className="text-sky-300">{uploadResult.pendingReview} ready for review</span>{" "}
+                ·{" "}
+                <span className="text-amber-300">
+                  {uploadResult.pendingAi} need Bengali/explanation
+                </span>{" "}
+                · <span className="text-rose-300">{uploadResult.failed} need fixing</span>
                 {uploadResult.skippedEmpty > 0 && (
-                  <span className="text-slate-400"> · {uploadResult.skippedEmpty} empty template rows ignored</span>
+                  <span className="text-slate-400">
+                    {" "}
+                    · {uploadResult.skippedEmpty} empty template rows ignored
+                  </span>
                 )}
               </p>
               {uploadResult.errors.length > 0 && (
@@ -453,7 +494,7 @@ export default function BulkImportPanel({
 
         {/* ── Batches ──────────────────────────────────────────────────── */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
-          <h3 className="text-sm font-bold text-white">Upload batches</h3>
+          <h3 className="text-sm font-bold text-white">Upload &amp; AI batches</h3>
           <div className="space-y-1.5 max-h-80 overflow-y-auto">
             <button
               onClick={() => {
@@ -496,10 +537,19 @@ export default function BulkImportPanel({
         </div>
       </div>
 
+      {/* ── Panel A: Add one question (with Auto-Translate to Bengali) ─── */}
       {creating && (
         <div className="bg-slate-900 border border-emerald-500/30 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-white">Add one question</h3>
+            <div>
+              <h3 className="text-sm font-bold text-white">Add one question</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Type the question and options in English. Click{" "}
+                <strong>Auto-Translate to Bengali (AI)</strong> to preview the Bengali translation
+                in the form, or simply leave the Bengali fields blank — when you save, it will
+                automatically translate into Bengali in the background!
+              </p>
+            </div>
             <button
               onClick={() => setCreating(false)}
               className="text-slate-400 hover:text-white cursor-pointer"
@@ -514,11 +564,43 @@ export default function BulkImportPanel({
             trees={trees}
             editable
             onSave={saveNew}
-            saveLabel="Add to review queue"
+            allowDirectLive
+            saveLabel="Save to Review Queue"
           />
         </div>
       )}
 
+      {/* ── Panel B: Upload Question Paper (PDF or Image) ──────────────── */}
+      {extractingPaper && (
+        <PaperUploadPanel
+          exam={exam}
+          onClose={() => setExtractingPaper(false)}
+          onExtracted={async (res) => {
+            setExtractingPaper(false);
+            setBatchId(res.batchId);
+            setStatusFilter(res.insertedLive > 0 ? "inserted" : "pending_review");
+            setOffset(0);
+            // Reload syllabus tree in case new categories were created automatically
+            await trees.loadTree(exam.slug, true);
+            await Promise.all([refresh(), onQuestionsChanged()]);
+            setNotice({
+              kind: "success",
+              text: `Extracted ${res.total} question(s) from question paper using ${res.modelUsed} · ${
+                res.insertedLive > 0
+                  ? `${res.insertedLive} inserted directly into the Live Question Bank`
+                  : `${res.pendingReview} ready in Review Queue`
+              }${
+                res.categoriesCreated > 0
+                  ? ` · ${res.categoriesCreated} new syllabus categories auto-created`
+                  : ""
+              }${res.failed > 0 ? ` · ${res.failed} duplicates skipped` : ""}.`,
+            });
+          }}
+          onError={(msg) => setNotice({ kind: "error", text: msg })}
+        />
+      )}
+
+      {/* ── Panel C: Generate with AI (Dropdown: 10, 15, 20, 25, 30, 40, 50) */}
       {generating && (
         <AiGeneratePanel
           exam={exam}
@@ -562,7 +644,10 @@ export default function BulkImportPanel({
         >
           <div className="flex items-start justify-between gap-3">
             <p className="font-medium">{notice.text}</p>
-            <button onClick={() => setNotice(null)} className="cursor-pointer opacity-70 hover:opacity-100">
+            <button
+              onClick={() => setNotice(null)}
+              className="cursor-pointer opacity-70 hover:opacity-100"
+            >
               <XCircle className="w-4 h-4" />
             </button>
           </div>
@@ -609,16 +694,15 @@ export default function BulkImportPanel({
 
         {statusFilter === "pending_ai" && (
           <p className="px-4 pt-3 text-xs text-amber-300/90">
-            These rows are missing Bengali text or an explanation. Open a row to fill the gaps
-            yourself, or re-upload the file with the _bn / explanation columns filled. AI enrichment
-            (api-ai) will process this queue once it is connected.
+            These rows are missing Bengali text or an explanation. Open any row and click{" "}
+            <strong>Auto-Translate to Bengali (AI)</strong> or simply click{" "}
+            <strong>Save changes</strong> — it will translate automatically!
           </p>
         )}
         {statusFilter === "failed" && (
           <p className="px-4 pt-3 text-xs text-rose-300/90">
             Rows with a wrong exam / subject / chapter / subtopic can be fixed here — open the row
-            and pick from the dropdowns. Rows that could not be read at all must be fixed in the
-            file and uploaded again.
+            and pick from the dropdowns.
           </p>
         )}
 
@@ -732,7 +816,7 @@ export default function BulkImportPanel({
                       </td>
                       <td className="p-3">
                         <span
-                          className={`inline-block px-2 py-0.5 rounded-full border text-[11px] ${STATUS_BADGE[job.status]}`}
+                          className={`inline-block px-2 py-0.5 rounded border text-[11px] ${STATUS_BADGE[job.status]}`}
                         >
                           {job.status === "failed" ? "needs fixing" : job.status.replace("_", " ")}
                         </span>
@@ -742,7 +826,9 @@ export default function BulkImportPanel({
                           </span>
                         )}
                         {job.errorMessage && (
-                          <span className="block mt-1 text-rose-300 max-w-72">{job.errorMessage}</span>
+                          <span className="block mt-1 text-rose-300 max-w-72">
+                            {job.errorMessage}
+                          </span>
                         )}
                       </td>
                       <td className="p-3">
@@ -839,7 +925,198 @@ export default function BulkImportPanel({
 }
 
 // ============================================================================
-// AI PYQ-clone generator form (Pipeline 3)
+// Question Paper (PDF / Image) Upload & Auto-Categorization Panel
+// ============================================================================
+
+function PaperUploadPanel({
+  exam,
+  onClose,
+  onExtracted,
+  onError,
+}: {
+  exam: ExamDto;
+  onClose: () => void;
+  onExtracted: (res: ExtractMediaQuestionsResult & { insertedLive: number }) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [selectedMedia, setSelectedMedia] = useState<{
+    name: string;
+    mimeType: string;
+    base64Data: string;
+    sizeKb: number;
+  } | null>(null);
+  const [source, setSource] = useState<"pyq" | "educator">("pyq");
+  const [pyqYear, setPyqYear] = useState<number>(new Date().getFullYear() - 1);
+  const [insertDirectlyToBank, setInsertDirectlyToBank] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const handleMediaPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const validMime =
+      file.type === "application/pdf" ||
+      file.type.startsWith("image/") ||
+      /\.(pdf|png|jpe?g|webp)$/i.test(file.name);
+    if (!validMime) {
+      onError("Please choose a PDF (.pdf) or Image (.png, .jpg, .jpeg, .webp) of a question paper.");
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      onError("File is larger than 15 MB. Please upload a smaller PDF or image.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const base64 = result.includes(",") ? result.split(",")[1] : result;
+      const mimeType =
+        file.type ||
+        (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+      setSelectedMedia({
+        name: file.name,
+        mimeType,
+        base64Data: base64,
+        sizeKb: Math.round(file.size / 1024),
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleExtract = async () => {
+    if (!selectedMedia) return;
+    setBusy(true);
+    try {
+      const res = await adminApi<ExtractMediaQuestionsResult & { insertedLive: number }>(
+        "/ingestion/extract-media",
+        {
+          method: "POST",
+          body: {
+            examSlug: exam.slug,
+            fileName: selectedMedia.name,
+            mimeType: selectedMedia.mimeType,
+            base64Data: selectedMedia.base64Data,
+            source,
+            pyqYear: source === "pyq" ? pyqYear : null,
+            insertDirectlyToBank,
+          },
+        }
+      );
+      await onExtracted(res);
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inputCls =
+    "w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white";
+
+  return (
+    <div className="bg-slate-900 border border-sky-500/40 rounded-xl p-5 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <FileUp className="w-4 h-4 text-sky-400" />
+            Upload Question Paper (PDF or Image) → Auto-Categorize &amp; Insert into DB
+          </h3>
+          <p className="text-xs text-slate-300 mt-1 max-w-2xl">
+            Upload a PDF or photo/scan of a question paper for <strong>{exam.titleEn}</strong>. AI
+            Vision extracts every MCQ, translates missing English/Bengali text, writes detailed
+            explanations, automatically matches or creates the right{" "}
+            <strong>Subject → Chapter → Topic</strong> category, and inserts them into the database.
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          disabled={busy}
+          className="text-slate-400 hover:text-white cursor-pointer"
+        >
+          <XCircle className="w-4 h-4" />
+        </button>
+      </div>
+
+      <label className="flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-sky-500/40 hover:border-sky-400 rounded-xl cursor-pointer text-center bg-slate-950/50">
+        <FileUp className="w-6 h-6 text-sky-400" />
+        <span className="text-xs font-medium text-white">
+          {selectedMedia
+            ? `${selectedMedia.name} (${selectedMedia.sizeKb} KB)`
+            : "Click to choose a Question Paper PDF (.pdf) or Image (.jpg, .png, .webp)"}
+        </span>
+        <span className="text-[11px] text-slate-400">
+          Supports English, Bengali, or bilingual question papers up to 15 MB
+        </span>
+        <input
+          type="file"
+          accept=".pdf,image/*,application/pdf"
+          onChange={handleMediaPick}
+          disabled={busy}
+          className="hidden"
+        />
+      </label>
+
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="text-xs text-slate-300 space-y-1">
+          <span>Question Source</span>
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value as "pyq" | "educator")}
+            disabled={busy}
+            className={`${inputCls} w-52`}
+          >
+            <option value="pyq">Previous Year Paper (PYQ)</option>
+            <option value="educator">Practice / Model Paper</option>
+          </select>
+        </label>
+
+        {source === "pyq" && (
+          <label className="text-xs text-slate-300 space-y-1">
+            <span>Exam Year</span>
+            <input
+              type="number"
+              min={1990}
+              max={2100}
+              value={pyqYear}
+              onChange={(e) => setPyqYear(Number(e.target.value) || new Date().getFullYear() - 1)}
+              disabled={busy}
+              className={`${inputCls} w-28`}
+            />
+          </label>
+        )}
+
+        <label className="flex items-center gap-2 text-xs text-slate-200 pb-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={insertDirectlyToBank}
+            onChange={(e) => setInsertDirectlyToBank(e.target.checked)}
+            disabled={busy}
+          />
+          Insert directly into Live Question Bank (auto-approved by category)
+        </label>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={handleExtract}
+          disabled={!selectedMedia || busy}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-semibold bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+        >
+          <Sparkles className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />
+          {busy
+            ? "Extracting & Categorizing Questions from Paper… (20–60s)"
+            : "Extract Questions & Save to Database"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// AI PYQ-clone generator form (Dropdown: 10, 15, 20, 25, 30, 40, 50)
 // ============================================================================
 
 function AiGeneratePanel({
@@ -859,7 +1136,7 @@ function AiGeneratePanel({
     chapterSlug: "",
     subtopicSlug: "",
   });
-  const [count, setCount] = useState(10);
+  const [count, setCount] = useState<number>(10);
   const [difficulty, setDifficulty] = useState<GenerateQuestionsInput["difficulty"]>("mixed");
   const [busy, setBusy] = useState(false);
 
@@ -874,13 +1151,16 @@ function AiGeneratePanel({
             <Sparkles className="w-4 h-4 text-violet-300" /> Generate questions with AI
           </h3>
           <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-            Writes new bilingual MCQs in real WBPSC style for one subtopic, using the existing
-            PYQs of that subtopic as examples and avoiding questions already in the bank. They
-            land in the review queue — <strong>check every answer</strong> and tick “Answer
-            checked” before approving. One batch takes about 20–60 seconds.
+            Writes new bilingual MCQs in real WBPSC style for one subtopic, using the existing PYQs
+            of that subtopic as examples and avoiding questions already in the bank. Choose how
+            many questions to generate (10, 15, 20, 25, 30, 40, or 50).
           </p>
         </div>
-        <button onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer" aria-label="Close">
+        <button
+          onClick={onClose}
+          className="text-slate-400 hover:text-white cursor-pointer"
+          aria-label="Close"
+        >
           <XCircle className="w-4 h-4" />
         </button>
       </div>
@@ -895,22 +1175,27 @@ function AiGeneratePanel({
         />
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-xs text-slate-400 space-y-1">
-            <span>How many (1–25)</span>
-            <input
-              type="number"
-              min={1}
-              max={25}
+            <span>How many questions?</span>
+            <select
               value={count}
-              onChange={(e) => setCount(Math.min(25, Math.max(1, Number(e.target.value) || 1)))}
-              className={`${inputCls} w-24`}
-            />
+              onChange={(e) => setCount(Number(e.target.value))}
+              className={`${inputCls} w-36`}
+            >
+              {AI_QUESTION_COUNT_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt} questions
+                </option>
+              ))}
+            </select>
           </label>
           <label className="text-xs text-slate-400 space-y-1">
             <span>Difficulty</span>
             <select
               value={difficulty}
-              onChange={(e) => setDifficulty(e.target.value as GenerateQuestionsInput["difficulty"])}
-              className={`${inputCls} w-40`}
+              onChange={(e) =>
+                setDifficulty(e.target.value as GenerateQuestionsInput["difficulty"])
+              }
+              className={`${inputCls} w-44`}
             >
               <option value="mixed">Mixed (like real paper)</option>
               <option value="easy">Easy</option>
@@ -928,7 +1213,7 @@ function AiGeneratePanel({
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white rounded-lg cursor-pointer"
           >
             <Sparkles className={`w-3.5 h-3.5 ${busy ? "animate-pulse" : ""}`} />
-            {busy ? "Generating… (up to a minute)" : `Generate ${count} questions`}
+            {busy ? `Generating ${count} questions…` : `Generate ${count} questions`}
           </button>
         </div>
       </fieldset>
@@ -938,6 +1223,8 @@ function AiGeneratePanel({
 
 // ============================================================================
 // Bilingual question editor (used for staged rows and "Add one question")
+// Supports 1-click "Auto-Translate to Bengali (AI)" AND automatic background
+// translation when saving if Bengali fields are left blank!
 // ============================================================================
 
 type TextField = "stem" | "explanation" | OptionKey;
@@ -960,6 +1247,7 @@ function JobEditor({
   readOnlyReason,
   onSave,
   saveLabel,
+  allowDirectLive = false,
   actions,
 }: {
   draft: StagedQuestionDraft;
@@ -968,13 +1256,16 @@ function JobEditor({
   trees: SyllabusTrees;
   editable: boolean;
   readOnlyReason?: string;
-  onSave: (draft: StagedQuestionDraft, notes: string) => Promise<boolean>;
+  onSave: (draft: StagedQuestionDraft, notes: string, insertLive?: boolean) => Promise<boolean>;
   saveLabel: string;
+  allowDirectLive?: boolean;
   actions?: { busy: boolean; canApprove: boolean; onApprove: () => void; onReject: () => void };
 }) {
   const [d, setD] = useState<StagedQuestionDraft>(() => structuredClone(initialDraft));
   const [notes, setNotes] = useState(initialNotes);
   const [saving, setSaving] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [translateNotice, setTranslateNotice] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
   const update = (patch: Partial<StagedQuestionDraft>) => {
@@ -998,17 +1289,46 @@ function JobEditor({
     });
   };
 
-  const save = async () => {
+  const handleAutoTranslate = async () => {
+    if (!d.stem.en.trim()) {
+      setTranslateNotice("Type the English question stem first, then click Auto-Translate.");
+      return;
+    }
+    setTranslating(true);
+    setTranslateNotice(null);
+    try {
+      const res = await adminApi<{ draft: StagedQuestionDraft }>("/ingestion/translate-draft", {
+        method: "POST",
+        body: { draft: d },
+      });
+      setD(res.draft);
+      setDirty(true);
+      setTranslateNotice("Bengali translation & explanation filled in!");
+    } catch (err) {
+      setTranslateNotice(`Translation failed: ${(err as Error).message}`);
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  const save = async (insertLive = false) => {
     setSaving(true);
-    if (await onSave(d, notes)) setDirty(false);
+    if (await onSave(d, notes, insertLive)) setDirty(false);
     setSaving(false);
   };
+
+  const hasEnglishStemAndOptions =
+    Boolean(d.stem.en.trim()) &&
+    Boolean(d.options.A.en.trim()) &&
+    Boolean(d.options.B.en.trim()) &&
+    Boolean(d.options.C.en.trim()) &&
+    Boolean(d.options.D.en.trim());
 
   const inputCls =
     "w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white disabled:opacity-70";
 
   return (
-    <fieldset disabled={!editable || saving} className="space-y-4">
+    <fieldset disabled={!editable || saving || translating} className="space-y-4">
       {!editable && readOnlyReason && <p className="text-xs text-slate-400">{readOnlyReason}</p>}
 
       <SyllabusPicker
@@ -1024,17 +1344,49 @@ function JobEditor({
         onChange={(v) => update(v)}
       />
 
+      {/* AI Auto-Translate Toolbar */}
+      {editable && (
+        <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+          <div className="text-xs text-slate-300">
+            <span className="font-semibold text-emerald-300">Bilingual Assistant:</span> Fill the
+            English column and click the button to fill বাংলা, or leave বাংলা blank to
+            auto-translate on Save.
+          </div>
+          <div className="flex items-center gap-2">
+            {translateNotice && (
+              <span className="text-[11px] text-amber-300">{translateNotice}</span>
+            )}
+            <button
+              type="button"
+              onClick={handleAutoTranslate}
+              disabled={!d.stem.en.trim() || translating}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+            >
+              <Languages className={`w-3.5 h-3.5 ${translating ? "animate-spin" : ""}`} />
+              {translating ? "Translating to বাংলা…" : "Auto-Translate to Bengali (AI)"}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-[110px_1fr_1fr] gap-x-3 gap-y-2 items-start">
         <span />
-        <span className="text-[11px] uppercase tracking-wide text-slate-500">English</span>
-        <span className="text-[11px] uppercase tracking-wide text-slate-500">বাংলা</span>
+        <span className="text-[11px] uppercase tracking-wide text-slate-400 font-semibold">
+          English (Required)
+        </span>
+        <span className="text-[11px] uppercase tracking-wide text-slate-400 font-semibold">
+          বাংলা (Auto-translated on save if left blank)
+        </span>
         {TEXT_FIELDS.map(([field, label]) => {
           const t = getText(field);
           const isCorrect = field === d.correctOption;
+          const isOptionalEn = field === "explanation";
           return (
             <React.Fragment key={field}>
               <span
-                className={`text-xs pt-1.5 ${isCorrect ? "text-emerald-300 font-semibold" : "text-slate-400"}`}
+                className={`text-xs pt-1.5 ${
+                  isCorrect ? "text-emerald-300 font-semibold" : "text-slate-400"
+                }`}
               >
                 {label}
                 {isCorrect && " ✓"}
@@ -1042,14 +1394,22 @@ function JobEditor({
               <textarea
                 rows={field === "stem" || field === "explanation" ? 3 : 1}
                 value={t.en}
+                placeholder={
+                  isOptionalEn
+                    ? "Optional — AI will generate an explanation if left blank"
+                    : `Type ${label} in English…`
+                }
                 onChange={(e) => setText(field, "en", e.target.value)}
-                className={`${inputCls} ${t.en.trim() ? "" : "border-amber-500/60"}`}
+                className={`${inputCls} ${
+                  t.en.trim() || isOptionalEn ? "" : "border-amber-500/60"
+                }`}
               />
               <textarea
                 rows={field === "stem" || field === "explanation" ? 3 : 1}
                 value={t.bn}
+                placeholder="খালি রাখলে সেভ করার সময় স্বয়ংক্রিয়ভাবে বাংলায় অনুবাদ হবে"
                 onChange={(e) => setText(field, "bn", e.target.value)}
-                className={`${inputCls} font-bengali ${t.bn.trim() ? "" : "border-amber-500/60"}`}
+                className={`${inputCls} font-bengali`}
               />
             </React.Fragment>
           );
@@ -1075,7 +1435,9 @@ function JobEditor({
           <span>Difficulty</span>
           <select
             value={d.difficulty}
-            onChange={(e) => update({ difficulty: e.target.value as StagedQuestionDraft["difficulty"] })}
+            onChange={(e) =>
+              update({ difficulty: e.target.value as StagedQuestionDraft["difficulty"] })
+            }
             className={inputCls}
           >
             <option value="easy">easy</option>
@@ -1119,7 +1481,9 @@ function JobEditor({
               <input
                 type="number"
                 value={d.pyqYear ?? ""}
-                onChange={(e) => update({ pyqYear: e.target.value ? Number(e.target.value) : null })}
+                onChange={(e) =>
+                  update({ pyqYear: e.target.value ? Number(e.target.value) : null })
+                }
                 className={inputCls}
               />
             </label>
@@ -1155,12 +1519,32 @@ function JobEditor({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={save}
-            disabled={!dirty || saving}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+            onClick={() => save(false)}
+            disabled={(!dirty && !allowDirectLive) || saving || !hasEnglishStemAndOptions}
+            className="flex items-center gap-1 px-3.5 py-1.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
           >
-            <Save className="w-3.5 h-3.5" /> {saving ? "Saving…" : saveLabel}
+            <Save className="w-3.5 h-3.5" />
+            {saving
+              ? isDraftTextComplete(d)
+                ? "Saving…"
+                : "Translating to বাংলা & Saving…"
+              : saveLabel}
           </button>
+
+          {allowDirectLive && (
+            <button
+              type="button"
+              onClick={() => save(true)}
+              disabled={saving || !hasEnglishStemAndOptions || !d.subtopicSlug}
+              className="flex items-center gap-1 px-3.5 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              {saving
+                ? "Translating & Publishing…"
+                : "Save & Publish Directly to Live Bank"}
+            </button>
+          )}
+
           {actions && (
             <>
               <button
@@ -1171,7 +1555,7 @@ function JobEditor({
                   dirty
                     ? "Save your changes first"
                     : !isDraftTextComplete(d)
-                      ? "Fill every Bengali field and the explanation first"
+                      ? "Click Save changes to auto-translate missing Bengali fields first"
                       : undefined
                 }
                 className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"

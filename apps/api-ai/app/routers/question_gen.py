@@ -89,7 +89,7 @@ class GenerateRequest(BaseModel):
     chapter_name: str = Field(min_length=1, max_length=200)
     subtopic_slug: str = Field(min_length=1, max_length=160)
     subtopic_name: str = Field(min_length=1, max_length=200)
-    count: int = Field(ge=1, le=25)
+    count: int = Field(ge=1, le=50)
     difficulty: Literal["easy", "moderate", "hard", "mixed"] = "mixed"
     round: int = Field(ge=0, default=0)
     examples: list[FewShotExample] = Field(default_factory=list, max_length=8)
@@ -163,7 +163,8 @@ Non-negotiable rules:
 """
 
 
-def build_prompt(req: GenerateRequest) -> str:
+def build_prompt(req: GenerateRequest, chunk_count: int | None = None, extra_avoid: list[str] | None = None) -> str:
+    target_count = chunk_count if chunk_count is not None else req.count
     difficulty_rule = (
         "a realistic mix: about 30% easy, 50% moderate, 20% hard"
         if req.difficulty == "mixed"
@@ -175,7 +176,7 @@ def build_prompt(req: GenerateRequest) -> str:
         f"Chapter: {req.chapter_name}",
         f"Subtopic: {req.subtopic_name}",
         "",
-        f"Write {req.count} new MCQs strictly on this subtopic. Difficulty: {difficulty_rule}.",
+        f"Write {target_count} new MCQs strictly on this subtopic. Difficulty: {difficulty_rule}.",
     ]
     if req.examples:
         lines += ["", "Real questions from this area (match their style, depth and phrasing):"]
@@ -183,9 +184,10 @@ def build_prompt(req: GenerateRequest) -> str:
             opts = " | ".join(f"{k}) {v}" for k, v in sorted(ex.options_en.items()))
             tag = f" [{ex.source_tag}]" if ex.source_tag else ""
             lines.append(f"{i}. {ex.stem_en}{tag}\n   {opts}\n   Answer: {ex.correct_option}")
-    if req.avoid_stems:
+    all_avoid = list(req.avoid_stems) + (extra_avoid or [])
+    if all_avoid:
         lines += ["", "Already in the bank — do NOT repeat or reword these:"]
-        lines += [f"- {s}" for s in req.avoid_stems]
+        lines += [f"- {s}" for s in all_avoid[:120]]
     return "\n".join(lines)
 
 
@@ -197,28 +199,41 @@ async def call_gemini(req: GenerateRequest) -> list[GeneratedQuestion]:
             detail="GEMINI_API_KEY is not configured on api-ai.",
         )
     client = genai.Client(api_key=api_key)
-    response = await client.aio.models.generate_content(
-        model=QUESTION_MODEL,
-        contents=build_prompt(req),
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.7,
-            response_mime_type="application/json",
-            response_schema=GeneratedBatch,
-        ),
-    )
-    try:
-        batch = GeneratedBatch.model_validate_json(response.text or "{}")
-    except ValidationError as exc:
-        logger.error("Gemini returned an invalid question batch: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The AI model returned malformed questions. Please try again.",
-        ) from exc
+    collected: list[GeneratedQuestion] = []
+    remaining = req.count
+    extra_avoid: list[str] = []
 
-    for q in batch.questions:
-        q.confidence = min(1.0, max(0.0, q.confidence))
-    return batch.questions[: req.count]
+    while remaining > 0:
+        chunk_size = min(20, remaining)
+        response = await client.aio.models.generate_content(
+            model=QUESTION_MODEL,
+            contents=build_prompt(req, chunk_count=chunk_size, extra_avoid=extra_avoid),
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.7,
+                response_mime_type="application/json",
+                response_schema=GeneratedBatch,
+            ),
+        )
+        try:
+            batch = GeneratedBatch.model_validate_json(response.text or "{}")
+        except ValidationError as exc:
+            logger.error("Gemini returned an invalid question batch: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="The AI model returned malformed questions. Please try again.",
+            ) from exc
+
+        for q in batch.questions[:chunk_size]:
+            q.confidence = min(1.0, max(0.0, q.confidence))
+            collected.append(q)
+            extra_avoid.append(q.stem.en)
+
+        if not batch.questions:
+            break
+        remaining = req.count - len(collected)
+
+    return collected[: req.count]
 
 
 # ============================================================================

@@ -1,11 +1,9 @@
+import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import path from "path";
-import { fileURLToPath } from "url";
+import path from "node:path";
 import { GoogleGenAI, Type } from "@google/genai";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { buildApiCoreApp } from "./apps/api-core/src/server";
 
 function getGenAIClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -22,13 +20,24 @@ function getGenAIClient(): GoogleGenAI {
   });
 }
 
+const DIRECT_API_PREFIXES = ["/auth/", "/auth", "/exams/", "/exams", "/me/", "/admin/", "/ai/"];
+
+function isDirectApiCorePath(urlPath: string): boolean {
+  return DIRECT_API_PREFIXES.some(
+    (prefix) => urlPath === prefix || urlPath.startsWith(prefix)
+  );
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Boot the PostgreSQL-backed Fastify api-core instance (auto-falls back to PGlite in AI Studio)
+  const apiCore = await buildApiCoreApp();
+
   app.use(express.json({ limit: "12mb" }));
 
-  // Healthcheck
+  // 1. Healthcheck
   app.get("/api/health", (_req, res) => {
     res.json({
       status: "ok",
@@ -38,189 +47,8 @@ async function startServer() {
   });
 
   /**
-   * POST /api/ai/generate-notes
-   * Called on L2 Firestore cache miss to generate bilingual/targeted WBPSC study notes
-   */
-  app.post("/api/ai/generate-notes", async (req, res) => {
-    try {
-      const {
-        examSlug = "wbcs-prelims",
-        subjectName = "Indian Polity",
-        topicSlug = "73rd-74th-amendment",
-        topicTitle = "73rd & 74th Constitutional Amendment Acts",
-        language = "bn",
-      } = req.body || {};
-
-      const ai = getGenAIClient();
-      const langInstruction =
-        language === "bn"
-          ? "Write all headings, explanations, and mnemonics in clear academic Bengali (বাংলা) with accurate conjuncts (যুক্তাক্ষর), keeping key Constitutional Articles/Acts in English parentheses."
-          : "Write all headings, explanations, and mnemonics in crisp, exam-oriented English tailored for WBPSC exams.";
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: `Generate a high-yield WBPSC exam revision note for:
-Exam: ${examSlug}
-Subject: ${subjectName}
-Topic: ${topicTitle} (${topicSlug})
-Language: ${language.toUpperCase()}
-
-Requirements:
-1. ${langInstruction}
-2. Include Core Concepts, Important Articles/Years/Facts, and Common WBPSC Prelims/Mains Exam Traps.
-3. Provide 3 memorable mnemonics for quick recall.`,
-        config: {
-          systemInstruction:
-            "You are a Principal WBPSC Faculty specializing in WBCS, Clerkship, Food SI, and Miscellaneous examinations.",
-          temperature: 0.3,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              contentMarkdown: {
-                type: Type.STRING,
-                description:
-                  "Structured Markdown revision note with bullet points and exam traps.",
-              },
-              mnemonicsText: {
-                type: Type.STRING,
-                description:
-                  "3 short high-retention memory hooks separated by newlines.",
-              },
-            },
-            required: ["contentMarkdown", "mnemonicsText"],
-          },
-        },
-      });
-
-      const rawText = response.text || "{}";
-      const parsed = JSON.parse(rawText);
-
-      res.json({
-        status: "success",
-        modelUsed: "gemini-3.8-flash",
-        contentMarkdown:
-          parsed.contentMarkdown ||
-          `### ${topicTitle}\n\nKey revision points for ${examSlug}.`,
-        mnemonicsText:
-          parsed.mnemonicsText || "Mnemonic 1: Remember key articles and years.",
-      });
-    } catch (error: any) {
-      console.error("Error in /api/ai/generate-notes:", error);
-      res.status(500).json({
-        error: error?.message || "Failed to generate AI study notes",
-      });
-    }
-  });
-
-  /**
-   * POST /api/ai/evaluate-descriptive
-   * Evaluates WBPSC Clerkship Part-II / WBCS Mains Descriptive Answers (Typed or Image base64)
-   */
-  app.post("/api/ai/evaluate-descriptive", async (req, res) => {
-    try {
-      const {
-        examSlug = "wbpsc-clerkship-part2",
-        taskType = "report_writing",
-        language = "bn",
-        questionPrompt = "",
-        targetWordLimit = 150,
-        studentAnswerText = "",
-        imageBase64 = null,
-        imageMimeType = "image/jpeg",
-      } = req.body || {};
-
-      if (!studentAnswerText && !imageBase64) {
-        res.status(400).json({
-          error: "Provide either typed answer text or an uploaded answer sheet image.",
-        });
-        return;
-      }
-
-      const ai = getGenAIClient();
-      const parts: any[] = [];
-
-      if (imageBase64) {
-        parts.push({
-          inlineData: {
-            data: imageBase64,
-            mimeType: imageMimeType,
-          },
-        });
-      }
-
-      const evalPrompt = `You are a Senior Head Examiner for WBPSC (${examSlug}).
-Evaluate the student's descriptive answer strictly out of 25 marks (Grammar: /10, Content & Format: /10, Word Limit Adherence: /5).
-Task Type: ${taskType}
-Language: ${language === "bn" ? "Bengali (বাংলা)" : "English"}
-Target Word Limit: ${targetWordLimit} words
-Question Prompt: ${questionPrompt}
-
-${
-  studentAnswerText
-    ? `Student's Typed Answer:\n${studentAnswerText}`
-    : "Transcribe the attached handwritten answer sheet into transcribedAnswer, then evaluate it."
-}`;
-
-      parts.push({ text: evalPrompt });
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: { parts },
-        config: {
-          temperature: 0.2,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              transcribedAnswer: { type: Type.STRING },
-              estimatedWordCount: { type: Type.INTEGER },
-              grammarScore: { type: Type.NUMBER },
-              contentScore: { type: Type.NUMBER },
-              wordLimitScore: { type: Type.NUMBER },
-              totalScore: { type: Type.NUMBER },
-              strengths: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              improvementsNeeded: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              correctedModelAnswer: { type: Type.STRING },
-            },
-            required: [
-              "transcribedAnswer",
-              "estimatedWordCount",
-              "grammarScore",
-              "contentScore",
-              "wordLimitScore",
-              "totalScore",
-              "strengths",
-              "improvementsNeeded",
-              "correctedModelAnswer",
-            ],
-          },
-        },
-      });
-
-      const evaluation = JSON.parse(response.text || "{}");
-      res.json({
-        status: "success",
-        modelUsed: "gemini-3.8-flash",
-        evaluation,
-      });
-    } catch (error: any) {
-      console.error("Error in /api/ai/evaluate-descriptive:", error);
-      res.status(500).json({
-        error: error?.message || "Failed to evaluate descriptive answer",
-      });
-    }
-  });
-
-  /**
-   * POST /api/cron/generate-daily-ca
-   * Synthesizes bilingual National & West Bengal Current Affairs + 5 MCQs
+   * 2. POST /api/cron/generate-daily-ca
+   * Synthesizes bilingual National & West Bengal Current Affairs + 3 PYQ-style MCQs
    */
   app.post("/api/cron/generate-daily-ca", async (req, res) => {
     try {
@@ -264,6 +92,55 @@ Return a structured Markdown digest containing Bilingual Bullet Points, Static G
       res.status(500).json({
         error: error?.message || "Failed to generate Daily Current Affairs digest",
       });
+    }
+  });
+
+  /**
+   * 3. Forward /api/* (and direct /auth/*, /exams/*, /me/*, /admin/*, /ai/*)
+   *    into the Fastify api-core instance.
+   */
+  app.use(async (req, res, next) => {
+    const isApiPrefixed = req.originalUrl.startsWith("/api/");
+    const isDirectApi = isDirectApiCorePath(req.path);
+
+    if (!isApiPrefixed && !isDirectApi) {
+      return next();
+    }
+
+    const targetUrl = isApiPrefixed
+      ? req.originalUrl.slice(4) || "/"
+      : req.originalUrl;
+
+    try {
+      const headers: Record<string, string | string[]> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (v !== undefined && k.toLowerCase() !== "content-length") {
+          headers[k] = v;
+        }
+      }
+
+      const hasBody =
+        req.method !== "GET" &&
+        req.method !== "HEAD" &&
+        req.body !== undefined &&
+        Object.keys(req.body).length > 0;
+
+      const reply = await apiCore.inject({
+        method: req.method as any,
+        url: targetUrl,
+        headers,
+        payload: hasBody ? JSON.stringify(req.body) : undefined,
+      });
+
+      for (const [k, v] of Object.entries(reply.headers)) {
+        if (v !== undefined) {
+          res.setHeader(k, v as string | string[]);
+        }
+      }
+      res.status(reply.statusCode).send(reply.rawPayload);
+    } catch (err: any) {
+      console.error("Gateway error forwarding to api-core:", err);
+      res.status(500).json({ error: err?.message || "Internal server error" });
     }
   });
 

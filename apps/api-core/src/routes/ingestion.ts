@@ -3,9 +3,12 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index";
 import {
+  chapters,
   exams,
   questions,
   questionIngestionJobs,
+  subjects,
+  subtopics,
   type IngestionStatusType,
 } from "../db/schema";
 import {
@@ -19,7 +22,10 @@ import {
   isDraftTextComplete,
   normalizeRecordKeys,
   parseCsv,
+  pyqLabel,
   rowToDraft,
+  slugify,
+  type ExtractMediaQuestionsResult,
   type GenerateQuestionsResult,
   type IngestionBatchSummary,
   type IngestionJobDto,
@@ -30,6 +36,10 @@ import { computeContentHash } from "../lib/contentHash";
 import { formatIssues } from "../lib/validation";
 import { requireAdmin } from "../lib/auth";
 import { generateWithApiAi, loadGenerationContext } from "../lib/aiGeneration";
+import {
+  extractQuestionsFromMediaWithAi,
+  translateAndEnrichQuestionDraft,
+} from "../lib/aiEnrichment";
 import { canonicalizeDraft, loadSyllabus, resolveSyllabusPath } from "../lib/syllabus";
 
 // ============================================================================
@@ -55,6 +65,22 @@ const JobParamsSchema = z.object({ id: z.string().uuid() });
 const DraftBodySchema = z.object({
   draft: StagedQuestionDraftSchema,
   reviewNotes: z.string().max(2000).nullable().optional(),
+  autoTranslate: z.boolean().optional().default(true),
+  insertLive: z.boolean().optional().default(false),
+});
+
+const TranslateDraftBodySchema = z.object({
+  draft: StagedQuestionDraftSchema,
+});
+
+const ExtractMediaBodySchema = z.object({
+  examSlug: z.string().min(1).max(80),
+  fileName: z.string().max(240).optional(),
+  mimeType: z.string().min(3).max(120),
+  base64Data: z.string().min(10).max(25_000_000),
+  source: z.enum(["pyq", "educator", "ai_generated"]).default("pyq"),
+  pyqYear: z.coerce.number().int().min(1990).max(2100).nullable().optional(),
+  insertDirectlyToBank: z.boolean().default(true),
 });
 
 const IdsBodySchema = z.object({
@@ -237,6 +263,115 @@ function toJobDto(row: IngestionJobRow): IngestionJobDto {
 const statusCount = (status: IngestionStatusType) =>
   sql<number>`(count(*) filter (where ${questionIngestionJobs.status} = ${status}))::int`;
 
+/**
+ * Ensures Subject -> Chapter -> Subtopic exists for an exam, returning their slugs.
+ * Used when extracting questions from PDF/Image question papers so every question
+ * lands in the right category even if the subtopic wasn't created beforehand.
+ */
+async function ensureCategoryInExam(
+  examId: string,
+  category: {
+    subjectEn: string;
+    subjectBn: string;
+    chapterEn: string;
+    chapterBn: string;
+    subtopicEn: string;
+    subtopicBn: string;
+  }
+): Promise<{
+  subjectId: string;
+  subjectSlug: string;
+  chapterId: string;
+  chapterSlug: string;
+  subtopicId: string;
+  subtopicSlug: string;
+  createdNew: boolean;
+}> {
+  const subjSlug = slugify(category.subjectEn) || "general-studies";
+  const chapSlug = slugify(category.chapterEn) || "general-topic";
+  const subSlug = slugify(category.subtopicEn) || `${chapSlug}-basics`;
+
+  let createdNew = false;
+
+  // 1. Subject
+  let [subj] = await db
+    .select()
+    .from(subjects)
+    .where(and(eq(subjects.examId, examId), eq(subjects.slug, subjSlug)))
+    .limit(1);
+  if (!subj) {
+    [subj] = await db
+      .insert(subjects)
+      .values({
+        examId,
+        slug: subjSlug,
+        name: {
+          en: category.subjectEn.trim() || "General Studies",
+          bn: category.subjectBn.trim() || category.subjectEn.trim() || "সাধারণ অধ্যয়ন",
+        },
+        displayOrder: 50,
+      })
+      .returning();
+    createdNew = true;
+  }
+
+  // 2. Chapter
+  let [chap] = await db
+    .select()
+    .from(chapters)
+    .where(and(eq(chapters.subjectId, subj.id), eq(chapters.slug, chapSlug)))
+    .limit(1);
+  if (!chap) {
+    [chap] = await db
+      .insert(chapters)
+      .values({
+        subjectId: subj.id,
+        slug: chapSlug,
+        name: {
+          en: category.chapterEn.trim() || "Core Concepts",
+          bn: category.chapterBn.trim() || category.chapterEn.trim() || "মূল ধারণা",
+        },
+        displayOrder: 50,
+      })
+      .returning();
+    createdNew = true;
+  }
+
+  // 3. Subtopic (unique per chapter + slug)
+  const finalSubSlug = subSlug;
+  let [sub] = await db
+    .select()
+    .from(subtopics)
+    .where(and(eq(subtopics.chapterId, chap.id), eq(subtopics.slug, finalSubSlug)))
+    .limit(1);
+
+  if (!sub) {
+    [sub] = await db
+      .insert(subtopics)
+      .values({
+        subjectId: subj.id,
+        chapterId: chap.id,
+        slug: finalSubSlug,
+        name: {
+          en: category.subtopicEn.trim() || "General Questions",
+          bn: category.subtopicBn.trim() || category.subtopicEn.trim() || "সাধারণ প্রশ্ন",
+        },
+      })
+      .returning();
+    createdNew = true;
+  }
+
+  return {
+    subjectId: subj.id,
+    subjectSlug: subj.slug,
+    chapterId: chap.id,
+    chapterSlug: chap.slug,
+    subtopicId: sub.id,
+    subtopicSlug: sub.slug,
+    createdNew,
+  };
+}
+
 // ============================================================================
 // Route Plugin Implementation (registered under /admin/ingestion)
 // ============================================================================
@@ -247,10 +382,251 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   fastify.addHook("preHandler", requireAdmin);
 
   /**
+   * 0. POST /admin/ingestion/translate-draft  { draft }
+   * Translates English question stem, options A-D, and explanation into Bengali
+   * (and drafts an explanation if left blank) for the "+ Add one question" / JobEditor UI.
+   */
+  fastify.post("/translate-draft", async (request, reply) => {
+    const parsed = TranslateDraftBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Invalid question draft",
+        details: formatIssues(parsed.error.issues),
+      });
+    }
+    const enriched = await translateAndEnrichQuestionDraft(parsed.data.draft);
+    return { draft: enriched };
+  });
+
+  /**
+   * 0b. POST /admin/ingestion/extract-media
+   * Accepts an uploaded Question Paper (PDF or Image), extracts all MCQs via
+   * Gemini Vision, automatically categorizes them into Subject -> Chapter -> Subtopic
+   * (creating missing syllabus nodes if needed), and inserts them into the DB.
+   */
+  fastify.post(
+    "/extract-media",
+    { bodyLimit: 25 * 1024 * 1024 },
+    async (request, reply) => {
+      const parsed = ExtractMediaBodySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid media upload payload",
+          details: formatIssues(parsed.error.issues),
+        });
+      }
+      const {
+        examSlug,
+        fileName,
+        mimeType,
+        base64Data,
+        source,
+        pyqYear,
+        insertDirectlyToBank,
+      } = parsed.data;
+
+      const [exam] = await db
+        .select()
+        .from(exams)
+        .where(eq(exams.slug, examSlug))
+        .limit(1);
+      if (!exam) {
+        return reply.status(404).send({ error: `Exam "${examSlug}" not found` });
+      }
+
+      // Build existing syllabus context so AI maps questions to existing subjects/subtopics when possible
+      const existingSubjects = await db
+        .select()
+        .from(subjects)
+        .where(eq(subjects.examId, exam.id));
+      const subjectIds = existingSubjects.map((s) => s.id);
+      const existingChapters = subjectIds.length
+        ? await db
+            .select()
+            .from(chapters)
+            .where(inArray(chapters.subjectId, subjectIds))
+        : [];
+      const existingSubtopics = subjectIds.length
+        ? await db
+            .select()
+            .from(subtopics)
+            .where(inArray(subtopics.subjectId, subjectIds))
+        : [];
+
+      const chapById = new Map(existingChapters.map((c) => [c.id, c]));
+      const subjById = new Map(existingSubjects.map((s) => [s.id, s]));
+      const existingSubtopicsList = existingSubtopics.flatMap((t) => {
+        const chap = chapById.get(t.chapterId);
+        const subj = chap ? subjById.get(chap.subjectId) : undefined;
+        if (!chap || !subj) return [];
+        return [
+          {
+            subjectEn: subj.name.en,
+            chapterEn: chap.name.en,
+            subtopicEn: t.name.en,
+          },
+        ];
+      });
+
+      let extractedQuestions;
+      try {
+        extractedQuestions = await extractQuestionsFromMediaWithAi({
+          examSlug: exam.slug,
+          examTitleEn: exam.title.en,
+          mimeType,
+          fileBase64: base64Data,
+          existingCategories: existingSubtopicsList,
+        });
+      } catch (err) {
+        request.log.error(err, "PDF/Image question extraction failed");
+        return reply.status(502).send({ error: (err as Error).message });
+      }
+
+      const modelUsed = "gemini-2.5-flash";
+      const batchId = `paper-${Date.now()}`;
+      let categoriesCreated = 0;
+      const staged: StagedRow[] = [];
+
+      for (let i = 0; i < extractedQuestions.length; i++) {
+        const q = extractedQuestions[i];
+        const cat = await ensureCategoryInExam(exam.id, {
+          subjectEn: q.subject_en,
+          subjectBn: q.subject_bn,
+          chapterEn: q.chapter_en,
+          chapterBn: q.chapter_bn,
+          subtopicEn: q.subtopic_en,
+          subtopicBn: q.subtopic_bn,
+        });
+        if (cat.createdNew) categoriesCreated++;
+
+        const draft: StagedQuestionDraft = {
+          examSlug: exam.slug,
+          subjectSlug: cat.subjectSlug,
+          chapterSlug: cat.chapterSlug,
+          subtopicSlug: cat.subtopicSlug,
+          stem: q.stem,
+          options: q.options,
+          correctOption: q.correct_option,
+          explanation: q.explanation,
+          difficulty: q.difficulty,
+          source,
+          pyqExamSlug: source === "pyq" ? exam.slug : null,
+          pyqYear: source === "pyq" ? (pyqYear ?? new Date().getFullYear() - 1) : null,
+          answerKeyVerified: true,
+        };
+
+        const contentHash = computeContentHash(draft);
+        const pyqTag =
+          draft.source === "pyq" ? pyqLabel(exam.title.en, draft.pyqYear) : null;
+
+        const job: NewIngestionJob = {
+          batchId,
+          source: "pdf_extract",
+          status: isDraftTextComplete(draft) ? "pending_review" : "pending_ai",
+          rawData: {
+            rowNumber: i + 1,
+            fileName: fileName
+              ? `Paper · ${fileName}`
+              : `Question Paper (${modelUsed})`,
+            record: q,
+          },
+          enrichedData: draft,
+          examId: exam.id,
+          subjectId: cat.subjectId,
+          chapterId: cat.chapterId,
+          subtopicId: cat.subtopicId,
+          contentHash,
+          pyqYear: draft.pyqYear,
+          pyqExamName: pyqTag,
+          aiConfidenceScore: q.confidence.toFixed(2),
+        };
+        staged.push({ rowNumber: i + 1, job });
+      }
+
+      const summary = await saveStagedBatch(batchId, staged);
+
+      // If insertDirectlyToBank is true, immediately promote all valid pending_review rows in this batch to the live `questions` table
+      let insertedLive = 0;
+      if (insertDirectlyToBank && summary.pendingReview > 0) {
+        const batchJobs = await db
+          .select()
+          .from(questionIngestionJobs)
+          .where(
+            and(
+              eq(questionIngestionJobs.batchId, batchId),
+              eq(questionIngestionJobs.status, "pending_review")
+            )
+          );
+
+        await db.transaction(async (tx) => {
+          for (const job of batchJobs) {
+            const valid = ApprovableQuestionSchema.safeParse(job.enrichedData);
+            if (
+              !valid.success ||
+              !job.examId ||
+              !job.subjectId ||
+              !job.chapterId ||
+              !job.subtopicId
+            ) {
+              continue;
+            }
+            const q = valid.data;
+            const contentHash = job.contentHash ?? computeContentHash(q);
+            const [created] = await tx
+              .insert(questions)
+              .values({
+                examId: job.examId,
+                examSlug: exam.slug,
+                subjectId: job.subjectId,
+                chapterId: job.chapterId,
+                subtopicId: job.subtopicId,
+                stem: q.stem,
+                options: q.options,
+                correctOption: q.correctOption,
+                explanation: q.explanation,
+                difficulty: q.difficulty,
+                marksPositive: String(exam.marksPerCorrect),
+                marksNegative: String(exam.negativeMarksPerWrong),
+                previousYearTag: job.pyqExamName,
+                source: q.source,
+                pyqExamSlug: q.pyqExamSlug,
+                pyqYear: q.pyqYear,
+                answerKeyVerified: q.answerKeyVerified,
+                contentHash,
+                ingestionJobId: job.id,
+              })
+              .onConflictDoNothing({ target: questions.contentHash })
+              .returning({ id: questions.id });
+
+            if (created) {
+              insertedLive++;
+              await tx
+                .update(questionIngestionJobs)
+                .set({
+                  status: "inserted",
+                  insertedQuestionId: created.id,
+                  reviewedAt: new Date(),
+                })
+                .where(eq(questionIngestionJobs.id, job.id));
+            }
+          }
+        });
+      }
+
+      const result: ExtractMediaQuestionsResult = {
+        ...summary,
+        modelUsed,
+        categoriesCreated,
+        insertedLive,
+      };
+      return reply.status(201).send(result);
+    }
+  );
+
+  /**
    * 1. POST /admin/ingestion/upload
    * Parses a CSV/JSON file, validates every row, resolves syllabus names/slugs,
    * flags duplicates, and stages everything in `question_ingestion_jobs`.
-   * Nothing reaches the live `questions` table from here.
    */
   fastify.post(
     "/upload",
@@ -294,7 +670,6 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         }));
       }
 
-      // Rows from the per-exam template that were left without a question
       const isUnusedTemplateRow = (record: unknown) => {
         const r = record as Record<string, unknown> | null;
         return (
@@ -321,7 +696,6 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       const batchId = `${source}-${Date.now()}`;
       const syllabus = await loadSyllabus();
 
-      // Pass 1: validate rows & resolve syllabus names → canonical slugs/FKs
       const staged = records.map(({ rowNumber, record }) => {
         const job: NewIngestionJob = {
           batchId,
@@ -337,7 +711,6 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         const draft = rowToDraft(rowParsed.data);
         const canon = canonicalizeDraft(syllabus, draft);
         if (!canon.ok) {
-          // Keep the draft so the educator can fix the syllabus path with dropdowns
           job.enrichedData = draft;
           job.errorMessage = canon.message;
           return { rowNumber, job };
@@ -346,7 +719,6 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         return { rowNumber, job };
       });
 
-      // Pass 2: duplicate detection (live bank, active staging, same file) + insert
       const result = await saveStagedBatch(batchId, staged, skippedEmpty);
       request.log.info(
         { batchId, total: result.total, failed: result.failed },
@@ -357,8 +729,10 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   );
 
   /**
-   * 2. POST /admin/ingestion/jobs  { draft }
-   * Adds ONE question typed in the console (same review queue as uploads).
+   * 2. POST /admin/ingestion/jobs  { draft, reviewNotes?, autoTranslate?, insertLive? }
+   * Adds ONE question typed in the console.
+   * If Bengali fields or explanation are left blank, automatically translates
+   * English -> Bengali in the background before saving!
    */
   fastify.post("/jobs", async (request, reply) => {
     const body = DraftBodySchema.safeParse(request.body);
@@ -368,7 +742,13 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         details: formatIssues(body.error.issues),
       });
     }
-    const canon = canonicalizeDraft(await loadSyllabus(), body.data.draft);
+
+    let draft = body.data.draft;
+    if (body.data.autoTranslate !== false && !isDraftTextComplete(draft)) {
+      draft = await translateAndEnrichQuestionDraft(draft);
+    }
+
+    const canon = canonicalizeDraft(await loadSyllabus(), draft);
     if (!canon.ok) {
       return reply.status(400).send({ error: canon.message });
     }
@@ -384,18 +764,62 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         ...columns,
         batchId: `manual-${new Date().toISOString().slice(0, 10)}`,
         source: "manual",
-        rawData: { rowNumber: null, fileName: "Added in console", record: body.data.draft },
+        rawData: { rowNumber: null, fileName: "Added in console", record: draft },
         reviewNotes: body.data.reviewNotes ?? null,
       })
       .returning();
+
+    // Optional immediate live insertion when requested and draft is complete
+    if (body.data.insertLive && created.status === "pending_review") {
+      const valid = ApprovableQuestionSchema.safeParse(created.enrichedData);
+      if (valid.success) {
+        const { draft: q, path, pyqTag } = canon;
+        const [liveRow] = await db
+          .insert(questions)
+          .values({
+            examId: path.exam.id,
+            examSlug: path.exam.slug,
+            subjectId: path.subject.id,
+            chapterId: path.chapter.id,
+            subtopicId: path.subtopic.id,
+            stem: valid.data.stem,
+            options: valid.data.options,
+            correctOption: q.correctOption,
+            explanation: valid.data.explanation,
+            difficulty: q.difficulty,
+            marksPositive: path.exam.marksPerCorrect,
+            marksNegative: path.exam.negativeMarksPerWrong,
+            previousYearTag: pyqTag,
+            source: q.source,
+            pyqExamSlug: q.pyqExamSlug,
+            pyqYear: q.pyqYear,
+            answerKeyVerified: q.answerKeyVerified,
+            contentHash: columns.contentHash,
+            ingestionJobId: created.id,
+          })
+          .onConflictDoNothing({ target: questions.contentHash })
+          .returning({ id: questions.id });
+
+        if (liveRow) {
+          const [promoted] = await db
+            .update(questionIngestionJobs)
+            .set({
+              status: "inserted",
+              insertedQuestionId: liveRow.id,
+              reviewedAt: new Date(),
+            })
+            .where(eq(questionIngestionJobs.id, created.id))
+            .returning();
+          return reply.status(201).send({ job: toJobDto(promoted) });
+        }
+      }
+    }
+
     return reply.status(201).send({ job: toJobDto(created) });
   });
 
   /**
    * 2b. POST /admin/ingestion/generate  { examSlug, subtopicSlug, count, difficulty }
-   * Drafts WBPSC-style MCQs with AI (apps/api-ai → Gemini, 3-tier cached),
-   * grounded on real PYQs of the same subtopic. Lands in the review queue as
-   * `ai_generated` with "answer verified" OFF — an educator must check each one.
    */
   fastify.post("/generate", async (request, reply) => {
     const parsed = GenerateQuestionsInputSchema.safeParse(request.body);
@@ -488,7 +912,6 @@ export const ingestionRoutes: FastifyPluginAsync = async (
 
   /**
    * 3. GET /admin/ingestion/batches
-   * Most recent 50 upload batches with per-status counts.
    */
   fastify.get("/batches", async (request) => {
     const { examSlug } = z
@@ -524,7 +947,6 @@ export const ingestionRoutes: FastifyPluginAsync = async (
 
   /**
    * 4. GET /admin/ingestion/jobs?batchId=&status=&limit=&offset=
-   * Review queue rows in upload order.
    */
   fastify.get("/jobs", async (request, reply) => {
     const parsed = JobListQuerySchema.safeParse(request.query);
@@ -564,9 +986,8 @@ export const ingestionRoutes: FastifyPluginAsync = async (
 
   /**
    * 5. PATCH /admin/ingestion/jobs/:id
-   * Educator edits a staged draft (fix syllabus path, add Bengali, verify
-   * answer key). Failed rows that have a draft can be repaired here too.
-   * Status moves to pending_review once every bilingual field is filled.
+   * Educator edits a staged draft. If Bengali fields or explanation are left
+   * blank and autoTranslate !== false, automatically translates English -> Bengali.
    */
   fastify.patch("/jobs/:id", async (request, reply) => {
     const params = JobParamsSchema.safeParse(request.params);
@@ -578,7 +999,8 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       });
     }
     const { id } = params.data;
-    const { draft, reviewNotes } = body.data;
+    const { reviewNotes, autoTranslate } = body.data;
+    let draft = body.data.draft;
 
     const [job] = await db
       .select()
@@ -596,6 +1018,10 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       return reply
         .status(409)
         .send({ error: `Cannot edit a question with status "${job.status}"` });
+    }
+
+    if (autoTranslate !== false && !isDraftTextComplete(draft)) {
+      draft = await translateAndEnrichQuestionDraft(draft);
     }
 
     const canon = canonicalizeDraft(await loadSyllabus(), draft);
@@ -623,8 +1049,6 @@ export const ingestionRoutes: FastifyPluginAsync = async (
 
   /**
    * 6. POST /admin/ingestion/jobs/approve  { ids: [...] }
-   * Strict bilingual validation, then insert into the live `questions` bank.
-   * The unique content hash makes a concurrent duplicate approval a no-op.
    */
   fastify.post("/jobs/approve", async (request, reply) => {
     const parsed = IdsBodySchema.safeParse(request.body);

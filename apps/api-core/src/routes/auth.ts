@@ -68,14 +68,14 @@ async function startSession(reply: FastifyReply, user: UserRow) {
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, user.id))
     .returning();
-  setSessionCookie(reply, fresh);
-  return { user: toUserDto(fresh) };
+  const token = setSessionCookie(reply, fresh);
+  return { user: toUserDto(fresh), token };
 }
 
 /**
- * Single-admin policy at startup: ADMIN_EMAIL is the only admin. If
- * ADMIN_PASSWORD is set, the admin can also sign in with email + password
- * (useful before Google sign-in is configured).
+ * Single-admin policy at startup: ADMIN_EMAIL is the only admin.
+ * Uses ADMIN_PASSWORD (or defaults to "wbpsc-admin-2026" in dev) so the admin
+ * can always sign in with email + password before Google OAuth is configured.
  */
 export async function ensureAdminAccount(log: { info: (msg: string) => void }) {
   const email = adminEmail();
@@ -85,7 +85,10 @@ export async function ensureAdminAccount(log: { info: (msg: string) => void }) {
     .where(and(eq(users.role, "admin"), email ? ne(users.email, email) : undefined));
   if (!email) return;
 
-  const password = process.env.ADMIN_PASSWORD;
+  const password =
+    process.env.ADMIN_PASSWORD?.trim() ||
+    (process.env.NODE_ENV !== "production" ? "wbpsc-admin-2026" : "");
+
   const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
   if (existing) {
     const passwordStale = password && !(await verifyPassword(password, existing.passwordHash));
@@ -93,15 +96,16 @@ export async function ensureAdminAccount(log: { info: (msg: string) => void }) {
       .update(users)
       .set({
         role: "admin",
+        subscriptionTier: "wbcs_executive_pass",
         isActive: true,
-        ...(passwordStale ? { passwordHash: await hashPassword(password!) } : {}),
+        ...(passwordStale ? { passwordHash: await hashPassword(password) } : {}),
       })
       .where(eq(users.id, existing.id));
-  } else if (password) {
+  } else {
     await db.insert(users).values({
       email,
-      fullName: "WBPSC Admin",
-      passwordHash: await hashPassword(password),
+      fullName: "WBPSC Master Admin",
+      passwordHash: password ? await hashPassword(password) : null,
       role: "admin",
       subscriptionTier: "wbcs_executive_pass",
     });
@@ -117,6 +121,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
   /** 1. GET /auth/config — public settings the login screen needs */
   fastify.get("/config", async () => ({
     googleClientId: process.env.GOOGLE_CLIENT_ID || null,
+    adminEmail: adminEmail(),
+    devQuickAdminEnabled: process.env.NODE_ENV !== "production",
   }));
 
   /** 2. POST /auth/register — email + password sign-up (aspirant) */
@@ -127,8 +133,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
     }
     const { email, password, fullName } = parsed.data;
     if (email === adminEmail()) {
+      const [existingAdmin] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+      if (existingAdmin && (await verifyPassword(password, existingAdmin.passwordHash))) {
+        return startSession(reply, existingAdmin);
+      }
       return reply.status(403).send({
-        error: "This is the admin email — sign in with Google or the admin password from .env",
+        error: "This is the admin email — switch to Sign In and use your ADMIN_PASSWORD from .env",
       });
     }
 
@@ -138,7 +148,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
       .onConflictDoNothing({ target: users.email })
       .returning();
     if (!created) {
-      return reply.status(409).send({ error: "An account with this email already exists — sign in instead" });
+      return reply
+        .status(409)
+        .send({ error: "An account with this email already exists — sign in instead" });
     }
     return reply.status(201).send(await startSession(reply, created));
   });
@@ -161,6 +173,20 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
       return reply.status(403).send({ error: "This account has been deactivated" });
     }
     return startSession(reply, user);
+  });
+
+  /** 3b. POST /auth/dev-admin — 1-click Admin sign-in in Dev / AI Studio preview */
+  fastify.post("/dev-admin", async (_request, reply) => {
+    if (process.env.NODE_ENV === "production") {
+      return reply.status(403).send({ error: "Disabled in production" });
+    }
+    const email = adminEmail();
+    await ensureAdminAccount({ info: () => undefined });
+    const [adminUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    if (!adminUser) {
+      return reply.status(404).send({ error: "Admin account not found" });
+    }
+    return startSession(reply, adminUser);
   });
 
   /** 4. POST /auth/google — Google Identity Services credential (ID token) */
@@ -191,7 +217,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
       if (!existing.isActive) {
         return reply.status(403).send({ error: "This account has been deactivated" });
       }
-      // Google has verified this email, so linking it to an existing account is safe
       [user] = await db
         .update(users)
         .set({ googleSub: identity.sub, ...(isAdmin ? { role: "admin" as const } : {}) })
