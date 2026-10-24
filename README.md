@@ -175,3 +175,14 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 (You can verify it worked by typing free -h. You should see 4.0G listed in the Swap row).
+---
+
+
+
+## **Get the code into VM**
+---
+
+```bash
+git clone https://github.com/Pankaj89Acharjee/wbpsc-mock-app-ai.git && cd wbpsc-mock-app-ai
+```
+
