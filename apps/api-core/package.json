@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/server.ts",
-    "build": "esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/server.js --external:postgres",
+    "build": "esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/server.js --external:postgres",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "db:push": "drizzle-kit push --config drizzle.config.ts"
