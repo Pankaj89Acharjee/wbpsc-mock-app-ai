@@ -41,10 +41,16 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from app.services.cache import ThreeTierCacheService
+from app.services.internal_auth import require_internal_token
 
 logger = logging.getLogger("wbpsc.api_ai.tutor")
 
-router = APIRouter(prefix="/ai", tags=["WBPSC AI Tutor & Evaluator"])
+# Internal only: api-core authenticates the user and forwards with X-Internal-Token
+router = APIRouter(
+    prefix="/ai",
+    tags=["WBPSC AI Tutor & Evaluator"],
+    dependencies=[Depends(require_internal_token)],
+)
 
 # ============================================================================
 # Models & Configuration
@@ -79,15 +85,8 @@ class GenerateNotesRequest(BaseModel):
     subscription_tier: Literal["free", "pro_prelims", "wbcs_executive_pass"] = Field(
         default="pro_prelims"
     )
-    exam_slug: Literal[
-        "wbcs-prelims",
-        "wbcs-mains",
-        "wbpsc-clerkship-part1",
-        "wbpsc-clerkship-part2",
-        "wbpsc-miscellaneous",
-        "wbpsc-food-si",
-        "wbp-constable-si",
-    ] = Field(default="wbcs-prelims")
+    # Free-form: admins can create new exams in api-core
+    exam_slug: str = Field(default="wbcs-prelims", min_length=2, max_length=80)
     subject_name: str = Field(
         ..., examples=["Indian Polity & Panchayati Raj"]
     )
@@ -103,13 +102,19 @@ class GenerateNotesRequest(BaseModel):
     )
 
 
+class MCQOptions(BaseModel):
+    # Explicit keys: Gemini structured output does not accept open-ended dicts
+    A: str
+    B: str
+    C: str
+    D: str
+
+
 class GeneratedMCQItem(BaseModel):
     question_stem: str = Field(
         ..., description="PYQ-style MCQ stem in the requested language"
     )
-    options: dict[str, str] = Field(
-        ..., description="Options dictionary with keys A, B, C, D"
-    )
+    options: MCQOptions = Field(..., description="The four options A, B, C, D")
     correct_option: Literal["A", "B", "C", "D"]
     explanation: str = Field(
         ..., description="Concise exam-focused explanation citing facts/articles/years"
@@ -150,10 +155,6 @@ class DescriptiveEvaluationStructuredOutput(BaseModel):
     )
     estimated_word_count: int = Field(..., ge=0)
     target_word_limit: int = Field(..., ge=10)
-    scores: dict[str, float] = Field(
-        ...,
-        description="Breakdown: grammar_score (out of 10), content_score (out of 10), word_limit_score (out of 5), total_score (out of 25)",
-    )
     grammar_score: float = Field(..., ge=0, le=10, description="Marks out of 10 for Grammar, Spelling & Matra/Conjunct accuracy")
     content_score: float = Field(..., ge=0, le=10, description="Marks out of 10 for Relevance, Format (Heading/Date/Place) & Expression")
     word_limit_score: float = Field(..., ge=0, le=5, description="Marks out of 5 for adhering to WBPSC prescribed word count")

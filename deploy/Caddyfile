@@ -1,0 +1,24 @@
+# ============================================================================
+# Caddy reverse proxy (only service with public ports 80/443).
+# SITE_ADDRESS (from .env):
+#   ":80"                 → plain HTTP on the VM's IP (testing)
+#   "wbpsc.duckdns.org"   → automatic HTTPS certificate from Let's Encrypt
+# ============================================================================
+{$SITE_ADDRESS::80} {
+	encode gzip
+
+	# Daily Current Affairs generator still lives in the web server (server.ts)
+	handle /api/cron/* {
+		reverse_proxy web:3000
+	}
+
+	# api-core: auth, exams, grading, admin, AI proxy  (/api/auth/me → /auth/me)
+	handle_path /api/* {
+		reverse_proxy api-core:8080
+	}
+
+	# Web app (static build + SPA fallback)
+	handle {
+		reverse_proxy web:3000
+	}
+}

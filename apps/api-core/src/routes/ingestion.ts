@@ -1,18 +1,9 @@
-import type {
-  FastifyInstance,
-  FastifyPluginAsync,
-  FastifyReply,
-  FastifyRequest,
-} from "fastify";
-import { createHash, timingSafeEqual } from "node:crypto";
+import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index";
 import {
   exams,
-  subjects,
-  chapters,
-  subtopics,
   questions,
   questionIngestionJobs,
   type IngestionStatusType,
@@ -21,19 +12,25 @@ import {
   ApprovableQuestionSchema,
   BULK_IMPORT_MAX_ROWS,
   BulkQuestionRowSchema,
+  GenerateQuestionsInputSchema,
   IngestionStatusSchema,
   StagedQuestionDraftSchema,
   csvTableToRecords,
   isDraftTextComplete,
+  normalizeRecordKeys,
   parseCsv,
-  pyqLabel,
   rowToDraft,
+  type GenerateQuestionsResult,
   type IngestionBatchSummary,
   type IngestionJobDto,
   type IngestionUploadResult,
   type StagedQuestionDraft,
 } from "../../../../packages/shared-types/src/index";
 import { computeContentHash } from "../lib/contentHash";
+import { formatIssues } from "../lib/validation";
+import { requireAdmin } from "../lib/auth";
+import { generateWithApiAi, loadGenerationContext } from "../lib/aiGeneration";
+import { canonicalizeDraft, loadSyllabus, resolveSyllabusPath } from "../lib/syllabus";
 
 // ============================================================================
 // Request Validation Schemas (Zod)
@@ -47,6 +44,7 @@ const UploadBodySchema = z.object({
 
 const JobListQuerySchema = z.object({
   batchId: z.string().max(80).optional(),
+  examSlug: z.string().max(80).optional(),
   status: z.union([IngestionStatusSchema, z.literal("all")]).default("all"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
@@ -54,7 +52,7 @@ const JobListQuerySchema = z.object({
 
 const JobParamsSchema = z.object({ id: z.string().uuid() });
 
-const UpdateJobBodySchema = z.object({
+const DraftBodySchema = z.object({
   draft: StagedQuestionDraftSchema,
   reviewNotes: z.string().max(2000).nullable().optional(),
 });
@@ -73,93 +71,151 @@ const ACTIVE_STAGING_STATUSES: IngestionStatusType[] = [
 
 type NewIngestionJob = typeof questionIngestionJobs.$inferInsert;
 type IngestionJobRow = typeof questionIngestionJobs.$inferSelect;
+type CanonicalDraft = Extract<ReturnType<typeof canonicalizeDraft>, { ok: true }>;
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-/**
- * Interim admin guard until Fastify JWT auth lands: requires the
- * `x-admin-key` header to match ADMIN_API_KEY (constant-time compare).
- */
-async function requireAdminKey(request: FastifyRequest, reply: FastifyReply) {
-  const expected = process.env.ADMIN_API_KEY;
-  if (!expected) {
-    return reply
-      .status(503)
-      .send({ error: "ADMIN_API_KEY is not configured on api-core" });
-  }
-  const provided = request.headers["x-admin-key"];
-  const digest = (s: string) => createHash("sha256").update(s).digest();
-  if (
-    typeof provided !== "string" ||
-    !timingSafeEqual(digest(provided), digest(expected))
-  ) {
-    return reply.status(401).send({ error: "Invalid or missing admin key" });
-  }
-}
-
-function formatIssues(issues: { path: PropertyKey[]; message: string }[]): string {
-  return issues
-    .map((i) => `${i.path.map(String).join(".") || "row"}: ${i.message}`)
-    .join("; ");
-}
-
-type TaxonomyPath = Pick<
-  StagedQuestionDraft,
-  "examSlug" | "subjectSlug" | "chapterSlug" | "subtopicSlug"
->;
-
-const taxonomyKey = (p: TaxonomyPath) =>
-  `${p.examSlug}/${p.subjectSlug}/${p.chapterSlug}/${p.subtopicSlug}`;
-
-/** Whole syllabus tree in one query (a few hundred rows) keyed by slug path. */
-async function loadTaxonomyIndex() {
-  const rows = await db
-    .select({
-      examSlug: exams.slug,
-      examId: exams.id,
-      marksPerCorrect: exams.marksPerCorrect,
-      negativeMarksPerWrong: exams.negativeMarksPerWrong,
-      subjectSlug: subjects.slug,
-      subjectId: subjects.id,
-      chapterSlug: chapters.slug,
-      chapterId: chapters.id,
-      subtopicSlug: subtopics.slug,
-      subtopicId: subtopics.id,
-    })
-    .from(subtopics)
-    .innerJoin(chapters, eq(subtopics.chapterId, chapters.id))
-    .innerJoin(subjects, eq(chapters.subjectId, subjects.id))
-    .innerJoin(exams, eq(subjects.examId, exams.id));
-  return new Map(rows.map((r) => [taxonomyKey(r), r]));
-}
-
-const unknownTaxonomyMessage = (p: TaxonomyPath) =>
-  `Unknown syllabus path "${taxonomyKey(p)}" — fix the slugs or create the subject/chapter/subtopic first`;
-
-/** Columns derived from a draft (FKs, hash, PYQ metadata, status). */
-function draftColumns(
-  draft: StagedQuestionDraft,
-  tax: { examId: string; subjectId: string; chapterId: string; subtopicId: string }
-) {
+/** Columns derived from a resolved draft (FKs, hash, PYQ metadata, status). */
+function draftColumns({ draft, path, pyqTag }: CanonicalDraft) {
   return {
     enrichedData: draft,
-    examId: tax.examId,
-    subjectId: tax.subjectId,
-    chapterId: tax.chapterId,
-    subtopicId: tax.subtopicId,
+    examId: path.exam.id,
+    subjectId: path.subject.id,
+    chapterId: path.chapter.id,
+    subtopicId: path.subtopic.id,
     contentHash: computeContentHash(draft),
     pyqYear: draft.pyqYear,
-    pyqExamName: pyqLabel(draft.pyqExamSlug, draft.pyqYear),
+    pyqExamName: pyqTag,
     status: (isDraftTextComplete(draft)
       ? "pending_review"
       : "pending_ai") as IngestionStatusType,
   };
 }
 
+/** Message when `hash` already exists live or in another pending staging row. */
+async function findDuplicate(hash: string, excludeJobId?: string): Promise<string | null> {
+  const [live] = await db
+    .select({ id: questions.id })
+    .from(questions)
+    .where(eq(questions.contentHash, hash))
+    .limit(1);
+  if (live) return `Duplicate of live question ${live.id}`;
+
+  const [staged] = await db
+    .select({ batchId: questionIngestionJobs.batchId })
+    .from(questionIngestionJobs)
+    .where(
+      and(
+        eq(questionIngestionJobs.contentHash, hash),
+        inArray(questionIngestionJobs.status, ACTIVE_STAGING_STATUSES),
+        excludeJobId ? ne(questionIngestionJobs.id, excludeJobId) : undefined
+      )
+    )
+    .limit(1);
+  return staged ? `Duplicate of a pending row in batch ${staged.batchId}` : null;
+}
+
+type StagedRow = { rowNumber: number; job: NewIngestionJob };
+
+/**
+ * Marks duplicates (live bank, other pending rows, earlier rows of the same
+ * batch) as failed, inserts the batch, and summarises it.
+ */
+async function saveStagedBatch(
+  batchId: string,
+  staged: StagedRow[],
+  skippedEmpty = 0
+): Promise<IngestionUploadResult> {
+  const hashes = [
+    ...new Set(
+      staged.flatMap(({ job }) =>
+        job.status !== "failed" && job.contentHash ? [job.contentHash] : []
+      )
+    ),
+  ];
+  const liveDupes = new Map<string, string>();
+  const stagedDupes = new Map<string, string>();
+  if (hashes.length > 0) {
+    const live = await db
+      .select({ id: questions.id, hash: questions.contentHash })
+      .from(questions)
+      .where(inArray(questions.contentHash, hashes));
+    live.forEach((r) => r.hash && liveDupes.set(r.hash, r.id));
+
+    const pending = await db
+      .select({
+        hash: questionIngestionJobs.contentHash,
+        batchId: questionIngestionJobs.batchId,
+      })
+      .from(questionIngestionJobs)
+      .where(
+        and(
+          inArray(questionIngestionJobs.contentHash, hashes),
+          inArray(questionIngestionJobs.status, ACTIVE_STAGING_STATUSES)
+        )
+      );
+    pending.forEach((r) => r.hash && stagedDupes.set(r.hash, r.batchId));
+  }
+
+  const seenInBatch = new Map<string, number>();
+  for (const { rowNumber, job } of staged) {
+    if (job.status === "failed" || !job.contentHash) continue;
+    const hash = job.contentHash;
+    let duplicateOf: string | null = null;
+    if (liveDupes.has(hash)) {
+      duplicateOf = `live question ${liveDupes.get(hash)}`;
+    } else if (stagedDupes.has(hash)) {
+      duplicateOf = `a pending row in batch ${stagedDupes.get(hash)}`;
+    } else if (seenInBatch.has(hash)) {
+      duplicateOf = `row ${seenInBatch.get(hash)} of this batch`;
+    } else {
+      seenInBatch.set(hash, rowNumber);
+    }
+    if (duplicateOf) {
+      job.status = "failed";
+      job.errorMessage = `Duplicate of ${duplicateOf}`;
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < staged.length; i += 500) {
+      await tx
+        .insert(questionIngestionJobs)
+        .values(staged.slice(i, i + 500).map((s) => s.job));
+    }
+  });
+
+  return {
+    batchId,
+    total: staged.length,
+    pendingReview: staged.filter((s) => s.job.status === "pending_review").length,
+    pendingAi: staged.filter((s) => s.job.status === "pending_ai").length,
+    failed: staged.filter((s) => s.job.status === "failed").length,
+    skippedEmpty,
+    errors: staged
+      .filter((s) => s.job.status === "failed")
+      .slice(0, 100)
+      .map((s) => ({ rowNumber: s.rowNumber, message: s.job.errorMessage ?? "" })),
+  };
+}
+
+/** Rows belonging to an exam, plus unresolved rows that could belong to any exam. */
+async function examScope(examSlug: string | undefined) {
+  if (!examSlug) return undefined;
+  const [exam] = await db
+    .select({ id: exams.id })
+    .from(exams)
+    .where(eq(exams.slug, examSlug))
+    .limit(1);
+  return exam
+    ? or(eq(questionIngestionJobs.examId, exam.id), isNull(questionIngestionJobs.examId))
+    : isNull(questionIngestionJobs.examId);
+}
+
 function toJobDto(row: IngestionJobRow): IngestionJobDto {
-  const raw = row.rawData as { rowNumber?: number } | null;
+  const raw = row.rawData as { rowNumber?: number | null } | null;
   return {
     id: row.id,
     batchId: row.batchId,
@@ -188,11 +244,11 @@ const statusCount = (status: IngestionStatusType) =>
 export const ingestionRoutes: FastifyPluginAsync = async (
   fastify: FastifyInstance
 ) => {
-  fastify.addHook("preHandler", requireAdminKey);
+  fastify.addHook("preHandler", requireAdmin);
 
   /**
    * 1. POST /admin/ingestion/upload
-   * Parses a CSV/JSON file, validates every row, resolves syllabus slugs,
+   * Parses a CSV/JSON file, validates every row, resolves syllabus names/slugs,
    * flags duplicates, and stages everything in `question_ingestion_jobs`.
    * Nothing reaches the live `questions` table from here.
    */
@@ -232,8 +288,25 @@ export const ingestionRoutes: FastifyPluginAsync = async (
             error: "JSON upload must be an array of question objects",
           });
         }
-        records = json.map((record, i) => ({ rowNumber: i + 1, record }));
+        records = json.map((record, i) => ({
+          rowNumber: i + 1,
+          record: normalizeRecordKeys(record),
+        }));
       }
+
+      // Rows from the per-exam template that were left without a question
+      const isUnusedTemplateRow = (record: unknown) => {
+        const r = record as Record<string, unknown> | null;
+        return (
+          !!r &&
+          ["stem_en", "option_a_en", "option_b_en", "option_c_en", "option_d_en"].every(
+            (k) => typeof r[k] !== "string" || (r[k] as string).trim() === ""
+          )
+        );
+      };
+      const totalRecords = records.length;
+      records = records.filter(({ record }) => !isUnusedTemplateRow(record));
+      const skippedEmpty = totalRecords - records.length;
 
       if (records.length === 0) {
         return reply.status(400).send({ error: "No question rows found" });
@@ -246,9 +319,9 @@ export const ingestionRoutes: FastifyPluginAsync = async (
 
       const source = format === "csv" ? "csv_upload" : "json_upload";
       const batchId = `${source}-${Date.now()}`;
-      const taxonomy = await loadTaxonomyIndex();
+      const syllabus = await loadSyllabus();
 
-      // Pass 1: validate rows & resolve syllabus FKs
+      // Pass 1: validate rows & resolve syllabus names → canonical slugs/FKs
       const staged = records.map(({ rowNumber, record }) => {
         const job: NewIngestionJob = {
           batchId,
@@ -262,87 +335,19 @@ export const ingestionRoutes: FastifyPluginAsync = async (
           return { rowNumber, job };
         }
         const draft = rowToDraft(rowParsed.data);
-        const tax = taxonomy.get(taxonomyKey(draft));
-        if (!tax) {
+        const canon = canonicalizeDraft(syllabus, draft);
+        if (!canon.ok) {
+          // Keep the draft so the educator can fix the syllabus path with dropdowns
           job.enrichedData = draft;
-          job.errorMessage = unknownTaxonomyMessage(draft);
+          job.errorMessage = canon.message;
           return { rowNumber, job };
         }
-        Object.assign(job, draftColumns(draft, tax));
+        Object.assign(job, draftColumns(canon));
         return { rowNumber, job };
       });
 
-      // Pass 2: duplicate detection (live bank, active staging, same file)
-      const hashes = [
-        ...new Set(
-          staged.flatMap(({ job }) =>
-            job.status !== "failed" && job.contentHash ? [job.contentHash] : []
-          )
-        ),
-      ];
-      const liveDupes = new Map<string, string>();
-      const stagedDupes = new Map<string, string>();
-      if (hashes.length > 0) {
-        const live = await db
-          .select({ id: questions.id, hash: questions.contentHash })
-          .from(questions)
-          .where(inArray(questions.contentHash, hashes));
-        live.forEach((r) => r.hash && liveDupes.set(r.hash, r.id));
-
-        const pending = await db
-          .select({
-            hash: questionIngestionJobs.contentHash,
-            batchId: questionIngestionJobs.batchId,
-          })
-          .from(questionIngestionJobs)
-          .where(
-            and(
-              inArray(questionIngestionJobs.contentHash, hashes),
-              inArray(questionIngestionJobs.status, ACTIVE_STAGING_STATUSES)
-            )
-          );
-        pending.forEach((r) => r.hash && stagedDupes.set(r.hash, r.batchId));
-      }
-
-      const seenInFile = new Map<string, number>();
-      for (const { rowNumber, job } of staged) {
-        if (job.status === "failed" || !job.contentHash) continue;
-        const hash = job.contentHash;
-        let duplicateOf: string | null = null;
-        if (liveDupes.has(hash)) {
-          duplicateOf = `live question ${liveDupes.get(hash)}`;
-        } else if (stagedDupes.has(hash)) {
-          duplicateOf = `a pending row in batch ${stagedDupes.get(hash)}`;
-        } else if (seenInFile.has(hash)) {
-          duplicateOf = `row ${seenInFile.get(hash)} of this file`;
-        } else {
-          seenInFile.set(hash, rowNumber);
-        }
-        if (duplicateOf) {
-          job.status = "failed";
-          job.errorMessage = `Duplicate of ${duplicateOf}`;
-        }
-      }
-
-      await db.transaction(async (tx) => {
-        for (let i = 0; i < staged.length; i += 500) {
-          await tx
-            .insert(questionIngestionJobs)
-            .values(staged.slice(i, i + 500).map((s) => s.job));
-        }
-      });
-
-      const result: IngestionUploadResult = {
-        batchId,
-        total: staged.length,
-        pendingReview: staged.filter((s) => s.job.status === "pending_review").length,
-        pendingAi: staged.filter((s) => s.job.status === "pending_ai").length,
-        failed: staged.filter((s) => s.job.status === "failed").length,
-        errors: staged
-          .filter((s) => s.job.status === "failed")
-          .slice(0, 100)
-          .map((s) => ({ rowNumber: s.rowNumber, message: s.job.errorMessage ?? "" })),
-      };
+      // Pass 2: duplicate detection (live bank, active staging, same file) + insert
+      const result = await saveStagedBatch(batchId, staged, skippedEmpty);
       request.log.info(
         { batchId, total: result.total, failed: result.failed },
         "Bulk question upload staged"
@@ -352,10 +357,144 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   );
 
   /**
-   * 2. GET /admin/ingestion/batches
+   * 2. POST /admin/ingestion/jobs  { draft }
+   * Adds ONE question typed in the console (same review queue as uploads).
+   */
+  fastify.post("/jobs", async (request, reply) => {
+    const body = DraftBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({
+        error: "Invalid question",
+        details: formatIssues(body.error.issues),
+      });
+    }
+    const canon = canonicalizeDraft(await loadSyllabus(), body.data.draft);
+    if (!canon.ok) {
+      return reply.status(400).send({ error: canon.message });
+    }
+    const columns = draftColumns(canon);
+    const duplicate = await findDuplicate(columns.contentHash);
+    if (duplicate) {
+      return reply.status(409).send({ error: duplicate });
+    }
+
+    const [created] = await db
+      .insert(questionIngestionJobs)
+      .values({
+        ...columns,
+        batchId: `manual-${new Date().toISOString().slice(0, 10)}`,
+        source: "manual",
+        rawData: { rowNumber: null, fileName: "Added in console", record: body.data.draft },
+        reviewNotes: body.data.reviewNotes ?? null,
+      })
+      .returning();
+    return reply.status(201).send({ job: toJobDto(created) });
+  });
+
+  /**
+   * 2b. POST /admin/ingestion/generate  { examSlug, subtopicSlug, count, difficulty }
+   * Drafts WBPSC-style MCQs with AI (apps/api-ai → Gemini, 3-tier cached),
+   * grounded on real PYQs of the same subtopic. Lands in the review queue as
+   * `ai_generated` with "answer verified" OFF — an educator must check each one.
+   */
+  fastify.post("/generate", async (request, reply) => {
+    const parsed = GenerateQuestionsInputSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Invalid generation request",
+        details: formatIssues(parsed.error.issues),
+      });
+    }
+    const input = parsed.data;
+    const syllabus = await loadSyllabus();
+    const resolved = resolveSyllabusPath(syllabus, {
+      exam: input.examSlug,
+      subject: input.subjectSlug || undefined,
+      chapter: input.chapterSlug || undefined,
+      subtopic: input.subtopicSlug,
+    });
+    if (!resolved.ok) {
+      return reply.status(400).send({ error: resolved.message });
+    }
+    const { path } = resolved;
+
+    let generated;
+    try {
+      const context = await loadGenerationContext(path);
+      generated = await generateWithApiAi({
+        exam_slug: path.exam.slug,
+        exam_title: path.exam.name.en,
+        subject_name: path.subject.name.en,
+        chapter_name: path.chapter.name.en,
+        subtopic_slug: path.subtopic.slug,
+        subtopic_name: path.subtopic.name.en,
+        count: input.count,
+        difficulty: input.difficulty,
+        ...context,
+      });
+    } catch (err) {
+      request.log.error(err, "AI question generation failed");
+      return reply.status(502).send({ error: (err as Error).message });
+    }
+
+    const source = "ai_generated";
+    const batchId = `${source}-${Date.now()}`;
+    const staged: StagedRow[] = generated.questions.map((q, i) => {
+      const draft: StagedQuestionDraft = {
+        examSlug: path.exam.slug,
+        subjectSlug: path.subject.slug,
+        chapterSlug: path.chapter.slug,
+        subtopicSlug: path.subtopic.slug,
+        stem: q.stem,
+        options: q.options,
+        correctOption: q.correct_option,
+        explanation: q.explanation,
+        difficulty: q.difficulty,
+        source,
+        pyqExamSlug: null,
+        pyqYear: null,
+        answerKeyVerified: false,
+      };
+      const job: NewIngestionJob = {
+        batchId,
+        source,
+        status: "failed",
+        rawData: {
+          rowNumber: i + 1,
+          fileName: `AI · ${path.subtopic.name.en} (${generated.model_used})`,
+          record: q,
+          cacheTier: generated.cache_tier,
+        },
+        aiConfidenceScore: q.confidence.toFixed(2),
+      };
+      const canon = canonicalizeDraft(syllabus, draft);
+      if (canon.ok) Object.assign(job, draftColumns(canon));
+      else job.errorMessage = canon.message;
+      return { rowNumber: i + 1, job };
+    });
+
+    const summary = await saveStagedBatch(batchId, staged);
+    const result: GenerateQuestionsResult = {
+      ...summary,
+      modelUsed: generated.model_used,
+      cacheTier: generated.cache_tier,
+    };
+    request.log.info(
+      { batchId, subtopic: path.subtopic.slug, total: result.total, cacheTier: result.cacheTier },
+      "AI questions staged"
+    );
+    return reply.status(201).send(result);
+  });
+
+  /**
+   * 3. GET /admin/ingestion/batches
    * Most recent 50 upload batches with per-status counts.
    */
-  fastify.get("/batches", async () => {
+  fastify.get("/batches", async (request) => {
+    const { examSlug } = z
+      .object({ examSlug: z.string().max(80).optional() })
+      .catch({})
+      .parse(request.query);
     const firstCreated = sql<string>`min(${questionIngestionJobs.createdAt})`;
     const rows = await db
       .select({
@@ -371,6 +510,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         failed: statusCount("failed"),
       })
       .from(questionIngestionJobs)
+      .where(await examScope(examSlug))
       .groupBy(questionIngestionJobs.batchId, questionIngestionJobs.source)
       .orderBy(desc(firstCreated))
       .limit(50);
@@ -383,7 +523,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   });
 
   /**
-   * 3. GET /admin/ingestion/jobs?batchId=&status=&limit=&offset=
+   * 4. GET /admin/ingestion/jobs?batchId=&status=&limit=&offset=
    * Review queue rows in upload order.
    */
   fastify.get("/jobs", async (request, reply) => {
@@ -394,9 +534,10 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         details: parsed.error.flatten(),
       });
     }
-    const { batchId, status, limit, offset } = parsed.data;
+    const { batchId, examSlug, status, limit, offset } = parsed.data;
 
     const where = and(
+      await examScope(examSlug),
       batchId ? eq(questionIngestionJobs.batchId, batchId) : undefined,
       status !== "all" ? eq(questionIngestionJobs.status, status) : undefined
     );
@@ -422,13 +563,14 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   });
 
   /**
-   * 4. PATCH /admin/ingestion/jobs/:id
-   * Educator edits a staged draft (fix text, add Bengali, verify answer key).
+   * 5. PATCH /admin/ingestion/jobs/:id
+   * Educator edits a staged draft (fix syllabus path, add Bengali, verify
+   * answer key). Failed rows that have a draft can be repaired here too.
    * Status moves to pending_review once every bilingual field is filled.
    */
   fastify.patch("/jobs/:id", async (request, reply) => {
     const params = JobParamsSchema.safeParse(request.params);
-    const body = UpdateJobBodySchema.safeParse(request.body);
+    const body = DraftBodySchema.safeParse(request.body);
     if (!params.success || !body.success) {
       return reply.status(400).send({
         error: "Invalid draft",
@@ -446,44 +588,24 @@ export const ingestionRoutes: FastifyPluginAsync = async (
     if (!job) {
       return reply.status(404).send({ error: "Staged question not found" });
     }
-    if (job.status !== "pending_ai" && job.status !== "pending_review") {
+    const editable =
+      job.status === "pending_ai" ||
+      job.status === "pending_review" ||
+      (job.status === "failed" && job.enrichedData !== null);
+    if (!editable) {
       return reply
         .status(409)
         .send({ error: `Cannot edit a question with status "${job.status}"` });
     }
 
-    const taxonomy = await loadTaxonomyIndex();
-    const tax = taxonomy.get(taxonomyKey(draft));
-    if (!tax) {
-      return reply.status(400).send({ error: unknownTaxonomyMessage(draft) });
+    const canon = canonicalizeDraft(await loadSyllabus(), draft);
+    if (!canon.ok) {
+      return reply.status(400).send({ error: canon.message });
     }
-    const columns = draftColumns(draft, tax);
-
-    const [liveDupe] = await db
-      .select({ id: questions.id })
-      .from(questions)
-      .where(eq(questions.contentHash, columns.contentHash))
-      .limit(1);
-    if (liveDupe) {
-      return reply
-        .status(409)
-        .send({ error: `This edit duplicates live question ${liveDupe.id}` });
-    }
-    const [stagedDupe] = await db
-      .select({ batchId: questionIngestionJobs.batchId })
-      .from(questionIngestionJobs)
-      .where(
-        and(
-          eq(questionIngestionJobs.contentHash, columns.contentHash),
-          inArray(questionIngestionJobs.status, ACTIVE_STAGING_STATUSES),
-          ne(questionIngestionJobs.id, id)
-        )
-      )
-      .limit(1);
-    if (stagedDupe) {
-      return reply.status(409).send({
-        error: `This edit duplicates a pending row in batch ${stagedDupe.batchId}`,
-      });
+    const columns = draftColumns(canon);
+    const duplicate = await findDuplicate(columns.contentHash, id);
+    if (duplicate) {
+      return reply.status(409).send({ error: `This edit is a ${duplicate.toLowerCase()}` });
     }
 
     const [updated] = await db
@@ -500,7 +622,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   });
 
   /**
-   * 5. POST /admin/ingestion/jobs/approve  { ids: [...] }
+   * 6. POST /admin/ingestion/jobs/approve  { ids: [...] }
    * Strict bilingual validation, then insert into the live `questions` bank.
    * The unique content hash makes a concurrent duplicate approval a no-op.
    */
@@ -523,7 +645,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
           eq(questionIngestionJobs.status, "pending_review")
         )
       );
-    const taxonomy = await loadTaxonomyIndex();
+    const syllabus = await loadSyllabus();
 
     const result = {
       inserted: 0,
@@ -535,11 +657,11 @@ export const ingestionRoutes: FastifyPluginAsync = async (
     await db.transaction(async (tx) => {
       for (const job of jobs) {
         const valid = ApprovableQuestionSchema.safeParse(job.enrichedData);
-        const tax = valid.success ? taxonomy.get(taxonomyKey(valid.data)) : undefined;
-        if (!valid.success || !tax) {
-          const message = valid.success
-            ? unknownTaxonomyMessage(valid.data)
-            : formatIssues(valid.error.issues);
+        const canon = valid.success ? canonicalizeDraft(syllabus, valid.data) : null;
+        if (!valid.success || !canon?.ok) {
+          const message = !valid.success
+            ? formatIssues(valid.error.issues)
+            : (canon as { message: string }).message;
           result.invalid.push({ id: job.id, message });
           await tx
             .update(questionIngestionJobs)
@@ -548,24 +670,24 @@ export const ingestionRoutes: FastifyPluginAsync = async (
           continue;
         }
 
-        const q = valid.data;
+        const { draft: q, path, pyqTag } = canon;
         const contentHash = computeContentHash(q);
         const [created] = await tx
           .insert(questions)
           .values({
-            examId: tax.examId,
-            examSlug: q.examSlug,
-            subjectId: tax.subjectId,
-            chapterId: tax.chapterId,
-            subtopicId: tax.subtopicId,
-            stem: q.stem,
-            options: q.options,
+            examId: path.exam.id,
+            examSlug: path.exam.slug,
+            subjectId: path.subject.id,
+            chapterId: path.chapter.id,
+            subtopicId: path.subtopic.id,
+            stem: valid.data.stem,
+            options: valid.data.options,
             correctOption: q.correctOption,
-            explanation: q.explanation,
+            explanation: valid.data.explanation,
             difficulty: q.difficulty,
-            marksPositive: tax.marksPerCorrect,
-            marksNegative: tax.negativeMarksPerWrong,
-            previousYearTag: pyqLabel(q.pyqExamSlug, q.pyqYear),
+            marksPositive: path.exam.marksPerCorrect,
+            marksNegative: path.exam.negativeMarksPerWrong,
+            previousYearTag: pyqTag,
             source: q.source,
             pyqExamSlug: q.pyqExamSlug,
             pyqYear: q.pyqYear,
@@ -609,7 +731,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   });
 
   /**
-   * 6. POST /admin/ingestion/jobs/reject  { ids: [...], reviewNotes? }
+   * 7. POST /admin/ingestion/jobs/reject  { ids: [...], reviewNotes? }
    */
   fastify.post("/jobs/reject", async (request, reply) => {
     const parsed = IdsBodySchema.safeParse(request.body);

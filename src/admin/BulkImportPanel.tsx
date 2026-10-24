@@ -5,9 +5,10 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
-  KeyRound,
+  Plus,
   RefreshCw,
   Save,
+  Sparkles,
   Upload,
   XCircle,
 } from "lucide-react";
@@ -16,14 +17,15 @@ import {
   BULK_IMPORT_MAX_ROWS,
   BULK_IMPORT_TEMPLATE_EXAMPLES,
   EXAM_SLUG_LABELS,
-  ExamSlugSchema,
   OptionKeySchema,
   csvTableToRecords,
   isDraftTextComplete,
   parseCsv,
   pyqLabel,
   toCsv,
-  type ExamSlug,
+  type ExamDto,
+  type GenerateQuestionsInput,
+  type GenerateQuestionsResult,
   type IngestionBatchSummary,
   type IngestionJobDto,
   type IngestionStatus,
@@ -31,16 +33,15 @@ import {
   type OptionKey,
   type StagedQuestionDraft,
 } from "../../packages/shared-types/src/index";
+import { adminApi, downloadCsv, type SyllabusTrees } from "./adminApi";
+import SyllabusPicker from "./SyllabusPicker";
 
 // ============================================================================
-// Admin Console → Bulk Import & Review
-// CSV/JSON upload → api-core staging table → educator edits/approves → live bank
+// Admin Console → Question Bank → Import & Review
+// CSV/JSON upload or one-by-one entry → api-core staging table →
+// educator edits/approves → live PostgreSQL question bank
 // ============================================================================
 
-const API_CORE_URL =
-  (import.meta.env.VITE_API_CORE_URL as string | undefined) ??
-  "http://localhost:8080";
-const ADMIN_KEY_STORAGE = "wbpsc.adminApiKey";
 const PAGE_SIZE = 50;
 
 type StatusFilter = IngestionStatus | "all";
@@ -48,7 +49,7 @@ type StatusFilter = IngestionStatus | "all";
 const STATUS_TABS: Array<[StatusFilter, string]> = [
   ["pending_review", "Ready for review"],
   ["pending_ai", "Needs Bengali / explanation"],
-  ["failed", "Failed / duplicates"],
+  ["failed", "Needs fixing / duplicates"],
   ["inserted", "Live"],
   ["rejected", "Rejected"],
   ["all", "All"],
@@ -63,7 +64,11 @@ const STATUS_BADGE: Record<IngestionStatus, string> = {
   failed: "bg-rose-500/15 text-rose-300 border-rose-500/30",
 };
 
-const EDITABLE_STATUSES: IngestionStatus[] = ["pending_ai", "pending_review"];
+/** Failed rows are editable only when they parsed into a draft (e.g. unknown syllabus path). */
+const isEditable = (job: IngestionJobDto) =>
+  job.status === "pending_ai" ||
+  job.status === "pending_review" ||
+  (job.status === "failed" && job.draft !== null);
 
 interface SelectedFile {
   name: string;
@@ -82,62 +87,48 @@ interface ApproveResult {
 
 type Notice = { kind: "success" | "error" | "info"; text: string; details?: string[] };
 
-function readStoredKey(): string {
-  try {
-    return sessionStorage.getItem(ADMIN_KEY_STORAGE) ?? "";
-  } catch {
-    return "";
-  }
+function emptyDraft(examSlug: string): StagedQuestionDraft {
+  const blank = { en: "", bn: "" };
+  return {
+    examSlug,
+    subjectSlug: "",
+    chapterSlug: "",
+    subtopicSlug: "",
+    stem: blank,
+    options: { A: blank, B: blank, C: blank, D: blank },
+    correctOption: "A",
+    explanation: blank,
+    difficulty: "moderate",
+    source: "educator",
+    pyqExamSlug: null,
+    pyqYear: null,
+    answerKeyVerified: true,
+  };
 }
 
-function storeKey(key: string) {
-  try {
-    sessionStorage.setItem(ADMIN_KEY_STORAGE, key);
-  } catch {
-    // Private mode / blocked storage — key just won't survive a reload
-  }
-}
-
-async function ingestionApi<T>(
-  path: string,
-  adminKey: string,
-  init?: { method?: string; body?: unknown }
-): Promise<T> {
-  const res = await fetch(`${API_CORE_URL}/admin/ingestion${path}`, {
-    method: init?.method ?? "GET",
-    headers: {
-      "x-admin-key": adminKey,
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const details =
-      typeof body.details === "string" ? `: ${body.details}` : "";
-    throw new Error((body.error ?? `HTTP ${res.status}`) + details);
-  }
-  return body as T;
-}
-
-function downloadTemplate() {
-  // BOM so Excel opens the Bengali sample text as UTF-8
-  const csv = "﻿" + toCsv(BULK_IMPORT_TEMPLATE_EXAMPLES, BULK_IMPORT_CSV_COLUMNS);
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "wbpsc-question-import-template.csv";
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-export default function BulkImportPanel() {
-  const [adminKey, setAdminKey] = useState<string>(readStoredKey);
-  const [keyInput, setKeyInput] = useState<string>(adminKey);
+export default function BulkImportPanel({
+  exam,
+  exams,
+  trees,
+  onQuestionsChanged,
+}: {
+  /** Exam being worked on — scopes the queue and new questions */
+  exam: ExamDto;
+  exams: ExamDto[];
+  trees: SyllabusTrees;
+  onQuestionsChanged: () => Promise<void>;
+}) {
+  const ingestionApi = useCallback(
+    <T,>(path: string, init?: { method?: string; body?: unknown }) =>
+      adminApi<T>(`/ingestion${path}`, init),
+    []
+  );
 
   const [file, setFile] = useState<SelectedFile | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<IngestionUploadResult | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   const [batches, setBatches] = useState<IngestionBatchSummary[]>([]);
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -153,22 +144,24 @@ export default function BulkImportPanel() {
   const [rejectNotes, setRejectNotes] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
 
+  const examLabel = (slug: string | null) =>
+    slug ? (EXAM_SLUG_LABELS[slug] ?? exams.find((e) => e.slug === slug)?.titleEn ?? slug) : null;
+
   const refresh = useCallback(async () => {
-    if (!adminKey) return;
     setLoading(true);
     try {
       const params = new URLSearchParams({
+        examSlug: exam.slug,
         status: statusFilter,
         limit: String(PAGE_SIZE),
         offset: String(offset),
       });
       if (batchId) params.set("batchId", batchId);
       const [batchRes, jobRes] = await Promise.all([
-        ingestionApi<{ batches: IngestionBatchSummary[] }>("/batches", adminKey),
-        ingestionApi<{ jobs: IngestionJobDto[]; total: number }>(
-          `/jobs?${params}`,
-          adminKey
+        ingestionApi<{ batches: IngestionBatchSummary[] }>(
+          `/batches?examSlug=${encodeURIComponent(exam.slug)}`
         ),
+        ingestionApi<{ jobs: IngestionJobDto[]; total: number }>(`/jobs?${params}`),
       ]);
       setBatches(batchRes.batches);
       setJobs(jobRes.jobs);
@@ -179,19 +172,7 @@ export default function BulkImportPanel() {
     } finally {
       setLoading(false);
     }
-  }, [adminKey, batchId, statusFilter, offset]);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  const handleSaveKey = (e: React.FormEvent) => {
-    e.preventDefault();
-    const key = keyInput.trim();
-    storeKey(key);
-    setAdminKey(key);
-    setNotice(null);
-  };
+  }, [ingestionApi, exam.slug, batchId, statusFilter, offset]);
 
   const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = e.target.files?.[0];
@@ -238,7 +219,7 @@ export default function BulkImportPanel() {
     setUploading(true);
     setNotice(null);
     try {
-      const result = await ingestionApi<IngestionUploadResult>("/upload", adminKey, {
+      const result = await ingestionApi<IngestionUploadResult>("/upload", {
         method: "POST",
         body: { fileName: file.name, format: file.format, content: file.content },
       });
@@ -264,7 +245,7 @@ export default function BulkImportPanel() {
     if (ids.length === 0) return;
     setActionBusy(true);
     try {
-      const r = await ingestionApi<ApproveResult>("/jobs/approve", adminKey, {
+      const r = await ingestionApi<ApproveResult>("/jobs/approve", {
         method: "POST",
         body: { ids },
       });
@@ -282,7 +263,7 @@ export default function BulkImportPanel() {
         details: problems,
       });
       setExpandedId(null);
-      await refresh();
+      await Promise.all([refresh(), onQuestionsChanged()]);
     } catch (err) {
       setNotice({ kind: "error", text: (err as Error).message });
     } finally {
@@ -294,7 +275,7 @@ export default function BulkImportPanel() {
     if (ids.length === 0) return;
     setActionBusy(true);
     try {
-      const r = await ingestionApi<{ rejected: number }>("/jobs/reject", adminKey, {
+      const r = await ingestionApi<{ rejected: number }>("/jobs/reject", {
         method: "POST",
         body: { ids, reviewNotes: rejectNotes.trim() || undefined },
       });
@@ -309,25 +290,47 @@ export default function BulkImportPanel() {
     }
   };
 
-  const handleSaveDraft = async (
-    job: IngestionJobDto,
-    draft: StagedQuestionDraft,
-    reviewNotes: string
-  ): Promise<boolean> => {
+  const saveExisting =
+    (job: IngestionJobDto) =>
+    async (draft: StagedQuestionDraft, reviewNotes: string): Promise<boolean> => {
+      try {
+        const { job: updated } = await ingestionApi<{ job: IngestionJobDto }>(`/jobs/${job.id}`, {
+          method: "PATCH",
+          body: { draft, reviewNotes: reviewNotes.trim() || null },
+        });
+        setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+        setNotice({
+          kind: "success",
+          text:
+            updated.status === "pending_review"
+              ? `Saved — ready for approval`
+              : `Saved — still missing Bengali or explanation text`,
+        });
+        return true;
+      } catch (err) {
+        setNotice({ kind: "error", text: (err as Error).message });
+        return false;
+      }
+    };
+
+  const saveNew = async (draft: StagedQuestionDraft, reviewNotes: string): Promise<boolean> => {
     try {
-      const { job: updated } = await ingestionApi<{ job: IngestionJobDto }>(
-        `/jobs/${job.id}`,
-        adminKey,
-        { method: "PATCH", body: { draft, reviewNotes: reviewNotes.trim() || null } }
-      );
-      setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+      const { job } = await ingestionApi<{ job: IngestionJobDto }>("/jobs", {
+        method: "POST",
+        body: { draft, reviewNotes: reviewNotes.trim() || null },
+      });
+      setCreating(false);
+      setBatchId(job.batchId);
+      setStatusFilter(job.status === "pending_review" ? "pending_review" : "pending_ai");
+      setOffset(0);
       setNotice({
         kind: "success",
         text:
-          updated.status === "pending_review"
-            ? `Row ${updated.rowNumber ?? ""} saved — ready for approval`
-            : `Row ${updated.rowNumber ?? ""} saved — still missing Bengali or explanation text`,
+          job.status === "pending_review"
+            ? "Question added — approve it below to make it live"
+            : "Question added — fill the Bengali / explanation before approving",
       });
+      await refresh();
       return true;
     } catch (err) {
       setNotice({ kind: "error", text: (err as Error).message });
@@ -345,59 +348,51 @@ export default function BulkImportPanel() {
 
   const allOnPageSelected = jobs.length > 0 && jobs.every((j) => selected.has(j.id));
 
-  // ─── No admin key yet ─────────────────────────────────────────────────────
-  if (!adminKey) {
-    return (
-      <form
-        onSubmit={handleSaveKey}
-        className="bg-slate-900 border border-slate-800 rounded-xl p-5 max-w-lg space-y-3"
-      >
-        <h3 className="text-sm font-bold text-white flex items-center gap-2">
-          <KeyRound className="w-4 h-4 text-amber-400" /> Connect to api-core
-        </h3>
-        <p className="text-xs text-slate-400">
-          Bulk import talks to the PostgreSQL question bank through api-core ({API_CORE_URL}).
-          Enter the <code className="text-emerald-300">ADMIN_API_KEY</code> configured on
-          api-core. It is kept only for this browser tab.
-        </p>
-        <input
-          type="password"
-          value={keyInput}
-          onChange={(e) => setKeyInput(e.target.value)}
-          placeholder="ADMIN_API_KEY"
-          className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white"
-        />
-        <button
-          type="submit"
-          disabled={!keyInput.trim()}
-          className="px-4 py-2 text-xs font-semibold bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-        >
-          Connect
-        </button>
-      </form>
-    );
-  }
-
   return (
     <div className="space-y-5">
-      {/* ── Step 1: Upload ─────────────────────────────────────────────── */}
+      {/* ── Step 1: Upload or add ──────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-bold text-white">Upload questions (CSV or JSON)</h3>
-              <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                One MCQ per row. Only the English stem and options are required. Blank
-                Bengali or explanation cells go to “Needs Bengali / explanation”. Nothing goes
-                live until you approve it below.
-              </p>
-            </div>
+          <div className="flex flex-wrap gap-2">
             <button
-              onClick={downloadTemplate}
+              onClick={() => {
+                setCreating(true);
+                setGenerating(false);
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add one question
+            </button>
+            <button
+              onClick={() => {
+                setGenerating(true);
+                setCreating(false);
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-violet-500 hover:bg-violet-400 text-white rounded-lg cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" /> Generate with AI
+            </button>
+            <button
+              onClick={() =>
+                downloadCsv(
+                  "wbpsc-question-import-template.csv",
+                  toCsv(BULK_IMPORT_TEMPLATE_EXAMPLES, BULK_IMPORT_CSV_COLUMNS)
+                )
+              }
               className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-white rounded-lg cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5" /> CSV template
+              <Download className="w-3.5 h-3.5" /> Generic template (examples)
             </button>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-white">Bulk upload (CSV or JSON)</h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-xl">
+              Easiest: click <strong>Question template for this exam</strong> above — every
+              subtopic is pre-filled, just type questions next to them (empty rows are ignored).
+              Names or codes both work; typos get a “Did you mean…” hint and can be fixed below
+              with dropdowns.
+            </p>
           </div>
 
           <label className="flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-slate-700 hover:border-amber-500/60 rounded-xl cursor-pointer text-center">
@@ -407,7 +402,7 @@ export default function BulkImportPanel() {
             </span>
             {file && (
               <span className="text-[11px] text-slate-400">
-                {file.rowCount} question row(s) detected
+                {file.rowCount} row(s) detected
               </span>
             )}
             <input
@@ -438,7 +433,10 @@ export default function BulkImportPanel() {
                 {uploadResult.total} rows staged ·{" "}
                 <span className="text-sky-300">{uploadResult.pendingReview} ready for review</span> ·{" "}
                 <span className="text-amber-300">{uploadResult.pendingAi} need Bengali/explanation</span> ·{" "}
-                <span className="text-rose-300">{uploadResult.failed} failed</span>
+                <span className="text-rose-300">{uploadResult.failed} need fixing</span>
+                {uploadResult.skippedEmpty > 0 && (
+                  <span className="text-slate-400"> · {uploadResult.skippedEmpty} empty template rows ignored</span>
+                )}
               </p>
               {uploadResult.errors.length > 0 && (
                 <ul className="max-h-40 overflow-y-auto space-y-1 text-rose-300/90">
@@ -455,18 +453,7 @@ export default function BulkImportPanel() {
 
         {/* ── Batches ──────────────────────────────────────────────────── */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-white">Upload batches</h3>
-            <button
-              onClick={() => {
-                storeKey("");
-                setAdminKey("");
-              }}
-              className="text-[11px] text-slate-500 hover:text-slate-300 cursor-pointer"
-            >
-              Change key
-            </button>
-          </div>
+          <h3 className="text-sm font-bold text-white">Upload batches</h3>
           <div className="space-y-1.5 max-h-80 overflow-y-auto">
             <button
               onClick={() => {
@@ -498,7 +485,7 @@ export default function BulkImportPanel() {
                   <span className="text-sky-300">{b.pendingReview} review</span> ·{" "}
                   <span className="text-amber-300">{b.pendingAi} bn</span> ·{" "}
                   <span className="text-emerald-300">{b.inserted} live</span>
-                  {b.failed > 0 && <span className="text-rose-300"> · {b.failed} failed</span>}
+                  {b.failed > 0 && <span className="text-rose-300"> · {b.failed} to fix</span>}
                 </span>
               </button>
             ))}
@@ -508,6 +495,60 @@ export default function BulkImportPanel() {
           </div>
         </div>
       </div>
+
+      {creating && (
+        <div className="bg-slate-900 border border-emerald-500/30 rounded-xl p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-white">Add one question</h3>
+            <button
+              onClick={() => setCreating(false)}
+              className="text-slate-400 hover:text-white cursor-pointer"
+              aria-label="Close"
+            >
+              <XCircle className="w-4 h-4" />
+            </button>
+          </div>
+          <JobEditor
+            draft={emptyDraft(exam.slug)}
+            exams={[exam]}
+            trees={trees}
+            editable
+            onSave={saveNew}
+            saveLabel="Add to review queue"
+          />
+        </div>
+      )}
+
+      {generating && (
+        <AiGeneratePanel
+          exam={exam}
+          trees={trees}
+          onClose={() => setGenerating(false)}
+          onGenerate={async (input) => {
+            try {
+              const r = await ingestionApi<GenerateQuestionsResult>("/generate", {
+                method: "POST",
+                body: input,
+              });
+              setGenerating(false);
+              setBatchId(r.batchId);
+              setStatusFilter("pending_review");
+              setOffset(0);
+              setNotice({
+                kind: r.failed ? "info" : "success",
+                text: `AI drafted ${r.total} question(s) with ${r.modelUsed}${
+                  r.cacheTier === "gemini" ? "" : " (served from cache — no AI cost)"
+                } · ${r.pendingReview} ready for review${
+                  r.failed ? ` · ${r.failed} skipped as duplicates` : ""
+                }. Check each answer, tick “Answer checked”, save, then approve.`,
+              });
+              await refresh();
+            } catch (err) {
+              setNotice({ kind: "error", text: (err as Error).message });
+            }
+          }}
+        />
+      )}
 
       {notice && (
         <div
@@ -571,6 +612,13 @@ export default function BulkImportPanel() {
             These rows are missing Bengali text or an explanation. Open a row to fill the gaps
             yourself, or re-upload the file with the _bn / explanation columns filled. AI enrichment
             (api-ai) will process this queue once it is connected.
+          </p>
+        )}
+        {statusFilter === "failed" && (
+          <p className="px-4 pt-3 text-xs text-rose-300/90">
+            Rows with a wrong exam / subject / chapter / subtopic can be fixed here — open the row
+            and pick from the dropdowns. Rows that could not be read at all must be fixed in the
+            file and uploaded again.
           </p>
         )}
 
@@ -658,7 +706,7 @@ export default function BulkImportPanel() {
                             )}
                           </>
                         ) : (
-                          <p className="text-slate-500 italic">Row could not be parsed</p>
+                          <p className="text-slate-500 italic">Row could not be read</p>
                         )}
                       </td>
                       <td className="p-3 font-bold text-emerald-300">{d?.correctOption ?? "—"}</td>
@@ -667,7 +715,7 @@ export default function BulkImportPanel() {
                           <>
                             <span className="inline-block px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 mr-1">
                               {d.source === "pyq"
-                                ? pyqLabel(d.pyqExamSlug, d.pyqYear) ?? "PYQ"
+                                ? pyqLabel(examLabel(d.pyqExamSlug), d.pyqYear) ?? "PYQ"
                                 : d.source}
                             </span>
                             <span className="inline-block px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
@@ -686,7 +734,7 @@ export default function BulkImportPanel() {
                         <span
                           className={`inline-block px-2 py-0.5 rounded-full border text-[11px] ${STATUS_BADGE[job.status]}`}
                         >
-                          {job.status.replace("_", " ")}
+                          {job.status === "failed" ? "needs fixing" : job.status.replace("_", " ")}
                         </span>
                         {lowConfidence && (
                           <span className="block mt-1 text-amber-300">
@@ -694,7 +742,7 @@ export default function BulkImportPanel() {
                           </span>
                         )}
                         {job.errorMessage && (
-                          <span className="block mt-1 text-rose-300 max-w-64">{job.errorMessage}</span>
+                          <span className="block mt-1 text-rose-300 max-w-72">{job.errorMessage}</span>
                         )}
                       </td>
                       <td className="p-3">
@@ -716,12 +764,24 @@ export default function BulkImportPanel() {
                           {d ? (
                             <JobEditor
                               key={`${job.id}-${job.status}`}
-                              job={job}
                               draft={d}
-                              busy={actionBusy}
-                              onSave={handleSaveDraft}
-                              onApprove={() => runApprove([job.id])}
-                              onReject={() => runReject([job.id])}
+                              initialNotes={job.reviewNotes ?? ""}
+                              exams={exams}
+                              trees={trees}
+                              editable={isEditable(job)}
+                              readOnlyReason={`Read-only — status is “${job.status.replace("_", " ")}”.`}
+                              onSave={saveExisting(job)}
+                              saveLabel="Save changes"
+                              actions={
+                                isEditable(job)
+                                  ? {
+                                      busy: actionBusy,
+                                      canApprove: job.status === "pending_review",
+                                      onApprove: () => runApprove([job.id]),
+                                      onReject: () => runReject([job.id]),
+                                    }
+                                  : undefined
+                              }
                             />
                           ) : (
                             <div className="space-y-2">
@@ -779,7 +839,105 @@ export default function BulkImportPanel() {
 }
 
 // ============================================================================
-// Inline bilingual editor for one staged question
+// AI PYQ-clone generator form (Pipeline 3)
+// ============================================================================
+
+function AiGeneratePanel({
+  exam,
+  trees,
+  onGenerate,
+  onClose,
+}: {
+  exam: ExamDto;
+  trees: SyllabusTrees;
+  onGenerate: (input: GenerateQuestionsInput) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [path, setPath] = useState({
+    examSlug: exam.slug,
+    subjectSlug: "",
+    chapterSlug: "",
+    subtopicSlug: "",
+  });
+  const [count, setCount] = useState(10);
+  const [difficulty, setDifficulty] = useState<GenerateQuestionsInput["difficulty"]>("mixed");
+  const [busy, setBusy] = useState(false);
+
+  const inputCls =
+    "w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white disabled:opacity-70";
+
+  return (
+    <div className="bg-slate-900 border border-violet-500/40 rounded-xl p-5 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-violet-300" /> Generate questions with AI
+          </h3>
+          <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+            Writes new bilingual MCQs in real WBPSC style for one subtopic, using the existing
+            PYQs of that subtopic as examples and avoiding questions already in the bank. They
+            land in the review queue — <strong>check every answer</strong> and tick “Answer
+            checked” before approving. One batch takes about 20–60 seconds.
+          </p>
+        </div>
+        <button onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer" aria-label="Close">
+          <XCircle className="w-4 h-4" />
+        </button>
+      </div>
+
+      <fieldset disabled={busy} className="space-y-4">
+        <SyllabusPicker
+          exams={[exam]}
+          trees={trees}
+          inputCls={inputCls}
+          value={path}
+          onChange={setPath}
+        />
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-xs text-slate-400 space-y-1">
+            <span>How many (1–25)</span>
+            <input
+              type="number"
+              min={1}
+              max={25}
+              value={count}
+              onChange={(e) => setCount(Math.min(25, Math.max(1, Number(e.target.value) || 1)))}
+              className={`${inputCls} w-24`}
+            />
+          </label>
+          <label className="text-xs text-slate-400 space-y-1">
+            <span>Difficulty</span>
+            <select
+              value={difficulty}
+              onChange={(e) => setDifficulty(e.target.value as GenerateQuestionsInput["difficulty"])}
+              className={`${inputCls} w-40`}
+            >
+              <option value="mixed">Mixed (like real paper)</option>
+              <option value="easy">Easy</option>
+              <option value="moderate">Moderate</option>
+              <option value="hard">Hard</option>
+            </select>
+          </label>
+          <button
+            onClick={async () => {
+              setBusy(true);
+              await onGenerate({ ...path, count, difficulty });
+              setBusy(false);
+            }}
+            disabled={!path.subtopicSlug}
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+          >
+            <Sparkles className={`w-3.5 h-3.5 ${busy ? "animate-pulse" : ""}`} />
+            {busy ? "Generating… (up to a minute)" : `Generate ${count} questions`}
+          </button>
+        </div>
+      </fieldset>
+    </div>
+  );
+}
+
+// ============================================================================
+// Bilingual question editor (used for staged rows and "Add one question")
 // ============================================================================
 
 type TextField = "stem" | "explanation" | OptionKey;
@@ -794,25 +952,30 @@ const TEXT_FIELDS: Array<[TextField, string]> = [
 ];
 
 function JobEditor({
-  job,
   draft: initialDraft,
-  busy,
+  initialNotes = "",
+  exams,
+  trees,
+  editable,
+  readOnlyReason,
   onSave,
-  onApprove,
-  onReject,
+  saveLabel,
+  actions,
 }: {
-  job: IngestionJobDto;
   draft: StagedQuestionDraft;
-  busy: boolean;
-  onSave: (job: IngestionJobDto, draft: StagedQuestionDraft, notes: string) => Promise<boolean>;
-  onApprove: () => void;
-  onReject: () => void;
+  initialNotes?: string;
+  exams: ExamDto[];
+  trees: SyllabusTrees;
+  editable: boolean;
+  readOnlyReason?: string;
+  onSave: (draft: StagedQuestionDraft, notes: string) => Promise<boolean>;
+  saveLabel: string;
+  actions?: { busy: boolean; canApprove: boolean; onApprove: () => void; onReject: () => void };
 }) {
   const [d, setD] = useState<StagedQuestionDraft>(() => structuredClone(initialDraft));
-  const [notes, setNotes] = useState(job.reviewNotes ?? "");
+  const [notes, setNotes] = useState(initialNotes);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const editable = EDITABLE_STATUSES.includes(job.status);
 
   const update = (patch: Partial<StagedQuestionDraft>) => {
     setD((prev) => ({ ...prev, ...patch }));
@@ -837,7 +1000,7 @@ function JobEditor({
 
   const save = async () => {
     setSaving(true);
-    if (await onSave(job, d, notes)) setDirty(false);
+    if (await onSave(d, notes)) setDirty(false);
     setSaving(false);
   };
 
@@ -846,12 +1009,20 @@ function JobEditor({
 
   return (
     <fieldset disabled={!editable || saving} className="space-y-4">
-      {!editable && (
-        <p className="text-xs text-slate-400">
-          Read-only — status is “{job.status.replace("_", " ")}”.
-          {job.status === "failed" && " Fix the row in your file and upload it again."}
-        </p>
-      )}
+      {!editable && readOnlyReason && <p className="text-xs text-slate-400">{readOnlyReason}</p>}
+
+      <SyllabusPicker
+        exams={exams}
+        trees={trees}
+        inputCls={inputCls}
+        value={{
+          examSlug: d.examSlug,
+          subjectSlug: d.subjectSlug,
+          chapterSlug: d.chapterSlug,
+          subtopicSlug: d.subtopicSlug,
+        }}
+        onChange={(v) => update(v)}
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-[110px_1fr_1fr] gap-x-3 gap-y-2 items-start">
         <span />
@@ -928,18 +1099,20 @@ function JobEditor({
           <div className="grid grid-cols-[1fr_80px] gap-2">
             <label className="text-xs text-slate-400 space-y-1">
               <span>PYQ exam</span>
-              <select
+              <input
+                list="pyq-exam-options"
                 value={d.pyqExamSlug ?? ""}
-                onChange={(e) => update({ pyqExamSlug: (e.target.value || null) as ExamSlug | null })}
+                placeholder="e.g. wbcs-prelims"
+                onChange={(e) => update({ pyqExamSlug: e.target.value || null })}
                 className={inputCls}
-              >
-                <option value="">—</option>
-                {ExamSlugSchema.options.map((s) => (
-                  <option key={s} value={s}>
-                    {EXAM_SLUG_LABELS[s]}
+              />
+              <datalist id="pyq-exam-options">
+                {exams.map((e) => (
+                  <option key={e.slug} value={e.slug}>
+                    {e.titleEn}
                   </option>
                 ))}
-              </select>
+              </datalist>
             </label>
             <label className="text-xs text-slate-400 space-y-1">
               <span>Year</span>
@@ -952,33 +1125,6 @@ function JobEditor({
             </label>
           </div>
         )}
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <label className="text-xs text-slate-400 space-y-1">
-          <span>Exam</span>
-          <select
-            value={d.examSlug}
-            onChange={(e) => update({ examSlug: e.target.value as ExamSlug })}
-            className={inputCls}
-          >
-            {ExamSlugSchema.options.map((s) => (
-              <option key={s} value={s}>
-                {EXAM_SLUG_LABELS[s]}
-              </option>
-            ))}
-          </select>
-        </label>
-        {(["subjectSlug", "chapterSlug", "subtopicSlug"] as const).map((key) => (
-          <label key={key} className="text-xs text-slate-400 space-y-1">
-            <span>{key.replace("Slug", "")} slug</span>
-            <input
-              value={d[key]}
-              onChange={(e) => update({ [key]: e.target.value })}
-              className={inputCls}
-            />
-          </label>
-        ))}
       </div>
 
       <label className="flex items-center gap-2 text-xs text-slate-300">
@@ -1013,31 +1159,35 @@ function JobEditor({
             disabled={!dirty || saving}
             className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
           >
-            <Save className="w-3.5 h-3.5" /> {saving ? "Saving…" : "Save changes"}
+            <Save className="w-3.5 h-3.5" /> {saving ? "Saving…" : saveLabel}
           </button>
-          <button
-            type="button"
-            onClick={onApprove}
-            disabled={busy || dirty || job.status !== "pending_review"}
-            title={
-              dirty
-                ? "Save your changes first"
-                : !isDraftTextComplete(d)
-                  ? "Fill every Bengali field and the explanation first"
-                  : undefined
-            }
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-          >
-            <CheckCircle2 className="w-3.5 h-3.5" /> Approve
-          </button>
-          <button
-            type="button"
-            onClick={onReject}
-            disabled={busy}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
-          >
-            <XCircle className="w-3.5 h-3.5" /> Reject
-          </button>
+          {actions && (
+            <>
+              <button
+                type="button"
+                onClick={actions.onApprove}
+                disabled={actions.busy || dirty || !actions.canApprove}
+                title={
+                  dirty
+                    ? "Save your changes first"
+                    : !isDraftTextComplete(d)
+                      ? "Fill every Bengali field and the explanation first"
+                      : undefined
+                }
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" /> Approve
+              </button>
+              <button
+                type="button"
+                onClick={actions.onReject}
+                disabled={actions.busy}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+              >
+                <XCircle className="w-3.5 h-3.5" /> Reject
+              </button>
+            </>
+          )}
           {dirty && <span className="text-xs text-amber-300">Unsaved changes</span>}
         </div>
       )}

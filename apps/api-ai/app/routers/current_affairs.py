@@ -29,7 +29,6 @@ from google import genai
 from google.genai import types
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, Field
-import weasyprint
 
 from app.services.delivery import DeliveryService
 
@@ -160,6 +159,10 @@ def compile_daily_ca_pdf_sync(
         edition_date=edition_date,
         digest=digest.model_dump(),
     )
+    # Imported lazily: WeasyPrint needs GTK/Pango system libraries, which are absent on a
+    # plain Windows dev PC — the rest of api-ai must still start without them.
+    import weasyprint
+
     pdf_bytes = weasyprint.HTML(
         string=rendered_html,
         base_url=str(TEMPLATES_DIR),

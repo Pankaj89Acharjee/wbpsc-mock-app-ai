@@ -1,0 +1,107 @@
+# ============================================================================
+# WBPSC — production stack for the Oracle VM
+#   docker compose -f docker-compose.prod.yml up -d --build
+# Only Caddy is reachable from the internet (80/443); Postgres, Redis and the
+# APIs stay on the private Docker network. All settings come from .env.
+# ============================================================================
+name: wbpsc-prod
+
+x-db-urls: &db-urls
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "max_connections=60"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: >
+      redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+      --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api-core:
+    build:
+      context: .
+      dockerfile: apps/api-core/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *db-urls
+      NODE_ENV: production
+      PORT: "8080"
+      API_AI_URL: http://api-ai:8080
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api-ai:
+    build:
+      context: .
+      dockerfile: apps/api-ai/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *db-urls
+      PORT: "8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_API_CORE_URL: /api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *db-urls
+      NODE_ENV: production
+    depends_on:
+      - api-core
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api-core
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

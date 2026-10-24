@@ -35,15 +35,12 @@ export const subscriptionTierEnum = pgEnum("subscription_tier", [
   "wbcs_executive_pass",
 ]);
 
-export const examSlugEnum = pgEnum("exam_slug", [
-  "wbcs-prelims",
-  "wbcs-mains",
-  "wbpsc-clerkship-part1",
-  "wbpsc-clerkship-part2",
-  "wbpsc-miscellaneous",
-  "wbpsc-food-si",
-  "wbp-constable-si",
-]);
+/**
+ * Exam slugs are free text (e.g. "wbpsc-clerkship-part1") so admins can add new
+ * exams from the console without a schema migration. Format is validated by
+ * ExamSlugSchema in shared-types.
+ */
+const examSlugColumn = (name: string) => varchar(name, { length: 80 });
 
 export const difficultyEnum = pgEnum("difficulty_level", [
   "easy",
@@ -109,13 +106,17 @@ export const users = pgTable(
       .default(sql`uuid_generate_v4()`),
     email: varchar("email", { length: 255 }).notNull(),
     phone: varchar("phone", { length: 20 }),
-    passwordHash: text("password_hash").notNull(),
+    /** scrypt hash; null for accounts that only sign in with Google */
+    passwordHash: text("password_hash"),
+    /** Google account id (`sub` claim) for "Sign in with Google" */
+    googleSub: varchar("google_sub", { length: 64 }),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     fullName: varchar("full_name", { length: 160 }).notNull(),
     preferredLanguage: varchar("preferred_language", { length: 2 })
       .$type<"en" | "bn">()
       .notNull()
       .default("bn"),
-    targetExamSlug: examSlugEnum("target_exam_slug")
+    targetExamSlug: examSlugColumn("target_exam_slug")
       .notNull()
       .default("wbcs-prelims"),
     role: userRoleEnum("role").notNull().default("aspirant"),
@@ -137,6 +138,7 @@ export const users = pgTable(
   (table) => [
     uniqueIndex("users_email_unique_idx").on(table.email),
     uniqueIndex("users_phone_unique_idx").on(table.phone),
+    uniqueIndex("users_google_sub_unique_idx").on(table.googleSub),
     index("users_target_exam_idx").on(table.targetExamSlug),
   ]
 );
@@ -151,7 +153,7 @@ export const exams = pgTable(
     id: uuid("id")
       .primaryKey()
       .default(sql`uuid_generate_v4()`),
-    slug: examSlugEnum("slug").notNull(),
+    slug: examSlugColumn("slug").notNull(),
     title: jsonb("title").$type<BilingualText>().notNull(),
     description: jsonb("description").$type<BilingualText>().notNull(),
     totalQuestions: integer("total_questions").notNull().default(100),
@@ -287,7 +289,7 @@ export const questions = pgTable(
     examId: uuid("exam_id")
       .notNull()
       .references(() => exams.id, { onDelete: "cascade" }),
-    examSlug: examSlugEnum("exam_slug").notNull(),
+    examSlug: examSlugColumn("exam_slug").notNull(),
     subjectId: uuid("subject_id")
       .notNull()
       .references(() => subjects.id, { onDelete: "restrict" }),
@@ -327,7 +329,7 @@ export const questions = pgTable(
     previousYearTag: varchar("previous_year_tag", { length: 100 }),
     source: questionSourceEnum("source").notNull().default("educator"),
     // Structured PYQ metadata so a full year paper can be rebuilt as a test
-    pyqExamSlug: examSlugEnum("pyq_exam_slug"),
+    pyqExamSlug: examSlugColumn("pyq_exam_slug"),
     pyqYear: integer("pyq_year"),
     /** PYQ answers must match the official WBPSC answer key before going live */
     answerKeyVerified: boolean("answer_key_verified").notNull().default(false),
@@ -452,6 +454,8 @@ export const attemptAnswers = pgTable(
       .notNull()
       .default("0.00"),
     timeSpentSeconds: integer("time_spent_seconds").notNull().default(0),
+    /** 0-based order of the question in the test, for the answer review screen */
+    position: integer("position").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -744,8 +748,8 @@ export const questionIngestionJobsRelations = relations(
 // 10. Convenience Type Aliases (used by seed scripts & API services)
 // ============================================================================
 
-/** Inferred union type from examSlugEnum — use instead of raw string */
-export type ExamSlugType = (typeof examSlugEnum.enumValues)[number];
+/** Exam slug (free text, validated by ExamSlugSchema in shared-types) */
+export type ExamSlugType = string;
 
 /** Inferred union type from difficultyEnum */
 export type DifficultyType = (typeof difficultyEnum.enumValues)[number];

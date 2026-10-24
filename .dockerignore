@@ -1,0 +1,12 @@
+.git
+node_modules
+**/node_modules
+dist
+**/dist
+.env
+.env.*
+!.env.example
+apps/api-ai/.venv
+**/__pycache__
+**/*.pyc
+*.log

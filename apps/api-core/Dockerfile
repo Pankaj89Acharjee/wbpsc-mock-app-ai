@@ -16,18 +16,19 @@ COPY packages/shared-types/package.json ./packages/shared-types/
 COPY apps/api-core/package.json ./apps/api-core/
 
 # Install dependencies across workspaces
-RUN npm install --no-audit --no-fund
+# --legacy-peer-deps: vite 8 prefers a newer esbuild than drizzle-kit pins (harmless)
+RUN npm install --no-audit --no-fund --legacy-peer-deps
 
 # Copy source code for shared-types and api-core
 COPY packages/shared-types ./packages/shared-types
 COPY apps/api-core ./apps/api-core
 
-# Bundle api-core into a single zero-overhead ESM file for fast Cloud Run cold starts
+# Bundle api-core into a single ESM file
 WORKDIR /workspace/apps/api-core
 RUN npm run build
 
 # ============================================================================
-# Stage 2: Production Runner (Google Cloud Run Stateless Container)
+# Stage 2: Production Runner (stateless container)
 # ============================================================================
 FROM node:22-alpine AS runner
 

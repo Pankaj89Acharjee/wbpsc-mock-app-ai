@@ -4,6 +4,8 @@ export default defineConfig({
   dialect: "postgresql",
   schema: "./src/db/schema.ts",
   out: "./drizzle",
+  // Tables owned by apps/api-ai (created at its startup) — never let push drop them
+  tablesFilter: ["!ai_*", "!syllabus_chunks"],
   dbCredentials: {
     // Use the direct (non-PgBouncer) URL for DDL when on Supabase
     url:

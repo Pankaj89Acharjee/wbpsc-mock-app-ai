@@ -16,6 +16,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers.current_affairs import router as current_affairs_router
+from app.routers.question_gen import ensure_question_cache_schema
+from app.routers.question_gen import router as question_gen_router
 from app.routers.tutor import router as tutor_router
 from app.services.cache import ThreeTierCacheService
 
@@ -56,6 +58,7 @@ async def lifespan(app: FastAPI):
         db_pool=db_pool,
     )
     await cache_service.ensure_schema()
+    await ensure_question_cache_schema(db_pool)
 
     app.state.db_pool = db_pool
     app.state.redis = redis_client
@@ -94,6 +97,7 @@ app.add_middleware(
 
 app.include_router(tutor_router)
 app.include_router(current_affairs_router)
+app.include_router(question_gen_router)
 
 
 @app.get("/health")

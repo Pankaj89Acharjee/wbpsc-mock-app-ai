@@ -17,6 +17,7 @@ import {
   QuestionAttemptStatusSchema,
   SupportedLanguageSchema,
 } from "../../../../packages/shared-types/src/index";
+import { requireUser } from "../lib/auth";
 
 // ============================================================================
 // Request Validation Schemas (Zod)
@@ -29,11 +30,9 @@ const MockTestParamsSchema = z.object({
 const MockTestQuerySchema = z.object({
   limit: z.coerce.number().int().min(5).max(200).optional(),
   lang: SupportedLanguageSchema.default("bn"),
-  userId: z.string().uuid().optional(),
 });
 
 const SubmitExamBodySchema = z.object({
-  userId: z.string().uuid(),
   examId: z.string().uuid(),
   attemptId: z.string().uuid().optional(),
   preferredLanguage: SupportedLanguageSchema.default("bn"),
@@ -58,7 +57,6 @@ const SubmitExamBodySchema = z.object({
 });
 
 const RemedialMockBodySchema = z.object({
-  userId: z.string().uuid(),
   examId: z.string().uuid(),
   preferredLanguage: SupportedLanguageSchema.default("bn"),
 });
@@ -70,6 +68,42 @@ const RemedialMockBodySchema = z.object({
 export const examRoutes: FastifyPluginAsync = async (
   fastify: FastifyInstance
 ) => {
+  // Every exam route acts on the signed-in user (never a userId from the body)
+  fastify.addHook("preHandler", requireUser);
+
+  /**
+   * 0. GET /exams
+   * Exams students can take (admins also see inactive ones), with live question counts.
+   */
+  fastify.get("/exams", async (request) => {
+    const isAdmin = request.user!.role === "admin";
+    const rows = await db
+      .select({
+        exam: exams,
+        questionCount: sql<number>`(select count(*)::int from questions q where q.exam_id = "exams"."id" and q.is_active)`,
+      })
+      .from(exams)
+      .where(isAdmin ? undefined : eq(exams.isActive, true))
+      .orderBy(asc(exams.createdAt));
+    return {
+      exams: rows.map(({ exam, questionCount }) => ({
+        id: exam.id,
+        slug: exam.slug,
+        titleEn: exam.title.en,
+        titleBn: exam.title.bn,
+        descriptionEn: exam.description.en,
+        descriptionBn: exam.description.bn,
+        totalQuestions: exam.totalQuestions,
+        durationMinutes: exam.durationMinutes,
+        marksPerCorrect: Number(exam.marksPerCorrect),
+        negativeMarksPerWrong: Number(exam.negativeMarksPerWrong),
+        estimatedCutoffMarks: Number(exam.estimatedCutoffMarks),
+        isActive: exam.isActive,
+        questionCount,
+      })),
+    };
+  });
+
   /**
    * 1. GET /exams/:examId/mock-test
    * Fetches a timed mock test with client-safe bilingual questions
@@ -346,7 +380,7 @@ export const examRoutes: FastifyPluginAsync = async (
         .insert(testAttempts)
         .values({
           ...(payload.attemptId ? { id: payload.attemptId } : {}),
-          userId: payload.userId,
+          userId: request.user!.id,
           examId: payload.examId,
           status: "submitted",
           preferredLanguage: payload.preferredLanguage,
@@ -372,9 +406,9 @@ export const examRoutes: FastifyPluginAsync = async (
 
       // Step 5: Bulk insert `attempt_answers`
       await tx.insert(attemptAnswers).values(
-        gradedAnswersToInsert.map((item) => ({
+        gradedAnswersToInsert.map((item, position) => ({
           attemptId: insertedAttempt.id,
-          userId: payload.userId,
+          userId: request.user!.id,
           questionId: item.questionId,
           subtopicId: item.subtopicId,
           selectedOption: item.selectedOption,
@@ -382,6 +416,7 @@ export const examRoutes: FastifyPluginAsync = async (
           isCorrect: item.isCorrect,
           marksAwarded: item.marksAwarded,
           timeSpentSeconds: item.timeSpentSeconds,
+          position,
         }))
       );
 
@@ -449,7 +484,7 @@ export const examRoutes: FastifyPluginAsync = async (
         await tx
           .insert(userSubtopicMastery)
           .values({
-            userId: payload.userId,
+            userId: request.user!.id,
             examId: payload.examId,
             subjectId: sub.subjectId,
             chapterId: sub.chapterId,
@@ -581,7 +616,8 @@ export const examRoutes: FastifyPluginAsync = async (
       });
     }
 
-    const { userId, examId, preferredLanguage } = parsed.data;
+    const { examId, preferredLanguage } = parsed.data;
+    const userId = request.user!.id;
 
     // Step 1: Identify Top 3 weakest subtopics for this user & exam
     const weakestMasteryRows = await db

@@ -13,15 +13,17 @@ export const BilingualTextSchema = z.object({
 });
 export type BilingualText = z.infer<typeof BilingualTextSchema>;
 
-export const ExamSlugSchema = z.enum([
-  "wbcs-prelims",
-  "wbcs-mains",
-  "wbpsc-clerkship-part1",
-  "wbpsc-clerkship-part2",
-  "wbpsc-miscellaneous",
-  "wbpsc-food-si",
-  "wbp-constable-si",
-]);
+/**
+ * Exam slug, e.g. "wbcs-prelims". Free text so admins can add new exams
+ * (lowercase letters, digits and single hyphens).
+ */
+export const ExamSlugSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2)
+  .max(80)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Exam slug must be lowercase letters, digits and hyphens");
 export type ExamSlug = z.infer<typeof ExamSlugSchema>;
 
 export const OptionKeySchema = z.enum(["A", "B", "C", "D"]);
@@ -171,6 +173,27 @@ export const WeaknessReportSchema = z.object({
 export type WeaknessReport = z.infer<typeof WeaknessReportSchema>;
 
 // ============================================================================
+// 4b. Accounts (self-hosted auth in api-core)
+// ============================================================================
+
+export type UserRole = "aspirant" | "educator" | "admin";
+export type SubscriptionTier = "free" | "pro_prelims" | "wbcs_executive_pass";
+
+export interface UserDto {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  subscriptionTier: SubscriptionTier;
+  preferredLanguage: SupportedLanguage;
+  targetExamSlug: string;
+  isActive: boolean;
+  hasPassword: boolean;
+  hasGoogle: boolean;
+  createdAt: string;
+}
+
+// ============================================================================
 // 5. Bulk Question Ingestion (CSV / JSON Upload → Staging → Educator Review)
 // ============================================================================
 
@@ -188,7 +211,8 @@ export const IngestionStatusSchema = z.enum([
 ]);
 export type IngestionStatus = z.infer<typeof IngestionStatusSchema>;
 
-export const EXAM_SLUG_LABELS: Record<ExamSlug, string> = {
+/** Display names for well-known exams (PYQ tags for exams not in the DB). */
+export const EXAM_SLUG_LABELS: Record<string, string> = {
   "wbcs-prelims": "WBCS Prelims",
   "wbcs-mains": "WBCS Mains",
   "wbpsc-clerkship-part1": "WBPSC Clerkship Part-I",
@@ -198,12 +222,184 @@ export const EXAM_SLUG_LABELS: Record<ExamSlug, string> = {
   "wbp-constable-si": "WBP Constable / SI",
 };
 
-/** Column order of the downloadable CSV template (one MCQ per row). */
-export const BULK_IMPORT_CSV_COLUMNS = [
-  "exam_slug",
+// ─── Name matching: users type names, the system finds the slug ─────────────
+
+const MATCH_STOPWORDS = new Set(["and", "of", "the", "in", "for"]);
+
+/**
+ * Loose comparison key so "Fundamental Rights & Duties", "fundamental rights
+ * and duties" and "fundamental-rights-duties" all compare equal.
+ * Works for Bengali too (letters/digits of any script are kept).
+ */
+export function matchKey(s: string): string {
+  return s
+    .normalize("NFKC")
+    .toLowerCase()
+    .split(/[^\p{L}\p{M}\p{N}]+/u)
+    .filter((w) => w && !MATCH_STOPWORDS.has(w))
+    .join("-");
+}
+
+/** URL-safe slug generated from an English name. */
+export function slugify(s: string): string {
+  return s
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+}
+
+/** Edit distance, used to suggest the closest syllabus name for a typo. */
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
+// ─── Exam config & syllabus (admin-managed in PostgreSQL) ────────────────────
+
+export const ExamConfigInputSchema = z.object({
+  slug: ExamSlugSchema.optional(),
+  titleEn: z.string().trim().min(2, "English title is required").max(200),
+  titleBn: z.string().trim().min(2, "Bengali title is required").max(200),
+  descriptionEn: z.string().trim().max(1000).default(""),
+  descriptionBn: z.string().trim().max(1000).default(""),
+  totalQuestions: z.coerce.number().int().min(1).max(300),
+  durationMinutes: z.coerce.number().int().min(1).max(600),
+  marksPerCorrect: z.coerce.number().positive().max(10),
+  negativeMarksPerWrong: z.coerce.number().min(0).max(5),
+  estimatedCutoffMarks: z.coerce.number().min(0).max(1000),
+  isActive: z.boolean().default(true),
+});
+export type ExamConfigInput = z.infer<typeof ExamConfigInputSchema>;
+
+/** One subtopic per row; slugs are generated from English names when blank. */
+export const SYLLABUS_CSV_COLUMNS = [
+  "subject_en",
+  "subject_bn",
+  "chapter_en",
+  "chapter_bn",
+  "subtopic_en",
+  "subtopic_bn",
   "subject_slug",
   "chapter_slug",
   "subtopic_slug",
+] as const;
+
+export const SYLLABUS_REQUIRED_COLUMNS = [
+  "subject_en",
+  "subject_bn",
+  "chapter_en",
+  "chapter_bn",
+  "subtopic_en",
+  "subtopic_bn",
+] as const;
+
+const slugCell = z.preprocess(
+  (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+  z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "use lowercase letters, digits and hyphens")
+    .optional()
+);
+
+export const SyllabusRowSchema = z.object({
+  subject_en: z.string().trim().min(1, "subject_en is required"),
+  subject_bn: z.string().trim().min(1, "subject_bn is required"),
+  chapter_en: z.string().trim().min(1, "chapter_en is required"),
+  chapter_bn: z.string().trim().min(1, "chapter_bn is required"),
+  subtopic_en: z.string().trim().min(1, "subtopic_en is required"),
+  subtopic_bn: z.string().trim().min(1, "subtopic_bn is required"),
+  subject_slug: slugCell,
+  chapter_slug: slugCell,
+  subtopic_slug: slugCell,
+});
+export type SyllabusRow = z.infer<typeof SyllabusRowSchema>;
+
+export const SYLLABUS_TEMPLATE_EXAMPLES: Array<Partial<Record<(typeof SYLLABUS_CSV_COLUMNS)[number], string>>> = [
+  {
+    subject_en: "Indian Polity & Constitution",
+    subject_bn: "ভারতের সংবিধান ও রাজনীতি",
+    chapter_en: "Fundamental Rights & Duties",
+    chapter_bn: "মৌলিক অধিকার ও কর্তব্য",
+    subtopic_en: "Fundamental Rights Articles",
+    subtopic_bn: "মৌলিক অধিকার সংক্রান্ত অনুচ্ছেদ",
+  },
+  {
+    subject_en: "Indian Polity & Constitution",
+    subject_bn: "ভারতের সংবিধান ও রাজনীতি",
+    chapter_en: "Fundamental Rights & Duties",
+    chapter_bn: "মৌলিক অধিকার ও কর্তব্য",
+    subtopic_en: "Fundamental Duties (Article 51A)",
+    subtopic_bn: "মৌলিক কর্তব্য (অনুচ্ছেদ ৫১ক)",
+  },
+];
+
+export interface ExamDto {
+  id: string;
+  slug: string;
+  titleEn: string;
+  titleBn: string;
+  descriptionEn: string;
+  descriptionBn: string;
+  totalQuestions: number;
+  durationMinutes: number;
+  marksPerCorrect: number;
+  negativeMarksPerWrong: number;
+  estimatedCutoffMarks: number;
+  isActive: boolean;
+  subjectCount: number;
+  subtopicCount: number;
+  questionCount: number;
+}
+
+export interface SyllabusNodeDto {
+  id: string;
+  slug: string;
+  name: BilingualText;
+}
+export interface SyllabusSubtopicDto extends SyllabusNodeDto {
+  questionCount: number;
+}
+export interface SyllabusChapterDto extends SyllabusNodeDto {
+  subtopics: SyllabusSubtopicDto[];
+}
+export interface SyllabusSubjectDto extends SyllabusNodeDto {
+  chapters: SyllabusChapterDto[];
+}
+export interface SyllabusTreeDto {
+  examSlug: string;
+  subjects: SyllabusSubjectDto[];
+}
+
+export interface SyllabusUploadResult {
+  created: { subjects: number; chapters: number; subtopics: number };
+  updated: number;
+  errors: Array<{ rowNumber: number; message: string }>;
+}
+
+// ─── Question upload columns ─────────────────────────────────────────────────
+
+/** Column order of the downloadable question CSV template (one MCQ per row). */
+export const BULK_IMPORT_CSV_COLUMNS = [
+  "exam",
+  "subject",
+  "chapter",
+  "subtopic",
   "stem_en",
   "stem_bn",
   "option_a_en",
@@ -219,18 +415,29 @@ export const BULK_IMPORT_CSV_COLUMNS = [
   "explanation_bn",
   "difficulty",
   "source",
-  "pyq_exam_slug",
+  "pyq_exam",
   "pyq_year",
   "answer_key_verified",
 ] as const;
 export type BulkImportCsvColumn = (typeof BULK_IMPORT_CSV_COLUMNS)[number];
 
-/** Columns that must exist in the header row (Bengali & explanation may be left blank for AI enrichment). */
+/** Older header names still accepted in uploaded files. */
+const BULK_IMPORT_HEADER_ALIASES: Record<string, BulkImportCsvColumn> = {
+  exam_slug: "exam",
+  subject_slug: "subject",
+  chapter_slug: "chapter",
+  subtopic_slug: "subtopic",
+  pyq_exam_slug: "pyq_exam",
+};
+
+/**
+ * Only exam + subtopic are needed to place a question; subject/chapter help
+ * when the same subtopic name exists in two places. Bengali & explanation may
+ * be left blank for AI enrichment.
+ */
 export const BULK_IMPORT_REQUIRED_COLUMNS: readonly BulkImportCsvColumn[] = [
-  "exam_slug",
-  "subject_slug",
-  "chapter_slug",
-  "subtopic_slug",
+  "exam",
+  "subtopic",
   "stem_en",
   "option_a_en",
   "option_b_en",
@@ -240,6 +447,17 @@ export const BULK_IMPORT_REQUIRED_COLUMNS: readonly BulkImportCsvColumn[] = [
 ];
 
 export const BULK_IMPORT_MAX_ROWS = 2000;
+
+/** Lower-cases keys and maps legacy aliases (exam_slug → exam, …). */
+export function normalizeRecordKeys(record: unknown): unknown {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  return Object.fromEntries(
+    Object.entries(record).map(([k, v]) => {
+      const key = k.trim().toLowerCase();
+      return [BULK_IMPORT_HEADER_ALIASES[key] ?? key, v];
+    })
+  );
+}
 
 const blankToUndefined = (v: unknown) =>
   v === null || (typeof v === "string" && v.trim() === "") ? undefined : v;
@@ -264,15 +482,15 @@ const lowerCell = (v: unknown) => {
 
 /**
  * One uploaded row (CSV row or JSON object with the same flat keys).
- * Only English text is mandatory — blank Bengali / explanation cells are
- * filled later by api-ai enrichment or by the educator in the Review screen.
+ * `exam`/`subject`/`chapter`/`subtopic` accept a slug OR the English/Bengali
+ * name — api-core resolves them against the syllabus.
  */
 export const BulkQuestionRowSchema = z
   .object({
-    exam_slug: z.preprocess(lowerCell, ExamSlugSchema),
-    subject_slug: requiredCell("subject_slug"),
-    chapter_slug: requiredCell("chapter_slug"),
-    subtopic_slug: requiredCell("subtopic_slug"),
+    exam: requiredCell("exam"),
+    subject: optionalCell,
+    chapter: optionalCell,
+    subtopic: requiredCell("subtopic"),
     stem_en: requiredCell("stem_en"),
     stem_bn: optionalCell,
     option_a_en: requiredCell("option_a_en"),
@@ -292,7 +510,7 @@ export const BulkQuestionRowSchema = z
     difficulty: z.preprocess(lowerCell, DifficultyLevelSchema.optional()),
     // Uploads are either real PYQs or educator-framed; AI questions come from Pipeline 3 only.
     source: z.preprocess(lowerCell, z.enum(["pyq", "educator"]).optional()),
-    pyq_exam_slug: z.preprocess(lowerCell, ExamSlugSchema.optional()),
+    pyq_exam: optionalCell,
     pyq_year: z.preprocess(
       blankToUndefined,
       z.coerce.number().int().min(1990).max(2100).optional()
@@ -300,11 +518,11 @@ export const BulkQuestionRowSchema = z
     answer_key_verified: yesNoCell,
   })
   .superRefine((row, ctx) => {
-    if (row.source === "pyq" && (!row.pyq_exam_slug || !row.pyq_year)) {
+    if (row.source === "pyq" && (!row.pyq_exam || !row.pyq_year)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["pyq_year"],
-        message: "PYQ rows need both pyq_exam_slug and pyq_year",
+        message: "PYQ rows need both pyq_exam and pyq_year",
       });
     }
   });
@@ -320,13 +538,14 @@ const DraftTextEnRequiredSchema = DraftTextSchema.extend({
 
 /**
  * Editable staged question kept in `question_ingestion_jobs.enriched_data`.
- * Lenient: Bengali / explanation may still be empty while `pending_ai`.
+ * Lenient: syllabus fields hold whatever the user typed until resolved, and
+ * Bengali / explanation may still be empty while `pending_ai`.
  */
 export const StagedQuestionDraftSchema = z.object({
-  examSlug: ExamSlugSchema,
-  subjectSlug: z.string().trim().min(1),
-  chapterSlug: z.string().trim().min(1),
-  subtopicSlug: z.string().trim().min(1),
+  examSlug: z.string().trim().min(1, "Exam is required"),
+  subjectSlug: z.string().trim(),
+  chapterSlug: z.string().trim(),
+  subtopicSlug: z.string().trim().min(1, "Subtopic is required"),
   stem: DraftTextEnRequiredSchema,
   options: z.object({
     A: DraftTextEnRequiredSchema,
@@ -338,7 +557,7 @@ export const StagedQuestionDraftSchema = z.object({
   explanation: DraftTextSchema,
   difficulty: DifficultyLevelSchema,
   source: QuestionSourceSchema,
-  pyqExamSlug: ExamSlugSchema.nullable(),
+  pyqExamSlug: z.string().trim().min(1).nullable(),
   pyqYear: z.number().int().min(1990).max(2100).nullable(),
   answerKeyVerified: z.boolean(),
 });
@@ -346,10 +565,20 @@ export type StagedQuestionDraft = z.infer<typeof StagedQuestionDraftSchema>;
 
 /** Strict gate applied when the educator approves a staged question for the live bank. */
 export const ApprovableQuestionSchema = StagedQuestionDraftSchema.extend({
+  examSlug: ExamSlugSchema,
+  subjectSlug: z.string().trim().min(1),
+  chapterSlug: z.string().trim().min(1),
   stem: BilingualTextSchema,
   options: QuestionOptionsSchema,
   explanation: BilingualTextSchema,
 }).superRefine((q, ctx) => {
+  if (q.source === "ai_generated" && !q.answerKeyVerified) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["answerKeyVerified"],
+      message: "AI-generated answers must be checked by an educator before approving",
+    });
+  }
   if (q.source !== "pyq") return;
   if (!q.pyqExamSlug || !q.pyqYear) {
     ctx.addIssue({
@@ -370,10 +599,10 @@ export const ApprovableQuestionSchema = StagedQuestionDraftSchema.extend({
 export function rowToDraft(row: BulkQuestionRow): StagedQuestionDraft {
   const source = row.source ?? "educator";
   return {
-    examSlug: row.exam_slug,
-    subjectSlug: row.subject_slug,
-    chapterSlug: row.chapter_slug,
-    subtopicSlug: row.subtopic_slug,
+    examSlug: row.exam,
+    subjectSlug: row.subject ?? "",
+    chapterSlug: row.chapter ?? "",
+    subtopicSlug: row.subtopic,
     stem: { en: row.stem_en, bn: row.stem_bn ?? "" },
     options: {
       A: { en: row.option_a_en, bn: row.option_a_bn ?? "" },
@@ -385,7 +614,7 @@ export function rowToDraft(row: BulkQuestionRow): StagedQuestionDraft {
     explanation: { en: row.explanation_en ?? "", bn: row.explanation_bn ?? "" },
     difficulty: row.difficulty ?? "moderate",
     source,
-    pyqExamSlug: row.pyq_exam_slug ?? null,
+    pyqExamSlug: row.pyq_exam ?? null,
     pyqYear: row.pyq_year ?? null,
     // Educators vouch for their own answers; PYQ answers must be checked against the official key.
     answerKeyVerified: row.answer_key_verified ?? source === "educator",
@@ -398,8 +627,9 @@ export function isDraftTextComplete(d: StagedQuestionDraft): boolean {
   return texts.every((t) => t.en.trim() !== "" && t.bn.trim() !== "");
 }
 
-export function pyqLabel(examSlug: ExamSlug | null, year: number | null): string | null {
-  return examSlug && year ? `${EXAM_SLUG_LABELS[examSlug]} ${year}` : null;
+/** "WBCS Prelims 2022" — `examLabel` is the exam's display name. */
+export function pyqLabel(examLabel: string | null, year: number | null): string | null {
+  return examLabel && year ? `${examLabel} ${year}`.slice(0, 100) : null;
 }
 
 /**
@@ -463,12 +693,18 @@ export interface CsvRecord {
   record: Record<string, string>;
 }
 
-export function csvTableToRecords(table: string[][]): {
+export function csvTableToRecords(
+  table: string[][],
+  requiredColumns: readonly string[] = BULK_IMPORT_REQUIRED_COLUMNS
+): {
   records: CsvRecord[];
   missingColumns: string[];
 } {
-  const header = (table[0] ?? []).map((h) => h.trim().toLowerCase());
-  const missingColumns = BULK_IMPORT_REQUIRED_COLUMNS.filter((c) => !header.includes(c));
+  const header: string[] = (table[0] ?? []).map((h) => {
+    const key = h.trim().toLowerCase();
+    return BULK_IMPORT_HEADER_ALIASES[key] ?? key;
+  });
+  const missingColumns = requiredColumns.filter((c) => !header.includes(c));
   const records: CsvRecord[] = [];
   table.slice(1).forEach((cells, idx) => {
     if (cells.every((c) => c.trim() === "")) return;
@@ -496,10 +732,10 @@ export function toCsv(
 /** Example rows shipped inside the downloadable template. */
 export const BULK_IMPORT_TEMPLATE_EXAMPLES: Array<Partial<Record<BulkImportCsvColumn, string>>> = [
   {
-    exam_slug: "wbcs-prelims",
-    subject_slug: "polity-constitution",
-    chapter_slug: "fundamental-rights-duties",
-    subtopic_slug: "fundamental-rights-articles",
+    exam: "wbcs-prelims",
+    subject: "Indian Polity & Constitution",
+    chapter: "Fundamental Rights & Duties",
+    subtopic: "Fundamental Rights Articles",
     stem_en: "Which Article of the Indian Constitution guarantees the 'Right to Constitutional Remedies'?",
     stem_bn: "ভারতীয় সংবিধানের কোন অনুচ্ছেদ 'সাংবিধানিক প্রতিকারের অধিকার' নিশ্চিত করে?",
     option_a_en: "Article 19",
@@ -515,17 +751,15 @@ export const BULK_IMPORT_TEMPLATE_EXAMPLES: Array<Partial<Record<BulkImportCsvCo
     explanation_bn: "অনুচ্ছেদ ৩২ নাগরিকদের মৌলিক অধিকার রক্ষায় সরাসরি সুপ্রিম কোর্টে যাওয়ার অধিকার দেয়।",
     difficulty: "easy",
     source: "pyq",
-    pyq_exam_slug: "wbcs-prelims",
+    pyq_exam: "wbcs-prelims",
     pyq_year: "2022",
     answer_key_verified: "yes",
   },
   {
-    exam_slug: "wbcs-prelims",
-    subject_slug: "polity-constitution",
-    chapter_slug: "fundamental-rights-duties",
-    subtopic_slug: "fundamental-rights-articles",
+    exam: "WBCS Preliminary Examination (Group A/B/C/D)",
+    subtopic: "Fundamental Rights Articles",
     stem_en:
-      "English-only row: leave the _bn and explanation cells blank and they are filled before review.",
+      "Names work too, and only exam + subtopic are required. Leave _bn / explanation blank to fill them during review.",
     option_a_en: "Option A",
     option_b_en: "Option B",
     option_c_en: "Option C",
@@ -543,8 +777,28 @@ export interface IngestionUploadResult {
   pendingReview: number;
   pendingAi: number;
   failed: number;
+  /** Template rows left without a question (ignored) */
+  skippedEmpty: number;
   errors: Array<{ rowNumber: number; message: string }>;
 }
+
+/** Admin request to draft WBPSC-style MCQs with AI (Pipeline 3). */
+export const GenerateQuestionsInputSchema = z.object({
+  examSlug: z.string().trim().min(1),
+  subjectSlug: z.string().trim().default(""),
+  chapterSlug: z.string().trim().default(""),
+  subtopicSlug: z.string().trim().min(1, "Pick a subtopic"),
+  count: z.coerce.number().int().min(1).max(25),
+  difficulty: z.enum(["easy", "moderate", "hard", "mixed"]).default("mixed"),
+});
+export type GenerateQuestionsInput = z.infer<typeof GenerateQuestionsInputSchema>;
+
+export interface GenerateQuestionsResult extends IngestionUploadResult {
+  modelUsed: string;
+  /** Where the batch came from: fresh Gemini call or one of the caches */
+  cacheTier: "redis" | "postgres" | "gemini";
+}
+
 
 export interface IngestionBatchSummary {
   batchId: string;
@@ -573,4 +827,103 @@ export interface IngestionJobDto {
   insertedQuestionId: string | null;
   createdAt: string;
   reviewedAt: string | null;
+}
+
+// ============================================================================
+// 6. Student-facing API DTOs (mock tests, history, review, weakness, AI tutor)
+// ============================================================================
+
+export interface StudentExamDto {
+  id: string;
+  slug: string;
+  titleEn: string;
+  titleBn: string;
+  descriptionEn: string;
+  descriptionBn: string;
+  totalQuestions: number;
+  durationMinutes: number;
+  marksPerCorrect: number;
+  negativeMarksPerWrong: number;
+  estimatedCutoffMarks: number;
+  isActive: boolean;
+  /** Active questions available for this exam */
+  questionCount: number;
+}
+
+export interface AttemptSummaryDto {
+  id: string;
+  examId: string;
+  examSlug: string;
+  examTitleEn: string;
+  examTitleBn: string;
+  isRemedial: boolean;
+  totalQuestions: number;
+  attemptedCount: number;
+  correctCount: number;
+  incorrectCount: number;
+  unansweredCount: number;
+  finalNetScore: number;
+  maxPossibleScore: number;
+  accuracyPercentage: number;
+  totalTimeSpentSeconds: number;
+  cutoffCleared: boolean;
+  submittedAt: string | null;
+  /** Present in admin listings */
+  userEmail?: string;
+  userName?: string;
+}
+
+export interface AttemptReviewItemDto {
+  questionId: string;
+  stem: BilingualText;
+  options: QuestionOptions;
+  correctOption: OptionKey;
+  selectedOption: OptionKey | null;
+  marksAwarded: number;
+  timeSpentSeconds: number;
+  explanation: BilingualText;
+  subtopicName: BilingualText;
+}
+
+export interface AttemptReviewDto {
+  attempt: AttemptSummaryDto;
+  items: AttemptReviewItemDto[];
+}
+
+export interface MasteryDto {
+  id: string;
+  examId: string;
+  examSlug: string;
+  subjectName: BilingualText;
+  subtopicId: string;
+  subtopicSlug: string;
+  subtopicName: BilingualText;
+  totalEncountered: number;
+  totalCorrect: number;
+  totalIncorrect: number;
+  accuracyPercentage: number;
+  avgTimeSeconds: number;
+  masteryBand: MasteryBand;
+  weaknessPriorityScore: number;
+}
+
+export interface AiNoteDto {
+  examSlug: string;
+  topicSlug: string;
+  language: SupportedLanguage;
+  topicTitle: BilingualText;
+  contentMarkdown: string;
+  mnemonics: string[];
+  modelUsed: string;
+  /** true = served from the shared cache (no AI cost, no quota used) */
+  cached: boolean;
+}
+
+export interface CachedNoteRefDto {
+  examSlug: string;
+  topicSlug: string;
+  language: SupportedLanguage;
+  modelUsed: string;
+  hitCount: number;
+  updatedAt: string;
 }
