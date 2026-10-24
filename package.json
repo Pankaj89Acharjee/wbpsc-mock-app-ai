@@ -25,7 +25,7 @@
     "dev:web": "npm --workspace=apps/web run dev",
     "dev:api-core": "npm --workspace=apps/api-core run dev",
     "dev:mobile:lan": "npm --workspace=apps/mobile run start -- --lan",
-    "dev:api-ai": "cd apps/api-ai && uvicorn app.main:app --reload --host 0.0.0.0 --port 8081 --env-file ../../.env",
+    "dev:api-ai": "node scripts/dev-api-ai.mjs",
     "typecheck:shared": "npm --workspace=@wbpsc/shared-types run typecheck",
     "db:push": "npm --workspace=apps/api-core run db:push",
     "seed:syllabus": "tsx scripts/seed-syllabus.ts",

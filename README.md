@@ -238,6 +238,10 @@ curl -i http://129.225.127.229/api/health
 ```
 ---
 
+6. If something is changed in .env and need to re-create the containers. simple `restart` will not work.
+```bash
+docker compose -f docker-compose.prod.yml up -d --force-recreate api-ai api-core web
+```
 
 
 ## **Free Domain Service and HTTPS**

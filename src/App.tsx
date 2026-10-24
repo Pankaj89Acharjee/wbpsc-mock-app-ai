@@ -629,13 +629,18 @@ export default function App() {
         {/* Top Bar Contract: 3 zones */}
         <header className="flex items-center justify-between gap-8 px-6 py-4 border-b border-slate-800">
           <span className="text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0">
-            WBPSC AI Prep
+            WBPSC Mock Tutor
           </span>
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-400">
             <span className="whitespace-nowrap shrink-0">WBCS Prelims</span>
+            <span className="whitespace-nowrap shrink-0">WBCS Mains</span>
             <span className="whitespace-nowrap shrink-0">Clerkship Part I &amp; II</span>
             <span className="whitespace-nowrap shrink-0">Food SI</span>
-            <span className="whitespace-nowrap shrink-0">Miscellaneous</span>
+            <span className="whitespace-nowrap shrink-0">Miscellaneous Prelims</span>
+            <span className="whitespace-nowrap shrink-0">Miscellaneous Mains</span>
+            <span className="whitespace-nowrap shrink-0">ICDS Supervisor Prelims</span>
+
+
           </nav>
         </header>
 
@@ -643,15 +648,15 @@ export default function App() {
           {/* Left Column: Platform Overview */}
           <div className="lg:col-span-7 space-y-6">
             <p className="text-xs font-medium text-emerald-400">
-              Bilingual Bengali &amp; English Assessment Architecture · Zero-Trust RBAC
+              Bengali &amp; English Mock Tests with PYQs . AI Assessment . Weakness Analysis
             </p>
             <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-white leading-tight">
-              Deterministic WBPSC Mock Engine &amp; 3-Tier Cached AI Tutor.
+              WBPSC Mock Tutor &amp; Weakness &amp; Strength Analyser Engine.
             </h1>
             <p className="text-base text-slate-300 leading-relaxed max-w-2xl">
-              Built for West Bengal Civil Service (WBCS), Clerkship Part-I &amp; Part-II,
-              Food SI, and Miscellaneous aspirants. Features deterministic negative-marking
-              evaluation, subtopic weakness radar, and role-based Admin governance.
+              Built for West Bengal Civil Service (WBCS) Prelims + Mains, Clerkship Part-I &amp; Part-II,
+              Food SI, ICDS Supervisor Prelims + Mains and Miscellaneous Prelims + Mains aspirants. Features negative-marking
+              evaluation, weaness analysis radar, Visual Storytelling of Concepts, AI-generated images for references, and AI-powered descriptive answer evaluation.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-800">
@@ -660,7 +665,7 @@ export default function App() {
                   -0.25 / -0.33
                 </div>
                 <div className="text-xs text-slate-400 mt-1">
-                  Deterministic SQL Grading
+                  Negative Marking Evaluation
                 </div>
               </div>
               <div>
@@ -668,15 +673,15 @@ export default function App() {
                   L1 · L2 · L3
                 </div>
                 <div className="text-xs text-slate-400 mt-1">
-                  Zero-Waste Cached Bilingual Study Notes
+                  Three tier-plans
                 </div>
               </div>
               <div>
                 <div className="text-2xl font-bold text-white font-mono tabular-nums">
-                  3 Roles
+                  Full Coverage
                 </div>
                 <div className="text-xs text-slate-400 mt-1">
-                  Admin · Educator · Aspirant RBAC
+                  Prelims · Mains · Descriptiive · Current Affairs
                 </div>
               </div>
             </div>
@@ -692,7 +697,7 @@ export default function App() {
                     : "Create an Aspirant account"}
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Your account is stored on our own server
+                  Need an account? Register to track your progress and access AI-powered features.
                 </p>
               </div>
               <div className="flex items-center gap-1 p-1 bg-slate-950 rounded-lg border border-slate-800">
@@ -811,8 +816,8 @@ export default function App() {
         </main>
 
         <footer className="px-6 py-4 border-t border-slate-900 text-xs text-slate-500 flex justify-between">
-          <span>WBPSC AI Mock Test &amp; Tutor</span>
-          <span>Bilingual (বাংলা + English) · Self-hosted</span>
+          <span>WBPSC AI Mock Tutor &amp; Tutor - Copyright</span>
+          <span>Acharya Labs (বাংলা + English) · Developed by - Pankaj Acharjee</span>
         </footer>
       </div>
     );
@@ -835,7 +840,7 @@ export default function App() {
           }}
           className="text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0"
         >
-          WBPSC AI Prep
+          WBPSC Mock Tutor
         </a>
 
         {/* Zone 2: 5 concise single-line navigation links */}
@@ -1823,7 +1828,7 @@ export default function App() {
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
               <div>
                 <h1 className="text-2xl font-bold text-white">
-                  WBPSC Master Admin Governance Console
+                  ADMIN Control Panel
                 </h1>
                 <p className="text-xs text-slate-400 mt-1">
                   Users &amp; plans, exams &amp; syllabus, the question bank, AI cache and
