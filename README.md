@@ -186,3 +186,11 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 git clone https://github.com/Pankaj89Acharjee/wbpsc-mock-app-ai.git && cd wbpsc-mock-app-ai
 ```
 
+Create .env file and insert the values
+```bash
+cp .env.example .env && nano .env
+```
+
+---
+
+
