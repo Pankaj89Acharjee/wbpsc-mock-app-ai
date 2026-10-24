@@ -1,0 +1,41 @@
+name: Deploy to Oracle VM
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+
+concurrency:
+  group: deploy-oracle-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into Oracle VM and Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 30m
+          script: |
+            set -e
+            cd ~/wbpsc-mock-app-ai
+            git pull --ff-only origin main
+            docker compose -f docker-compose.prod.yml up -d --build
+            docker image prune -f
+
+            # Fail the job if api-core doesn't come up healthy
+            for i in $(seq 1 20); do
+              if docker compose -f docker-compose.prod.yml exec -T api-core wget -qO- http://localhost:8080/health; then
+                echo " deploy OK"; exit 0
+              fi
+              sleep 5
+            done
+            echo "api-core did not become healthy"
+            docker compose -f docker-compose.prod.yml logs --tail 40 api-core
+            exit 1

@@ -236,4 +236,76 @@ Run the curl command with the -i flag (lowercase i shows both headers AND the bo
 ```bash
 curl -i http://129.225.127.229/api/health
 ```
+---
 
+
+
+## **Free Domain Service and HTTPS**
+---
+1. Go to duckdns.org, sign in, and create a subdomain such as wbpsc-prep, pointing to your VM's public IP
+
+2. In the VM's `.env`, set `SITE_ADDRESS="wbpsc-mockapp.duckdns.org"` and `COOKIE_SECURE="true"`. Then run `$C up -d`. Caddy fetches the *HTTPS certificate* automatically.
+
+3. In Google Cloud Console, add `wbpsc-mockapp.duckdns.org` to the OAuth client's Authorized JavaScript origins.
+---
+
+
+## **CICD Pipeline in Github Actions**
+---
+
+1. Timeout: appleboy/ssh-action stops after 10 minutes by default. A rebuild of all images on the VM can take longer, so the job would fail midway. Add `command_timeout: 30m`.
+
+2. No stop on error: if git pull fails (say, a conflict on the VM), the script still rebuilds the old code and the job shows ✅. Add `set -e` and use `git pull --ff-only`.
+
+3. Overlapping deploys: two quick pushes can run two builds at once on the VM. Add a `concurrency` group.
+
+4. No health check: the job passes even if api-core crashes after starting. Add a check at the end.
+
+5. Docs-only pushes: a README-only push triggers a full rebuild. `paths-ignore` skips those (optional).
+
+```bash
+name: Deploy to Oracle VM
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+
+concurrency:
+  group: deploy-oracle-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into Oracle VM and Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 30m
+          script: |
+            set -e
+            cd ~/wbpsc-mock-app-ai
+            git pull --ff-only origin main
+            docker compose -f docker-compose.prod.yml up -d --build
+            docker image prune -f
+
+            # Fail the job if api-core, api-ai and web come up healthy
+            C="docker compose -f docker-compose.prod.yml"
+            for i in $(seq 1 30); do
+              core=0; ai=0; web=0
+              $C exec -T api-core wget -q0- http://localhost:8080/health >/dev/null 2>&1 && core=1
+              $C exec -T api-ai python -c "import urllib.request as u; u.urlopen('http://localhost:8080/health')" >/dev/null 2>&1 && ai=1
+              $C exec -T web node -e "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1 && web=1
+              if [ "$core$ai$web" = "111" ]; then echo "deploy OK: all services healthy"; exit 0; fi          
+              sleep 5
+            done
+            echo "Unhealthy after 150s: api-core=$core api-ai=$ai web=$web"
+            $C logs --tail 30 api-core api-ai web            
+            exit 1
+```
