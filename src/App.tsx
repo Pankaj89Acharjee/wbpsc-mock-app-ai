@@ -1188,11 +1188,10 @@ export default function App() {
                 <div className="flex flex-wrap items-end justify-between gap-4">
                   <div>
                     <h1 className="text-2xl font-bold text-white">
-                      01. WBPSC Deterministic Mock Test Series
+                      01. Mock Test Series
                     </h1>
                     <p className="text-sm text-slate-400 mt-1">
-                      Select an examination below to begin a bilingual timed test.
-                      Graded deterministically without consuming AI tokens.
+                      Select an examination below to begin a bilingual timed test.                      
                     </p>
                   </div>
 

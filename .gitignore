@@ -11,3 +11,6 @@ coverage/
 .venv/
 __pycache__/
 *.pyc
+
+# Embedded PGlite data (no longer used)
+.pglite-data/

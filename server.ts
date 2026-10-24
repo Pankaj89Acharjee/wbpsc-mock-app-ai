@@ -32,7 +32,7 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Boot the PostgreSQL-backed Fastify api-core instance (auto-falls back to PGlite in AI Studio)
+  // Boot the PostgreSQL-backed Fastify api-core instance in-process
   const apiCore = await buildApiCoreApp();
 
   app.use(express.json({ limit: "12mb" }));
