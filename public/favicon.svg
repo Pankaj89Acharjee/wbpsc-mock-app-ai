@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- WBPSC AI Prep: a ticked MCQ answer bubble (mock tests) + an AI sparkle (tutor) -->
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <circle cx="29" cy="36" r="19" fill="#10b981"/>
+  <path d="M19.5 36.5 L26.5 43.5 L39 30" fill="none" stroke="#ffffff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M50 5 L53.2 13.8 L62 17 L53.2 20.2 L50 29 L46.8 20.2 L38 17 L46.8 13.8 Z" fill="#fbbf24" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
+</svg>

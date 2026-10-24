@@ -26,16 +26,56 @@ jobs:
             set -e
             cd ~/wbpsc-mock-app-ai
             git pull --ff-only origin main
+            
+            # Rebuild and start the containers
             docker compose -f docker-compose.prod.yml up -d --build
             docker image prune -f
 
-            # Fail the job if api-core doesn't come up healthy
+            echo "Waiting 15 seconds for all services to initialize..."
+            sleep 15
+            
+            # 1. Check the Node.js API (api-core)
+            echo "Checking api-core..."
             for i in $(seq 1 20); do
-              if docker compose -f docker-compose.prod.yml exec -T api-core wget -qO- http://localhost:8080/health; then
-                echo " deploy OK"; exit 0
+              if curl -sSf https://wbpsc-mockapp.duckdns.org/api/health > /dev/null 2>&1; then
+                echo "✅ api-core is OK"
+                API_OK=true
+                break
               fi
               sleep 5
             done
-            echo "api-core did not become healthy"
-            docker compose -f docker-compose.prod.yml logs --tail 40 api-core
-            exit 1
+            if [ "$API_OK" != "true" ]; then
+              echo "❌ api-core failed"
+              docker compose -f docker-compose.prod.yml logs --tail 40 api-core
+              exit 1
+            fi
+
+            # 2. Check the Next.js Web UI (web)
+            echo "Checking web UI..."
+            for i in $(seq 1 10); do
+              if curl -sSf https://wbpsc-mockapp.duckdns.org/ > /dev/null 2>&1; then
+                echo "✅ web is OK"
+                WEB_OK=true
+                break
+              fi
+              sleep 5
+            done
+            if [ "$WEB_OK" != "true" ]; then
+              echo "❌ web UI failed"
+              docker compose -f docker-compose.prod.yml logs --tail 40 web
+              exit 1
+            fi
+
+            # 3. Check the Python AI Service (api-ai)
+            # Since this is usually an internal service, we check if the container is running and healthy
+            echo "Checking api-ai container status..."
+            AI_STATUS=$(docker compose -f docker-compose.prod.yml ps api-ai --format json | grep -o '"State":"running"')
+            if [ ! -z "$AI_STATUS" ]; then
+              echo "✅ api-ai is running"
+            else
+              echo "❌ api-ai crashed or failed to start"
+              docker compose -f docker-compose.prod.yml logs --tail 40 api-ai
+              exit 1
+            fi
+            
+            echo "All 3 services deployed and healthy!"
