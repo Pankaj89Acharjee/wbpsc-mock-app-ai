@@ -32,7 +32,6 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
       level: process.env.LOG_LEVEL || "info",
     },
     trustProxy: true,
-    bodyLimit: 12 * 1024 * 1024,
   });
 
   // Healthcheck endpoint for container / reverse-proxy liveness probes
@@ -54,12 +53,12 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
   );
   app.addHook("onRequest", async (request, reply) => {
     const origin = request.headers.origin;
-    if (origin && (allowedOrigins.has(origin) || process.env.NODE_ENV !== "production")) {
+    if (origin && allowedOrigins.has(origin)) {
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Vary", "Origin");
       reply.header("Access-Control-Allow-Credentials", "true");
       reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-      reply.header("Access-Control-Allow-Headers", "Content-Type,Authorization,x-admin-key");
+      reply.header("Access-Control-Allow-Headers", "Content-Type,x-admin-key");
     }
     if (request.method === "OPTIONS") {
       return reply.status(204).send();
@@ -75,7 +74,7 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
   // Signed-in student's attempts, answer review and weakness radar
   await app.register(meRoutes, { prefix: "/me" });
 
-  // AI tutor notes & descriptive evaluation (proxied to internal api-ai or in-process Gemini)
+  // AI tutor notes & descriptive evaluation (proxied to internal api-ai)
   await app.register(aiRoutes, { prefix: "/ai" });
 
   // User management & all attempts (admin only)
@@ -95,7 +94,6 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
   return app;
 }
 
-// Only start the standalone HTTP listener when executed directly (e.g. `npm run dev:api-core`)
 const isDirectEntry =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 

@@ -3,7 +3,6 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "node:path";
 import { GoogleGenAI, Type } from "@google/genai";
-import { buildApiCoreApp } from "./apps/api-core/src/server";
 
 function getGenAIClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -20,22 +19,11 @@ function getGenAIClient(): GoogleGenAI {
   });
 }
 
-const DIRECT_API_PREFIXES = ["/auth/", "/auth", "/exams/", "/exams", "/me/", "/admin/", "/ai/"];
-
-function isDirectApiCorePath(urlPath: string): boolean {
-  return DIRECT_API_PREFIXES.some(
-    (prefix) => urlPath === prefix || urlPath.startsWith(prefix)
-  );
-}
-
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Boot the PostgreSQL-backed Fastify api-core instance in-process
-  const apiCore = await buildApiCoreApp();
-
-  app.use(express.json({ limit: "12mb" }));
+  app.use(express.json({ limit: "2mb" }));
 
   // 1. Healthcheck
   app.get("/api/health", (_req, res) => {
@@ -57,7 +45,7 @@ async function startServer() {
 
       const ai = getGenAIClient();
       const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         contents: `Synthesize a bilingual (English + Bengali / বাংলা) WBPSC Daily Current Affairs digest for ${editionDate}.
 Input Headlines: ${
           headlines.length > 0
@@ -92,55 +80,6 @@ Return a structured Markdown digest containing Bilingual Bullet Points, Static G
       res.status(500).json({
         error: error?.message || "Failed to generate Daily Current Affairs digest",
       });
-    }
-  });
-
-  /**
-   * 3. Forward /api/* (and direct /auth/*, /exams/*, /me/*, /admin/*, /ai/*)
-   *    into the Fastify api-core instance.
-   */
-  app.use(async (req, res, next) => {
-    const isApiPrefixed = req.originalUrl.startsWith("/api/");
-    const isDirectApi = isDirectApiCorePath(req.path);
-
-    if (!isApiPrefixed && !isDirectApi) {
-      return next();
-    }
-
-    const targetUrl = isApiPrefixed
-      ? req.originalUrl.slice(4) || "/"
-      : req.originalUrl;
-
-    try {
-      const headers: Record<string, string | string[]> = {};
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (v !== undefined && k.toLowerCase() !== "content-length") {
-          headers[k] = v;
-        }
-      }
-
-      const hasBody =
-        req.method !== "GET" &&
-        req.method !== "HEAD" &&
-        req.body !== undefined &&
-        Object.keys(req.body).length > 0;
-
-      const reply = await apiCore.inject({
-        method: req.method as any,
-        url: targetUrl,
-        headers,
-        payload: hasBody ? JSON.stringify(req.body) : undefined,
-      });
-
-      for (const [k, v] of Object.entries(reply.headers)) {
-        if (v !== undefined) {
-          res.setHeader(k, v as string | string[]);
-        }
-      }
-      res.status(reply.statusCode).send(reply.rawPayload);
-    } catch (err: any) {
-      console.error("Gateway error forwarding to api-core:", err);
-      res.status(500).json({ error: err?.message || "Internal server error" });
     }
   });
 
