@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   CheckCircle2,
   Download,
@@ -151,6 +152,409 @@ function buildExcelWorkbookXml(data: SeriesExportDto): string {
 </Workbook>`;
 }
 
+/**
+ * Builds a complete, standalone, white-background A4 HTML document for printing/saving as PDF.
+ * Using an isolated print document prevents dark-mode body backgrounds and modal scroll clipping.
+ */
+function buildPrintablePaperHtml(
+  data: SeriesExportDto,
+  langMode: PdfLangMode,
+  answerMode: PdfAnswerMode
+): string {
+  const fullMarks = (data.questions.length * data.series.marksPerCorrect).toFixed(0);
+  const examHeaderTitle = `${escapeXml(data.exam.title.en)}${
+    data.exam.title.bn ? ` · ${escapeXml(data.exam.title.bn)}` : ""
+  }`;
+  const seriesSubtitleBn =
+    data.series.name.bn && data.series.name.bn !== data.series.name.en
+      ? `<div class="series-bn font-bn">${escapeXml(data.series.name.bn)}</div>`
+      : "";
+
+  const questionsHtml = data.questions
+    .map((q) => {
+      const stemEnHtml =
+        langMode === "bilingual" || langMode === "en"
+          ? `<div class="q-stem-en"><span class="q-num">Q${q.questionNumber}.</span> ${escapeXml(
+              q.stem.en
+            )}</div>`
+          : "";
+      const stemBnHtml =
+        (langMode === "bilingual" || langMode === "bn") && q.stem.bn
+          ? `<div class="q-stem-bn font-bn">${
+              langMode === "bn"
+                ? `<span class="q-num">প্রশ্ন ${q.questionNumber}.</span> `
+                : ""
+            }${escapeXml(q.stem.bn)}</div>`
+          : "";
+
+      const optionsHtml = (["A", "B", "C", "D"] as const)
+        .map((optKey) => {
+          const opt = q.options[optKey];
+          const isCorrect = answerMode === "inline" && q.correctOption === optKey;
+          let optText = "";
+          if (langMode === "bilingual") {
+            optText = `${escapeXml(opt.en)}${
+              opt.bn ? ` <span class="font-bn opt-bn">/ ${escapeXml(opt.bn)}</span>` : ""
+            }`;
+          } else if (langMode === "en") {
+            optText = escapeXml(opt.en);
+          } else {
+            optText = `<span class="font-bn">${escapeXml(opt.bn || opt.en)}</span>`;
+          }
+          return `<div class="opt-item ${isCorrect ? "opt-correct" : ""}">
+            <span class="opt-key">(${optKey})</span> ${optText}${
+            isCorrect ? ` <span class="opt-check">✓</span>` : ""
+          }
+          </div>`;
+        })
+        .join("");
+
+      const inlineAnswerHtml =
+        answerMode === "inline"
+          ? `<div class="inline-solution">
+              <div class="inline-ans">Correct Answer: Option (${escapeXml(q.correctOption)})</div>
+              ${
+                (langMode === "bilingual" || langMode === "en") && q.explanation.en
+                  ? `<div class="inline-exp-en">${escapeXml(q.explanation.en)}</div>`
+                  : ""
+              }
+              ${
+                (langMode === "bilingual" || langMode === "bn") && q.explanation.bn
+                  ? `<div class="inline-exp-bn font-bn">${escapeXml(q.explanation.bn)}</div>`
+                  : ""
+              }
+            </div>`
+          : "";
+
+      return `<div class="q-block">
+        <div class="q-header">
+          <div class="q-stems">
+            ${stemEnHtml}
+            ${stemBnHtml}
+          </div>
+          <span class="q-subject">${escapeXml(q.subjectName.en)}</span>
+        </div>
+        <div class="opt-grid">
+          ${optionsHtml}
+        </div>
+        ${inlineAnswerHtml}
+      </div>`;
+    })
+    .join("\n");
+
+  const endKeyHtml =
+    answerMode === "end_key"
+      ? `<div class="answer-key-section">
+          <h2 class="ak-title">Answer Key &amp; Detailed Solutions — ${escapeXml(
+            data.series.name.en
+          )}</h2>
+          <div class="ak-grid">
+            ${data.questions
+              .map(
+                (q) =>
+                  `<div class="ak-cell"><span class="ak-qnum">${
+                    q.questionNumber
+                  }:</span> <strong>${escapeXml(q.correctOption)}</strong></div>`
+              )
+              .join("")}
+          </div>
+          <div class="ak-solutions">
+            ${data.questions
+              .map(
+                (q) => `<div class="ak-sol-row">
+                  <div class="ak-sol-head">Q${q.questionNumber}. Correct Option: (${escapeXml(
+                  q.correctOption
+                )}) — ${escapeXml(q.options[q.correctOption].en)}</div>
+                  ${
+                    (langMode === "bilingual" || langMode === "en") && q.explanation.en
+                      ? `<div class="ak-sol-en">${escapeXml(q.explanation.en)}</div>`
+                      : ""
+                  }
+                  ${
+                    (langMode === "bilingual" || langMode === "bn") && q.explanation.bn
+                      ? `<div class="ak-sol-bn font-bn">${escapeXml(q.explanation.bn)}</div>`
+                      : ""
+                  }
+                </div>`
+              )
+              .join("\n")}
+          </div>
+        </div>`
+      : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>${escapeXml(data.series.name.en)} — Question Paper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=Noto+Sans+Bengali:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 14mm 14mm 16mm 14mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      background: #ffffff !important;
+      color: #0f172a !important;
+      font-family: 'Inter', 'Noto Sans Bengali', 'Hind Siliguri', sans-serif;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .font-bn {
+      font-family: 'Noto Sans Bengali', 'Hind Siliguri', sans-serif;
+    }
+    .paper-header {
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 12px;
+      margin-bottom: 18px;
+      text-align: center;
+    }
+    .exam-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #475569;
+    }
+    .series-en {
+      font-size: 20px;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 4px 0 2px;
+    }
+    .series-bn {
+      font-size: 15px;
+      font-weight: 600;
+      color: #1e293b;
+      margin-bottom: 6px;
+    }
+    .meta-bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 22px;
+      margin-top: 8px;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: #334155;
+    }
+    .q-block {
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 12px;
+      margin-bottom: 12px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .q-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .q-stems {
+      flex: 1;
+    }
+    .q-stem-en {
+      font-size: 13px;
+      font-weight: 600;
+      color: #0f172a;
+      margin-bottom: 2px;
+    }
+    .q-stem-bn {
+      font-size: 13px;
+      color: #1e293b;
+    }
+    .q-num {
+      font-family: monospace;
+      font-weight: 700;
+      margin-right: 4px;
+    }
+    .q-subject {
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: #f1f5f9;
+      color: #475569;
+      border: 1px solid #cbd5e1;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .opt-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px 14px;
+      padding-left: 14px;
+      font-size: 12px;
+    }
+    .opt-item {
+      padding: 4px 6px;
+      border-radius: 4px;
+      color: #1e293b;
+    }
+    .opt-correct {
+      background: #ecfdf5;
+      border: 1px solid #34d399;
+      font-weight: 600;
+      color: #064e3b;
+    }
+    .opt-key {
+      font-family: monospace;
+      font-weight: 700;
+      margin-right: 4px;
+    }
+    .opt-bn {
+      color: #334155;
+    }
+    .opt-check {
+      color: #047857;
+      font-weight: 700;
+    }
+    .inline-solution {
+      margin-top: 8px;
+      margin-left: 14px;
+      padding: 8px 10px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: 11.5px;
+      color: #334155;
+    }
+    .inline-ans {
+      font-weight: 700;
+      color: #065f46;
+      margin-bottom: 3px;
+    }
+    .inline-exp-en, .inline-exp-bn {
+      margin-top: 2px;
+    }
+    .answer-key-section {
+      page-break-before: always;
+      break-before: page;
+      padding-top: 12px;
+      border-top: 2px solid #0f172a;
+      margin-top: 20px;
+    }
+    .ak-title {
+      font-size: 15px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #0f172a;
+      margin: 0 0 12px;
+    }
+    .ak-grid {
+      display: grid;
+      grid-template-columns: repeat(10, 1fr);
+      gap: 6px;
+      margin-bottom: 18px;
+      font-family: monospace;
+      font-size: 11.5px;
+    }
+    .ak-cell {
+      padding: 5px 4px;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      text-align: center;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    .ak-qnum {
+      color: #64748b;
+    }
+    .ak-solutions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .ak-sol-row {
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 7px;
+      font-size: 11.5px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .ak-sol-head {
+      font-weight: 600;
+      color: #0f172a;
+      margin-bottom: 2px;
+    }
+    .ak-sol-en, .ak-sol-bn {
+      color: #334155;
+      margin-top: 2px;
+    }
+    .print-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 18px;
+      margin-bottom: 18px;
+      background: #f8fafc;
+      border-bottom: 1px solid #cbd5e1;
+      font-size: 12px;
+    }
+    .print-btn {
+      background: #f59e0b;
+      color: #0f172a;
+      font-weight: 700;
+      border: none;
+      padding: 7px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .paper-container {
+      max-width: 210mm;
+      margin: 0 auto;
+      padding: 8mm 12mm;
+      background: #ffffff;
+    }
+    @media print {
+      .print-bar {
+        display: none !important;
+      }
+      .paper-container {
+        max-width: 100%;
+        padding: 0;
+        margin: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="print-bar">
+    <span><strong>${escapeXml(data.series.name.en)}</strong> — ${data.questions.length} Questions (Ready for A4 Print / PDF)</span>
+    <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+  </div>
+  <div class="paper-container">
+    <div class="paper-header">
+      <div class="exam-title">${examHeaderTitle}</div>
+      <h1 class="series-en">${escapeXml(data.series.name.en)}</h1>
+      ${seriesSubtitleBn}
+      <div class="meta-bar">
+        <span>Total Questions: ${data.questions.length}</span>
+        <span>Time Allowed: ${data.series.durationMinutes} Minutes</span>
+        <span>Full Marks: ${fullMarks} (+${data.series.marksPerCorrect} / −${data.series.negativeMarksPerWrong})</span>
+      </div>
+    </div>
+    <div class="questions-list">
+      ${questionsHtml}
+    </div>
+    ${endKeyHtml}
+  </div>
+</body>
+</html>`;
+}
+
 export function SeriesExportModal({
   seriesId,
   seriesName,
@@ -226,39 +630,258 @@ export function SeriesExportModal({
     downloadCsv(`${safeSlug}-questions.csv`, toCsv(rows, BULK_IMPORT_CSV_COLUMNS));
   };
 
+  useEffect(() => {
+    if (!data || data.questions.length === 0) return;
+    document.body.classList.add("wbpsc-printing-active");
+    return () => {
+      document.body.classList.remove("wbpsc-printing-active");
+      document.body.classList.remove("wbpsc-force-print-dom");
+    };
+  }, [data]);
+
   const handlePrintPdf = () => {
-    window.print();
+    if (!data || data.questions.length === 0) return;
+
+    const prevTitle = document.title;
+    document.title = `${data.series.name.en} — Question Paper`;
+
+    // Temporarily strip dark-mode body classes & force white multi-page DOM before print dialog opens
+    document.body.classList.remove("bg-slate-950", "text-slate-100");
+    document.body.classList.add("wbpsc-printing-active", "wbpsc-force-print-dom");
+    document.documentElement.style.backgroundColor = "#ffffff";
+    document.body.style.backgroundColor = "#ffffff";
+    document.body.style.color = "#0f172a";
+
+    let restored = false;
+    const restoreDom = () => {
+      if (restored) return;
+      restored = true;
+      window.removeEventListener("afterprint", restoreDom);
+      document.title = prevTitle;
+      document.body.classList.remove("wbpsc-force-print-dom");
+      document.body.classList.add("bg-slate-950", "text-slate-100");
+      document.documentElement.style.backgroundColor = "";
+      document.body.style.backgroundColor = "";
+      document.body.style.color = "";
+    };
+
+    window.addEventListener("afterprint", restoreDom);
+
+    // Wait two animation frames so the browser lays out the pure-white multi-page portal before capturing print preview
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try {
+          window.print();
+        } finally {
+          setTimeout(restoreDom, 600);
+        }
+      });
+    });
   };
 
+  const handleDownloadPrintableHtml = () => {
+    if (!data || data.questions.length === 0) return;
+    const htmlDoc = buildPrintablePaperHtml(data, langMode, answerMode);
+    const blob = new Blob([htmlDoc], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safeSlug}-question-paper.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const renderPaperContent = (idAttr: string) =>
+    data && data.questions.length > 0 ? (
+      <div
+        id={idAttr}
+        className="bg-white text-slate-900 rounded-xl p-8 max-w-4xl mx-auto shadow-lg space-y-6"
+      >
+        {/* Exam Paper Header */}
+        <div className="border-b-2 border-slate-900 pb-4 text-center space-y-1">
+          <p className="text-xs font-bold uppercase tracking-widest text-slate-600">
+            {data.exam.title.en} {data.exam.title.bn ? `· ${data.exam.title.bn}` : ""}
+          </p>
+          <h1 className="text-xl font-bold text-slate-950">{data.series.name.en}</h1>
+          {data.series.name.bn && data.series.name.bn !== data.series.name.en && (
+            <p className="text-base font-bengali text-slate-800">{data.series.name.bn}</p>
+          )}
+          <div className="flex flex-wrap justify-center gap-6 pt-2 text-xs font-semibold text-slate-700">
+            <span>Total Questions: {data.questions.length}</span>
+            <span>Time Allowed: {data.series.durationMinutes} Minutes</span>
+            <span>
+              Full Marks: {(data.questions.length * data.series.marksPerCorrect).toFixed(0)} (+
+              {data.series.marksPerCorrect} / −{data.series.negativeMarksPerWrong})
+            </span>
+          </div>
+        </div>
+
+        {/* Questions List */}
+        <div className="space-y-5">
+          {data.questions.map((q) => (
+            <div
+              key={q.questionId}
+              className="border-b border-slate-200 pb-4 break-inside-avoid space-y-2"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-1 text-sm">
+                  {(langMode === "bilingual" || langMode === "en") && (
+                    <p className="font-semibold text-slate-900">
+                      <span className="font-mono mr-1.5">Q{q.questionNumber}.</span>
+                      {q.stem.en}
+                    </p>
+                  )}
+                  {(langMode === "bilingual" || langMode === "bn") && q.stem.bn && (
+                    <p className="font-bengali text-slate-800">
+                      {langMode === "bn" && (
+                        <span className="font-mono font-bold mr-1.5">
+                          প্রশ্ন {q.questionNumber}.
+                        </span>
+                      )}
+                      {q.stem.bn}
+                    </p>
+                  )}
+                </div>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
+                  {q.subjectName.en}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-4 text-xs">
+                {(["A", "B", "C", "D"] as const).map((optKey) => {
+                  const opt = q.options[optKey];
+                  const isCorrect = answerMode === "inline" && q.correctOption === optKey;
+                  return (
+                    <div
+                      key={optKey}
+                      className={`p-1.5 rounded ${
+                        isCorrect
+                          ? "bg-emerald-50 border border-emerald-400 font-semibold text-emerald-950"
+                          : "text-slate-800"
+                      }`}
+                    >
+                      <span className="font-mono font-bold mr-1.5">({optKey})</span>
+                      {(langMode === "bilingual" || langMode === "en") && <span>{opt.en}</span>}
+                      {langMode === "bilingual" && opt.bn && (
+                        <span className="font-bengali text-slate-700"> / {opt.bn}</span>
+                      )}
+                      {langMode === "bn" && (
+                        <span className="font-bengali">{opt.bn || opt.en}</span>
+                      )}
+                      {isCorrect && <span className="ml-1.5 text-emerald-700">✓</span>}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {answerMode === "inline" && (
+                <div className="pl-4 pt-1 text-xs text-slate-700 bg-slate-50 p-2.5 rounded border border-slate-200 space-y-1">
+                  <p className="font-semibold text-emerald-800">
+                    Correct Answer: Option ({q.correctOption})
+                  </p>
+                  {(langMode === "bilingual" || langMode === "en") && q.explanation.en && (
+                    <p>{q.explanation.en}</p>
+                  )}
+                  {(langMode === "bilingual" || langMode === "bn") && q.explanation.bn && (
+                    <p className="font-bengali text-slate-700">{q.explanation.bn}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* End-of-Paper Answer Key & Explanations */}
+        {answerMode === "end_key" && (
+          <div className="pt-6 border-t-2 border-slate-900 space-y-4 break-before-page">
+            <h2 className="text-base font-bold text-slate-950 uppercase tracking-wider">
+              Answer Key &amp; Detailed Solutions ({data.series.name.en})
+            </h2>
+            <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 text-xs font-mono">
+              {data.questions.map((q) => (
+                <div
+                  key={q.questionId}
+                  className="p-1.5 border border-slate-300 rounded text-center bg-slate-50"
+                >
+                  <span className="text-slate-500">{q.questionNumber}:</span>{" "}
+                  <strong className="text-slate-950">{q.correctOption}</strong>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-3 pt-3">
+              {data.questions.map((q) => (
+                <div
+                  key={q.questionId}
+                  className="text-xs space-y-0.5 border-b border-slate-200 pb-2"
+                >
+                  <p className="font-semibold text-slate-900">
+                    Q{q.questionNumber}. Correct Option: ({q.correctOption}) —{" "}
+                    {q.options[q.correctOption].en}
+                  </p>
+                  {(langMode === "bilingual" || langMode === "en") && q.explanation.en && (
+                    <p className="text-slate-700">{q.explanation.en}</p>
+                  )}
+                  {(langMode === "bilingual" || langMode === "bn") && q.explanation.bn && (
+                    <p className="font-bengali text-slate-700">{q.explanation.bn}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    ) : null;
+
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto print:static print:bg-white print:p-0">
-      {/* Print-only stylesheet so window.print() exports ONLY the clean question paper PDF */}
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto no-print">
+      {/* Top-level body portal & @media print override so native Ctrl+P also prints a clean white multi-page PDF */}
       <style>{`
+        #wbpsc-print-portal-root {
+          display: none;
+        }
         @media print {
-          body * {
-            visibility: hidden !important;
+          @page {
+            size: A4 portrait;
+            margin: 14mm;
           }
-          #wbpsc-printable-paper, #wbpsc-printable-paper * {
-            visibility: visible !important;
+          html, body {
+            background: #ffffff !important;
+            color: #0f172a !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            height: auto !important;
+            overflow: visible !important;
           }
-          #wbpsc-printable-paper {
-            position: absolute !important;
-            left: 0 !important;
-            top: 0 !important;
+          body > *:not(#wbpsc-print-portal-root) {
+            display: none !important;
+          }
+          #wbpsc-print-portal-root {
+            display: block !important;
+            position: static !important;
             width: 100% !important;
             background: #ffffff !important;
             color: #0f172a !important;
-            padding: 16px !important;
+          }
+          #wbpsc-printable-paper-portal {
+            max-width: 100% !important;
             box-shadow: none !important;
             border: none !important;
-          }
-          .no-print {
-            display: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
           }
         }
       `}</style>
 
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden shadow-2xl print:max-w-none print:max-h-none print:border-none print:bg-white">
+      {typeof document !== "undefined" &&
+        data &&
+        data.questions.length > 0 &&
+        createPortal(
+          <div id="wbpsc-print-portal-root">{renderPaperContent("wbpsc-printable-paper-portal")}</div>,
+          document.body
+        )}
+
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden shadow-2xl">
         {/* Header (Hidden in Print) */}
         <div className="no-print flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-800 bg-slate-950">
           <div>
@@ -347,160 +970,28 @@ export function SeriesExportModal({
                   <Printer className="w-4 h-4" />
                   Export / Save as PDF
                 </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadPrintableHtml}
+                  disabled={data.questions.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+                  title="Download standalone white-background Question Paper HTML file"
+                >
+                  <FileText className="w-3.5 h-3.5 text-amber-400" />
+                  Download Paper (.html)
+                </button>
               </div>
             </div>
 
             {/* Printable PDF Preview Area */}
-            <div className="flex-1 overflow-y-auto p-6 bg-slate-950 print:p-0 print:bg-white">
+            <div className="flex-1 overflow-y-auto p-6 bg-slate-950">
               {data.questions.length === 0 ? (
                 <div className="p-8 text-center text-xs text-slate-400 border border-dashed border-slate-800 rounded-xl">
                   This test series has no selected questions yet. Select or import questions into the
                   series first.
                 </div>
               ) : (
-                <div
-                  id="wbpsc-printable-paper"
-                  className="bg-white text-slate-900 rounded-xl p-8 max-w-4xl mx-auto shadow-lg space-y-6"
-                >
-                  {/* Exam Paper Header */}
-                  <div className="border-b-2 border-slate-900 pb-4 text-center space-y-1">
-                    <p className="text-xs font-bold uppercase tracking-widest text-slate-600">
-                      {data.exam.title.en} {data.exam.title.bn ? `· ${data.exam.title.bn}` : ""}
-                    </p>
-                    <h1 className="text-xl font-bold text-slate-950">{data.series.name.en}</h1>
-                    {data.series.name.bn && data.series.name.bn !== data.series.name.en && (
-                      <p className="text-base font-bengali text-slate-800">{data.series.name.bn}</p>
-                    )}
-                    <div className="flex flex-wrap justify-center gap-6 pt-2 text-xs font-semibold text-slate-700">
-                      <span>Total Questions: {data.questions.length}</span>
-                      <span>Time Allowed: {data.series.durationMinutes} Minutes</span>
-                      <span>
-                        Full Marks:{" "}
-                        {(data.questions.length * data.series.marksPerCorrect).toFixed(0)} (+
-                        {data.series.marksPerCorrect} / −{data.series.negativeMarksPerWrong})
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Questions List */}
-                  <div className="space-y-5">
-                    {data.questions.map((q) => (
-                      <div
-                        key={q.questionId}
-                        className="border-b border-slate-200 pb-4 break-inside-avoid space-y-2"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="space-y-1 text-sm">
-                            {(langMode === "bilingual" || langMode === "en") && (
-                              <p className="font-semibold text-slate-900">
-                                <span className="font-mono mr-1.5">Q{q.questionNumber}.</span>
-                                {q.stem.en}
-                              </p>
-                            )}
-                            {(langMode === "bilingual" || langMode === "bn") && q.stem.bn && (
-                              <p className="font-bengali text-slate-800">
-                                {langMode === "bn" && (
-                                  <span className="font-mono font-bold mr-1.5">
-                                    প্রশ্ন {q.questionNumber}.
-                                  </span>
-                                )}
-                                {q.stem.bn}
-                              </p>
-                            )}
-                          </div>
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
-                            {q.subjectName.en}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-4 text-xs">
-                          {(["A", "B", "C", "D"] as const).map((optKey) => {
-                            const opt = q.options[optKey];
-                            const isCorrect = answerMode === "inline" && q.correctOption === optKey;
-                            return (
-                              <div
-                                key={optKey}
-                                className={`p-1.5 rounded ${
-                                  isCorrect
-                                    ? "bg-emerald-50 border border-emerald-400 font-semibold text-emerald-950"
-                                    : "text-slate-800"
-                                }`}
-                              >
-                                <span className="font-mono font-bold mr-1.5">({optKey})</span>
-                                {(langMode === "bilingual" || langMode === "en") && (
-                                  <span>{opt.en}</span>
-                                )}
-                                {langMode === "bilingual" && opt.bn && (
-                                  <span className="font-bengali text-slate-700"> / {opt.bn}</span>
-                                )}
-                                {langMode === "bn" && (
-                                  <span className="font-bengali">{opt.bn || opt.en}</span>
-                                )}
-                                {isCorrect && <span className="ml-1.5 text-emerald-700">✓</span>}
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        {answerMode === "inline" && (
-                          <div className="pl-4 pt-1 text-xs text-slate-700 bg-slate-50 p-2.5 rounded border border-slate-200 space-y-1">
-                            <p className="font-semibold text-emerald-800">
-                              Correct Answer: Option ({q.correctOption})
-                            </p>
-                            {(langMode === "bilingual" || langMode === "en") &&
-                              q.explanation.en && <p>{q.explanation.en}</p>}
-                            {(langMode === "bilingual" || langMode === "bn") &&
-                              q.explanation.bn && (
-                                <p className="font-bengali text-slate-700">{q.explanation.bn}</p>
-                              )}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* End-of-Paper Answer Key & Explanations */}
-                  {answerMode === "end_key" && (
-                    <div className="pt-6 border-t-2 border-slate-900 space-y-4 break-before-page">
-                      <h2 className="text-base font-bold text-slate-950 uppercase tracking-wider">
-                        Answer Key &amp; Detailed Solutions ({data.series.name.en})
-                      </h2>
-                      <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 text-xs font-mono">
-                        {data.questions.map((q) => (
-                          <div
-                            key={q.questionId}
-                            className="p-1.5 border border-slate-300 rounded text-center bg-slate-50"
-                          >
-                            <span className="text-slate-500">{q.questionNumber}:</span>{" "}
-                            <strong className="text-slate-950">{q.correctOption}</strong>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="space-y-3 pt-3">
-                        {data.questions.map((q) => (
-                          <div
-                            key={q.questionId}
-                            className="text-xs space-y-0.5 border-b border-slate-200 pb-2"
-                          >
-                            <p className="font-semibold text-slate-900">
-                              Q{q.questionNumber}. Correct Option: ({q.correctOption}) —{" "}
-                              {q.options[q.correctOption].en}
-                            </p>
-                            {(langMode === "bilingual" || langMode === "en") &&
-                              q.explanation.en && (
-                                <p className="text-slate-700">{q.explanation.en}</p>
-                              )}
-                            {(langMode === "bilingual" || langMode === "bn") &&
-                              q.explanation.bn && (
-                                <p className="font-bengali text-slate-700">{q.explanation.bn}</p>
-                              )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                renderPaperContent("wbpsc-printable-paper")
               )}
             </div>
           </>

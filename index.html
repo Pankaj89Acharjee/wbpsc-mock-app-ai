@@ -14,8 +14,67 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=Noto+Sans+Bengali:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      #wbpsc-print-portal-root {
+        display: none;
+      }
+      body.wbpsc-force-print-dom {
+        background: #ffffff !important;
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+        overflow: visible !important;
+        height: auto !important;
+      }
+      body.wbpsc-force-print-dom > #root {
+        display: none !important;
+      }
+      body.wbpsc-force-print-dom > #wbpsc-print-portal-root {
+        display: block !important;
+        position: static !important;
+        width: 100% !important;
+        height: auto !important;
+        overflow: visible !important;
+        background: #ffffff !important;
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+      }
+      @media print {
+        @page {
+          size: A4 portrait;
+          margin: 12mm;
+        }
+        html, body {
+          background: #ffffff !important;
+          background-color: #ffffff !important;
+          color: #0f172a !important;
+          color-scheme: light !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          overflow: visible !important;
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
+        body.wbpsc-printing-active > #root {
+          display: none !important;
+        }
+        body.wbpsc-printing-active > #wbpsc-print-portal-root {
+          display: block !important;
+          position: static !important;
+          width: 100% !important;
+          height: auto !important;
+          max-height: none !important;
+          overflow: visible !important;
+          background: #ffffff !important;
+          background-color: #ffffff !important;
+          color: #0f172a !important;
+        }
+      }
+    </style>
   </head>
-  <body class="bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500 selection:text-slate-950">
+  <body class="bg-slate-950 text-slate-100 print:bg-white print:text-slate-900 antialiased selection:bg-emerald-500 selection:text-slate-950">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
