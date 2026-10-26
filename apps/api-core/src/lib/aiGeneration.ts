@@ -150,10 +150,47 @@ export async function loadGenerationContext(
 export async function generateWithApiAi(
   req: ApiAiGenerateRequest
 ): Promise<ApiAiGenerateResponse> {
-  const body = await callApiAi<unknown>("/internal/questions/generate", JSON.stringify(req));
-  const parsed = GenerateResponseSchema.safeParse(body);
-  if (!parsed.success) {
-    throw new Error("AI service returned an unexpected response");
+  try {
+    const body = await callApiAi<unknown>("/internal/questions/generate", JSON.stringify(req));
+    const parsed = GenerateResponseSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new Error("AI service returned an unexpected response");
+    }
+    return parsed.data;
+  } catch (err) {
+    // If api-ai (Python FastAPI) is not running locally in preview, fall back to direct Gemini SDK if GEMINI_API_KEY is set
+    if (process.env.GEMINI_API_KEY) {
+      const { generateSubjectQuestionsWithAi } = await import("./aiEnrichment");
+      const generated = await generateSubjectQuestionsWithAi({
+        examSlug: req.exam_slug,
+        examTitleEn: req.exam_title,
+        subjectEn: req.subject_name,
+        subjectBn: req.subject_name,
+        chaptersAndSubtopics: [
+          {
+            chapterEn: req.chapter_name,
+            subtopicEn: req.subtopic_name,
+            subtopicSlug: req.subtopic_slug,
+          },
+        ],
+        count: req.count,
+        difficulty: req.difficulty,
+        avoidStems: req.avoid_stems,
+      });
+      return {
+        questions: generated.map((q) => ({
+          stem: q.stem,
+          options: q.options,
+          correct_option: q.correct_option,
+          explanation: q.explanation,
+          difficulty: q.difficulty,
+          confidence: q.confidence,
+        })),
+        model_used: "gemini-2.5-flash",
+        cache_tier: "gemini",
+        cache_key: `${req.exam_slug}:${req.subtopic_slug}:r${req.round}:a${req.attempt}`,
+      };
+    }
+    throw err;
   }
-  return parsed.data;
 }

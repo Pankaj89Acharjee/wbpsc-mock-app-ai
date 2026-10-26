@@ -29,6 +29,7 @@ export interface ChapterNode extends NamedNode {
   subtopics: SubtopicNode[];
 }
 export interface SubjectNode extends NamedNode {
+  weightageQuestions?: number;
   chapters: ChapterNode[];
 }
 export interface ExamNode extends NamedNode {
@@ -68,7 +69,13 @@ export async function loadSyllabus(): Promise<Syllabus> {
   }
   const examById = new Map([...syllabus.values()].map((e) => [e.id, e]));
   for (const s of subjectRows) {
-    const node: SubjectNode = { id: s.id, slug: s.slug, name: s.name, chapters: [] };
+    const node: SubjectNode = {
+      id: s.id,
+      slug: s.slug,
+      name: s.name,
+      weightageQuestions: s.weightageQuestions,
+      chapters: [],
+    };
     subjectById.set(s.id, node);
     examById.get(s.examId)?.subjects.push(node);
   }
@@ -95,6 +102,7 @@ export function toTreeDto(exam: ExamNode): SyllabusTreeDto {
       id: s.id,
       slug: s.slug,
       name: s.name,
+      weightageQuestions: s.weightageQuestions ?? 25,
       chapters: s.chapters.map((c) => ({
         id: c.id,
         slug: c.slug,

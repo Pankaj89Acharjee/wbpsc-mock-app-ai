@@ -402,3 +402,150 @@ ${categoryCatalog}`,
   };
   return parsed.questions || [];
 }
+
+// ============================================================================
+// 5. Generate WBPSC Bilingual MCQs for a Subject (Full Question Set / Chunked)
+// ============================================================================
+
+export interface GeneratedSubjectQuestion {
+  chapter_en: string;
+  subtopic_en: string;
+  stem: BilingualText;
+  options: Record<OptionKey, BilingualText>;
+  correct_option: OptionKey;
+  explanation: BilingualText;
+  difficulty: "easy" | "moderate" | "hard";
+  confidence: number;
+}
+
+export async function generateSubjectQuestionsWithAi(params: {
+  examSlug: string;
+  examTitleEn: string;
+  subjectEn: string;
+  subjectBn: string;
+  chaptersAndSubtopics: Array<{
+    chapterEn: string;
+    subtopicEn: string;
+    subtopicSlug: string;
+  }>;
+  count: number;
+  difficulty: "easy" | "moderate" | "hard" | "mixed";
+  avoidStems?: string[];
+}): Promise<GeneratedSubjectQuestion[]> {
+  const ai = getGenAIClient();
+  const CHUNK_SIZE = 20;
+  const results: GeneratedSubjectQuestion[] = [];
+  const avoid = [...(params.avoidStems ?? [])];
+
+  const topicsList =
+    params.chaptersAndSubtopics.length > 0
+      ? params.chaptersAndSubtopics
+          .map((t) => `- Chapter: "${t.chapterEn}" | Subtopic: "${t.subtopicEn}"`)
+          .join("\n")
+      : `- Chapter: "${params.subjectEn} — Core Concepts" | Subtopic: "${params.subjectEn} — Fundamentals"`;
+
+  let remaining = params.count;
+  let batchNum = 0;
+
+  while (remaining > 0 && batchNum < 8) {
+    const batchCount = Math.min(remaining, CHUNK_SIZE);
+    batchNum++;
+
+    const avoidBlock =
+      avoid.length > 0
+        ? `\nDo NOT repeat or closely paraphrase any of these already-used question stems:\n${avoid
+            .slice(-60)
+            .map((s) => `• ${s}`)
+            .join("\n")}`
+        : "";
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Generate exactly ${batchCount} realistic, exam-grade Multiple-Choice Questions (MCQs) for the West Bengal Public Service Commission (WBPSC) exam:
+Exam: ${params.examTitleEn} (${params.examSlug})
+Subject: ${params.subjectEn} (${params.subjectBn})
+Target Difficulty: ${
+        params.difficulty === "mixed"
+          ? "Mixed (30% easy, 50% moderate, 20% hard — matching actual WBPSC paper standard)"
+          : params.difficulty
+      }
+
+Distribute the questions evenly and realistically across the following Chapters & Subtopics of ${params.subjectEn}:
+${topicsList}
+
+Strict Quality & Bilingual Rules:
+1. Every question MUST have BOTH English ("en") and formal West Bengal academic Bengali ("bn" বাংলা with proper যুক্তাক্ষর) for the stem, all 4 options (A, B, C, D), and a clear 2-sentence explanation.
+2. For General English grammar/vocabulary questions, keep the tested English words/sentences in English and provide helpful Bengali meaning/explanation where appropriate.
+3. Ensure 100% factual and mathematical accuracy, with exactly one unambiguous correct option ("A", "B", "C", or "D").
+4. Set "chapter_en" and "subtopic_en" to match one of the listed Chapters & Subtopics above.${avoidBlock}`,
+      config: {
+        systemInstruction:
+          "You are the Senior Paper Setter for West Bengal Public Service Commission (WBPSC Clerkship, WBCS Prelims, Food SI, Miscellaneous) examinations.",
+        temperature: 0.45,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            questions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  chapter_en: { type: Type.STRING },
+                  subtopic_en: { type: Type.STRING },
+                  stem: BILINGUAL_SCHEMA,
+                  options: {
+                    type: Type.OBJECT,
+                    properties: {
+                      A: BILINGUAL_SCHEMA,
+                      B: BILINGUAL_SCHEMA,
+                      C: BILINGUAL_SCHEMA,
+                      D: BILINGUAL_SCHEMA,
+                    },
+                    required: ["A", "B", "C", "D"],
+                  },
+                  correct_option: { type: Type.STRING, enum: ["A", "B", "C", "D"] },
+                  explanation: BILINGUAL_SCHEMA,
+                  difficulty: { type: Type.STRING, enum: ["easy", "moderate", "hard"] },
+                  confidence: { type: Type.NUMBER },
+                },
+                required: [
+                  "chapter_en",
+                  "subtopic_en",
+                  "stem",
+                  "options",
+                  "correct_option",
+                  "explanation",
+                  "difficulty",
+                  "confidence",
+                ],
+              },
+            },
+          },
+          required: ["questions"],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || "{}") as {
+      questions?: GeneratedSubjectQuestion[];
+    };
+    const batch = parsed.questions || [];
+    if (batch.length === 0) break;
+
+    for (const q of batch) {
+      if (!q.stem?.en?.trim()) continue;
+      results.push(q);
+      avoid.push(q.stem.en.trim());
+      if (results.length >= params.count) break;
+    }
+    remaining = params.count - results.length;
+  }
+
+  return results;
+}
+
+function theCHUNK_SIZE(n: number): number {
+  return n;
+}
+
