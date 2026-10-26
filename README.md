@@ -257,15 +257,18 @@ docker compose -f docker-compose.prod.yml up -d --force-recreate api-ai api-core
 ## **CICD Pipeline in Github Actions**
 ---
 
-1. Timeout: appleboy/ssh-action stops after 10 minutes by default. A rebuild of all images on the VM can take longer, so the job would fail midway. Add `command_timeout: 30m`.
+1. **Timeout:** `appleboy/ssh-action` stops after **10 minutes** by default. A rebuild of all images on the VM can take longer, so the job would fail midway. Add `command_timeout: 30m`.
 
-2. No stop on error: if git pull fails (say, a conflict on the VM), the script still rebuilds the old code and the job shows ✅. Add `set -e` and use `git pull --ff-only`.
+2. **No stop on error:** if `git pull` fails (say, a conflict on the VM), the script still rebuilds the old code and the job shows ✅. Add `set -e` and use `git pull --ff-only`.
 
-3. Overlapping deploys: two quick pushes can run two builds at once on the VM. Add a `concurrency` group.
+3. **Overlapping deploys:** two quick pushes can run two builds at once on the VM. Add a `concurrency` group.
 
-4. No health check: the job passes even if api-core crashes after starting. Add a check at the end.
+4. **No health check:** the job passes even if api-core crashes after starting. Add a check at the end.
 
-5. Docs-only pushes: a README-only push triggers a full rebuild. `paths-ignore` skips those (optional).
+5. **Docs-only pushes:** a README-only push triggers a full rebuild. `paths-ignore` skips those (optional).
+
+
+*Path = [.github/workflows/deploy.yml] ==> file structure*
 
 ```bash
 name: Deploy to Oracle VM
@@ -313,6 +316,20 @@ jobs:
             $C logs --tail 30 api-core api-ai web            
             exit 1
 ```
+
+**What to do in Github website with repo**
+
+**Repository secrets** (Settings --> Secrets and Variables --> Actions):
+
+- `HOST` = `129.225.127.229`
+- `USERNAME` = `ubuntu`
+- `SSH_PRIVATE_KEY` = the full contents of my `.key` file, including the `-----BEGIN ...-----` and `-----END ...-----` lines. Get it with `cat ~/.ssh/oracle-vm-ssh/ssh-key-oraclevm-wbpsc-latest.key`.
+
+**Database changes are not automatic**. If a push changes the database schema (`schema.ts`), run *`docker compose -f docker-compose.prod.yml run --rm --no-deps web npm run db:push`* on the VM yourself. Don't automate it: `db:push` can ask questions or drop data, so it's safer to run by hand.
+
+---
+
+
 
 
 ## *Current Affairs Automation**
