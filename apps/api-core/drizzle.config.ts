@@ -5,7 +5,8 @@ export default defineConfig({
   schema: "./src/db/schema.ts",
   out: "./drizzle",
   // Tables owned by apps/api-ai (created at its startup) — never let push drop them
-  tablesFilter: ["!ai_*", "!syllabus_chunks"],
+  // (and the migration ledger written by src/db/migrate.ts)
+  tablesFilter: ["!ai_*", "!syllabus_chunks", "!schema_migrations"],
   dbCredentials: {
     // Use the direct (non-PgBouncer) URL for DDL when on Supabase
     url:

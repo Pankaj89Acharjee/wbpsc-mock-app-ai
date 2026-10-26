@@ -15,7 +15,6 @@ import {
   XCircle,
 } from "lucide-react";
 import {
-  AI_QUESTION_COUNT_OPTIONS,
   BULK_IMPORT_CSV_COLUMNS,
   BULK_IMPORT_MAX_ROWS,
   BULK_IMPORT_TEMPLATE_EXAMPLES,
@@ -28,17 +27,20 @@ import {
   toCsv,
   type ExamDto,
   type ExtractMediaQuestionsResult,
-  type GenerateQuestionsInput,
-  type GenerateQuestionsResult,
   type IngestionBatchSummary,
   type IngestionJobDto,
   type IngestionStatus,
   type IngestionUploadResult,
+  type ApproveJobsResult,
+  type RejectJobsResult,
+  type SyllabusTreeDto,
   type OptionKey,
   type StagedQuestionDraft,
 } from "../../packages/shared-types/src/index";
 import { adminApi, downloadCsv, type SyllabusTrees } from "./adminApi";
 import SyllabusPicker from "./SyllabusPicker";
+import AiGeneratePanel from "./AiGeneratePanel";
+import { ConfirmDialog } from "./ui";
 
 // ============================================================================
 // Admin Console → Tab 4: Question Bank (Add · Bulk · AI · PDF/Image Paper)
@@ -79,12 +81,29 @@ interface SelectedFile {
   warning: string | null;
 }
 
-interface ApproveResult {
-  inserted: number;
-  notPendingReview: number;
-  invalid: Array<{ id: string; message: string }>;
-  duplicates: Array<{ id: string; message: string }>;
+/** Review-queue filters beyond status and batch (all optional). */
+interface ReviewFilters {
+  subjectId: string;
+  chapterId: string;
+  subtopicId: string;
+  difficulty: string;
+  source: string;
+  createdFrom: string;
+  createdTo: string;
 }
+const NO_FILTERS: ReviewFilters = {
+  subjectId: "",
+  chapterId: "",
+  subtopicId: "",
+  difficulty: "",
+  source: "",
+  createdFrom: "",
+  createdTo: "",
+};
+
+/** AI questions awaiting review are only approved or rejected, not edited. */
+const isAiForReview = (job: IngestionJobDto) =>
+  job.source === "ai_generated" && job.status === "pending_review";
 
 type Notice = { kind: "success" | "error" | "info"; text: string; details?: string[] };
 
@@ -144,6 +163,10 @@ export default function BulkImportPanel({
   const [actionBusy, setActionBusy] = useState(false);
   const [rejectNotes, setRejectNotes] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [filters, setFilters] = useState<ReviewFilters>(NO_FILTERS);
+  const [assignToSeries, setAssignToSeries] = useState(true);
+  const [confirm, setConfirm] = useState<{ kind: "reject"; ids: string[] } | null>(null);
+  const [selectingAll, setSelectingAll] = useState(false);
 
   const examLabel = (slug: string | null) =>
     slug ? (EXAM_SLUG_LABELS[slug] ?? exams.find((e) => e.slug === slug)?.titleEn ?? slug) : null;
@@ -158,6 +181,7 @@ export default function BulkImportPanel({
         offset: String(offset),
       });
       if (batchId) params.set("batchId", batchId);
+      for (const [k, v] of Object.entries(filters)) if (v) params.set(k, v);
       const [batchRes, jobRes] = await Promise.all([
         ingestionApi<{ batches: IngestionBatchSummary[] }>(
           `/batches?examSlug=${encodeURIComponent(exam.slug)}`
@@ -173,7 +197,7 @@ export default function BulkImportPanel({
     } finally {
       setLoading(false);
     }
-  }, [ingestionApi, exam.slug, batchId, statusFilter, offset]);
+  }, [ingestionApi, exam.slug, batchId, statusFilter, offset, filters]);
 
   React.useEffect(() => {
     refresh();
@@ -246,24 +270,30 @@ export default function BulkImportPanel({
     }
   };
 
+  const describe = (id: string, message: string) => {
+    const job = jobs.find((j) => j.id === id);
+    const label = job?.rowNumber ? `Row ${job.rowNumber}` : id.slice(0, 8);
+    return `${label}${job?.draft ? ` (“${job.draft.stem.en.slice(0, 50)}…”)` : ""} — ${message}`;
+  };
+
   const runApprove = async (ids: string[]) => {
-    if (ids.length === 0) return;
+    if (ids.length === 0 || actionBusy) return;
     setActionBusy(true);
     try {
-      const r = await ingestionApi<ApproveResult>("/jobs/approve", {
+      const r = await ingestionApi<ApproveJobsResult>("/jobs/approve", {
         method: "POST",
-        body: { ids },
+        body: { ids, assignToTargetSeries: assignToSeries },
       });
-      const problems = [...r.invalid, ...r.duplicates].map((p) => {
-        const job = jobs.find((j) => j.id === p.id);
-        return `${job?.rowNumber ? `Row ${job.rowNumber}` : p.id.slice(0, 8)} — ${p.message}`;
-      });
-      const parts = [`${r.inserted} added to the live question bank`];
+      const problems = r.results
+        .filter((x) => x.status !== "inserted")
+        .map((x) => describe(x.id, x.message ?? x.status));
+      const parts = [`${r.inserted} approved into the Question Bank`];
+      if (r.assigned) parts.push(`${r.assigned} also added to their test series`);
       if (r.invalid.length) parts.push(`${r.invalid.length} need fixes`);
       if (r.duplicates.length) parts.push(`${r.duplicates.length} duplicates`);
       if (r.notPendingReview) parts.push(`${r.notPendingReview} skipped (not “Ready for review”)`);
       setNotice({
-        kind: problems.length ? "info" : "success",
+        kind: r.inserted === 0 ? "error" : problems.length ? "info" : "success",
         text: parts.join(" · "),
         details: problems,
       });
@@ -273,18 +303,28 @@ export default function BulkImportPanel({
       setNotice({ kind: "error", text: (err as Error).message });
     } finally {
       setActionBusy(false);
+      setConfirm(null);
     }
   };
 
+  const approveOne = (job: IngestionJobDto) => runApprove([job.id]);
+
   const runReject = async (ids: string[]) => {
-    if (ids.length === 0) return;
+    if (ids.length === 0 || actionBusy) return;
     setActionBusy(true);
     try {
-      const r = await ingestionApi<{ rejected: number }>("/jobs/reject", {
+      const r = await ingestionApi<RejectJobsResult>("/jobs/reject", {
         method: "POST",
         body: { ids, reviewNotes: rejectNotes.trim() || undefined },
       });
-      setNotice({ kind: "success", text: `${r.rejected} question(s) rejected` });
+      const skipped = r.results
+        .filter((x) => x.status !== "rejected")
+        .map((x) => describe(x.id, x.message ?? "not rejected"));
+      setNotice({
+        kind: skipped.length ? "info" : "success",
+        text: `${r.rejected} question(s) rejected${skipped.length ? ` · ${skipped.length} skipped` : ""}. Rejected rows are kept for auditing and duplicate checks.`,
+        details: skipped,
+      });
       setRejectNotes("");
       setExpandedId(null);
       await refresh();
@@ -292,6 +332,29 @@ export default function BulkImportPanel({
       setNotice({ kind: "error", text: (err as Error).message });
     } finally {
       setActionBusy(false);
+      setConfirm(null);
+    }
+  };
+
+  /** Selects every row matching the current filters (not just this page). */
+  const selectAllMatching = async () => {
+    setSelectingAll(true);
+    try {
+      const params = new URLSearchParams({ examSlug: exam.slug, status: statusFilter });
+      if (batchId) params.set("batchId", batchId);
+      for (const [k, v] of Object.entries(filters)) if (v) params.set(k, v);
+      const r = await ingestionApi<{ ids: string[]; total: number; capped: boolean }>(`/jobs/ids?${params}`);
+      setSelected(new Set(r.ids));
+      if (r.capped) {
+        setNotice({
+          kind: "info",
+          text: `Selected the newest ${r.ids.length} of ${r.total} matching rows (bulk actions handle up to ${r.ids.length} at a time).`,
+        });
+      }
+    } catch (err) {
+      setNotice({ kind: "error", text: (err as Error).message });
+    } finally {
+      setSelectingAll(false);
     }
   };
 
@@ -600,34 +663,23 @@ export default function BulkImportPanel({
         />
       )}
 
-      {/* ── Panel C: Generate with AI (Dropdown: 10, 15, 20, 25, 30, 40, 50) */}
+      {/* ── Panel C: Generate with AI (bank or a test series) ─────────── */}
       {generating && (
         <AiGeneratePanel
           exam={exam}
           trees={trees}
           onClose={() => setGenerating(false)}
-          onGenerate={async (input) => {
-            try {
-              const r = await ingestionApi<GenerateQuestionsResult>("/generate", {
-                method: "POST",
-                body: input,
-              });
-              setGenerating(false);
-              setBatchId(r.batchId);
-              setStatusFilter("pending_review");
-              setOffset(0);
-              setNotice({
-                kind: r.failed ? "info" : "success",
-                text: `AI drafted ${r.total} question(s) with ${r.modelUsed}${
-                  r.cacheTier === "gemini" ? "" : " (served from cache — no AI cost)"
-                } · ${r.pendingReview} ready for review${
-                  r.failed ? ` · ${r.failed} skipped as duplicates` : ""
-                }. Check each answer, tick “Answer checked”, save, then approve.`,
-              });
-              await refresh();
-            } catch (err) {
-              setNotice({ kind: "error", text: (err as Error).message });
-            }
+          onGenerated={async (r) => {
+            setBatchId(r.batchId);
+            setStatusFilter("pending_review");
+            setOffset(0);
+            setNotice({
+              kind: r.uniqueGenerated < r.requested ? "info" : "success",
+              text: `AI drafted ${r.uniqueGenerated} unique question(s) of ${r.requested} requested · ${
+                r.duplicatesDropped.exact + r.duplicatesDropped.near + r.duplicatesDropped.inBatch
+              } duplicate(s) removed. Check each answer, then Save / Approve below.`,
+            });
+            await refresh();
           }}
         />
       )}
@@ -706,31 +758,55 @@ export default function BulkImportPanel({
           </p>
         )}
 
-        {selected.size > 0 && (
-          <div className="flex flex-wrap items-center gap-2 px-4 py-3 bg-slate-950/60 border-b border-slate-800">
-            <span className="text-xs text-white font-medium">{selected.size} selected</span>
+        <ReviewFilterBar
+          tree={trees.trees[exam.slug]}
+          value={filters}
+          onChange={(f) => {
+            setFilters(f);
+            setOffset(0);
+          }}
+        />
+
+        <div className="flex flex-wrap items-center gap-2 px-4 py-3 bg-slate-950/60 border-b border-slate-800">
+          <span className="text-xs text-white font-medium">
+            {selected.size > 0 ? `${selected.size} selected` : "Bulk actions"}
+          </span>
+          <button
+            onClick={selectAllMatching}
+            disabled={selectingAll || total === 0}
+            className="px-2.5 py-1 text-xs text-sky-300 hover:text-sky-200 disabled:opacity-50 cursor-pointer"
+          >
+            {selectingAll ? "Selecting…" : `Select all ${total} matching`}
+          </button>
+          {selected.size > 0 && (
             <button
-              onClick={() => runApprove([...selected])}
-              disabled={actionBusy}
-              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+              onClick={() => setSelected(new Set())}
+              className="px-2.5 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
             >
-              <CheckCircle2 className="w-3.5 h-3.5" /> Approve → live bank
+              Clear selection
             </button>
-            <input
-              value={rejectNotes}
-              onChange={(e) => setRejectNotes(e.target.value)}
-              placeholder="Reject reason (optional)"
-              className="px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white w-56"
-            />
-            <button
-              onClick={() => runReject([...selected])}
-              disabled={actionBusy}
-              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
-            >
-              <XCircle className="w-3.5 h-3.5" /> Reject
-            </button>
-          </div>
-        )}
+          )}
+          <span className="flex-1" />
+          <label className="flex items-center gap-1.5 text-xs text-slate-300" title="Rows generated for a test series">
+            <input type="checkbox" checked={assignToSeries} onChange={(e) => setAssignToSeries(e.target.checked)} />
+            Also add series drafts to their test series
+          </label>
+          <button
+            onClick={() => runApprove([...selected])}
+            disabled={actionBusy || selected.size === 0}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            {actionBusy ? "Working…" : `Approve selected${selected.size ? ` (${selected.size})` : ""}`}
+          </button>
+          <button
+            onClick={() => setConfirm({ kind: "reject", ids: [...selected] })}
+            disabled={actionBusy || selected.size === 0}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+          >
+            <XCircle className="w-3.5 h-3.5" /> Reject selected{selected.size ? ` (${selected.size})` : ""}
+          </button>
+        </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
@@ -750,6 +826,7 @@ export default function BulkImportPanel({
                 <th className="p-3 w-12">Ans</th>
                 <th className="p-3">Tags</th>
                 <th className="p-3">Status</th>
+                <th className="p-3">Actions</th>
                 <th className="p-3 w-8"></th>
               </tr>
             </thead>
@@ -830,6 +907,37 @@ export default function BulkImportPanel({
                             {job.errorMessage}
                           </span>
                         )}
+                        {job.nearDuplicateScore !== null && job.status !== "inserted" && (
+                          <span className="block mt-1 text-amber-300 max-w-72">
+                            Looks like bank question {job.nearDuplicateQuestionId?.slice(0, 8)} (
+                            {Math.round(job.nearDuplicateScore * 100)}% similar)
+                          </span>
+                        )}
+                        {job.targetSeriesId && (
+                          <span className="block mt-1 text-violet-300">For a test series</span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {isEditable(job) && (
+                          <div className="flex flex-wrap gap-1">
+                            {job.status === "pending_review" && (
+                              <button
+                                onClick={() => approveOne(job)}
+                                disabled={actionBusy}
+                                className="px-2 py-1 text-[11px] font-semibold bg-emerald-500/90 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded cursor-pointer"
+                              >
+                                Approve
+                              </button>
+                            )}
+                            <button
+                              onClick={() => runReject([job.id])}
+                              disabled={actionBusy}
+                              className="px-2 py-1 text-[11px] font-semibold bg-rose-500/70 hover:bg-rose-500 disabled:opacity-50 text-white rounded cursor-pointer"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        )}
                       </td>
                       <td className="p-3">
                         <button
@@ -846,7 +954,7 @@ export default function BulkImportPanel({
                     </tr>
                     {expanded && (
                       <tr className="border-b border-slate-800 bg-slate-950/50">
-                        <td colSpan={7} className="p-4">
+                        <td colSpan={8} className="p-4">
                           {d ? (
                             <JobEditor
                               key={`${job.id}-${job.status}`}
@@ -855,6 +963,7 @@ export default function BulkImportPanel({
                               exams={exams}
                               trees={trees}
                               editable={isEditable(job)}
+                              reviewOnly={isAiForReview(job)}
                               readOnlyReason={`Read-only — status is “${job.status.replace("_", " ")}”.`}
                               onSave={saveExisting(job)}
                               saveLabel="Save changes"
@@ -863,7 +972,7 @@ export default function BulkImportPanel({
                                   ? {
                                       busy: actionBusy,
                                       canApprove: job.status === "pending_review",
-                                      onApprove: () => runApprove([job.id]),
+                                      onApprove: () => approveOne(job),
                                       onReject: () => runReject([job.id]),
                                     }
                                   : undefined
@@ -887,7 +996,7 @@ export default function BulkImportPanel({
               })}
               {jobs.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-slate-500">
+                  <td colSpan={8} className="p-6 text-center text-slate-500">
                     {loading ? "Loading…" : "Nothing here."}
                   </td>
                 </tr>
@@ -920,6 +1029,117 @@ export default function BulkImportPanel({
           </div>
         )}
       </div>
+
+      {confirm?.kind === "reject" && (
+        <ConfirmDialog
+          title={`Reject ${confirm.ids.length} question(s)?`}
+          body="Rejected questions leave the review queue and are never offered for test series. They are kept (with your reason) so the AI won't generate them again."
+          confirmLabel={`Reject ${confirm.ids.length}`}
+          busy={actionBusy}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => runReject(confirm.ids)}
+        >
+          <input
+            value={rejectNotes}
+            onChange={(e) => setRejectNotes(e.target.value)}
+            placeholder="Reason (optional, saved with each row)"
+            aria-label="Rejection reason"
+            className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white"
+          />
+        </ConfirmDialog>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Review-queue filters (syllabus node, difficulty, source, date range)
+// ============================================================================
+
+function ReviewFilterBar({
+  tree,
+  value,
+  onChange,
+}: {
+  tree: SyllabusTreeDto | undefined;
+  value: ReviewFilters;
+  onChange: (f: ReviewFilters) => void;
+}) {
+  const subject = tree?.subjects.find((s) => s.id === value.subjectId);
+  const chapter = subject?.chapters.find((c) => c.id === value.chapterId);
+  const set = (patch: Partial<ReviewFilters>) => onChange({ ...value, ...patch });
+  const cls = "px-2 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white min-w-0";
+  const active = Object.values(value).some(Boolean);
+  return (
+    <div className="flex flex-wrap items-end gap-2 px-4 py-3 border-b border-slate-800" role="search" aria-label="Filter review queue">
+      <select
+        aria-label="Subject"
+        value={value.subjectId}
+        onChange={(e) => set({ subjectId: e.target.value, chapterId: "", subtopicId: "" })}
+        className={cls}
+      >
+        <option value="">All subjects</option>
+        {tree?.subjects.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name.en}
+          </option>
+        ))}
+      </select>
+      <select
+        aria-label="Chapter"
+        value={value.chapterId}
+        disabled={!subject}
+        onChange={(e) => set({ chapterId: e.target.value, subtopicId: "" })}
+        className={cls}
+      >
+        <option value="">All chapters / topics</option>
+        {subject?.chapters.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name.en}
+          </option>
+        ))}
+      </select>
+      <select
+        aria-label="Subtopic"
+        value={value.subtopicId}
+        disabled={!chapter}
+        onChange={(e) => set({ subtopicId: e.target.value })}
+        className={cls}
+      >
+        <option value="">All subtopics</option>
+        {chapter?.subtopics.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name.en}
+          </option>
+        ))}
+      </select>
+      <select aria-label="Difficulty" value={value.difficulty} onChange={(e) => set({ difficulty: e.target.value })} className={cls}>
+        <option value="">Any difficulty</option>
+        <option value="easy">Easy</option>
+        <option value="moderate">Moderate</option>
+        <option value="hard">Hard</option>
+      </select>
+      <select aria-label="Source" value={value.source} onChange={(e) => set({ source: e.target.value })} className={cls}>
+        <option value="">Any source</option>
+        <option value="ai_generated">AI generated</option>
+        <option value="manual">Added in console</option>
+        <option value="csv_upload">CSV upload</option>
+        <option value="json_upload">JSON upload</option>
+        <option value="pdf_extract">PDF / image paper</option>
+      </select>
+      <label className="text-[11px] text-slate-400 space-y-0.5">
+        <span className="block">From</span>
+        <input type="date" value={value.createdFrom} onChange={(e) => set({ createdFrom: e.target.value })} className={cls} />
+      </label>
+      <label className="text-[11px] text-slate-400 space-y-0.5">
+        <span className="block">To</span>
+        <input type="date" value={value.createdTo} onChange={(e) => set({ createdTo: e.target.value })} className={cls} />
+      </label>
+      {active && (
+        <button onClick={() => onChange(NO_FILTERS)} className="px-2 py-1.5 text-xs text-slate-400 hover:text-white cursor-pointer">
+          Clear filters
+        </button>
+      )}
     </div>
   );
 }
@@ -1116,112 +1336,6 @@ function PaperUploadPanel({
 }
 
 // ============================================================================
-// AI PYQ-clone generator form (Dropdown: 10, 15, 20, 25, 30, 40, 50)
-// ============================================================================
-
-function AiGeneratePanel({
-  exam,
-  trees,
-  onGenerate,
-  onClose,
-}: {
-  exam: ExamDto;
-  trees: SyllabusTrees;
-  onGenerate: (input: GenerateQuestionsInput) => Promise<void>;
-  onClose: () => void;
-}) {
-  const [path, setPath] = useState({
-    examSlug: exam.slug,
-    subjectSlug: "",
-    chapterSlug: "",
-    subtopicSlug: "",
-  });
-  const [count, setCount] = useState<number>(10);
-  const [difficulty, setDifficulty] = useState<GenerateQuestionsInput["difficulty"]>("mixed");
-  const [busy, setBusy] = useState(false);
-
-  const inputCls =
-    "w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white disabled:opacity-70";
-
-  return (
-    <div className="bg-slate-900 border border-violet-500/40 rounded-xl p-5 space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-bold text-white flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-violet-300" /> Generate questions with AI
-          </h3>
-          <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-            Writes new bilingual MCQs in real WBPSC style for one subtopic, using the existing PYQs
-            of that subtopic as examples and avoiding questions already in the bank. Choose how
-            many questions to generate (10, 15, 20, 25, 30, 40, or 50).
-          </p>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-slate-400 hover:text-white cursor-pointer"
-          aria-label="Close"
-        >
-          <XCircle className="w-4 h-4" />
-        </button>
-      </div>
-
-      <fieldset disabled={busy} className="space-y-4">
-        <SyllabusPicker
-          exams={[exam]}
-          trees={trees}
-          inputCls={inputCls}
-          value={path}
-          onChange={setPath}
-        />
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs text-slate-400 space-y-1">
-            <span>How many questions?</span>
-            <select
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value))}
-              className={`${inputCls} w-36`}
-            >
-              {AI_QUESTION_COUNT_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt} questions
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs text-slate-400 space-y-1">
-            <span>Difficulty</span>
-            <select
-              value={difficulty}
-              onChange={(e) =>
-                setDifficulty(e.target.value as GenerateQuestionsInput["difficulty"])
-              }
-              className={`${inputCls} w-44`}
-            >
-              <option value="mixed">Mixed (like real paper)</option>
-              <option value="easy">Easy</option>
-              <option value="moderate">Moderate</option>
-              <option value="hard">Hard</option>
-            </select>
-          </label>
-          <button
-            onClick={async () => {
-              setBusy(true);
-              await onGenerate({ ...path, count, difficulty });
-              setBusy(false);
-            }}
-            disabled={!path.subtopicSlug}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white rounded-lg cursor-pointer"
-          >
-            <Sparkles className={`w-3.5 h-3.5 ${busy ? "animate-pulse" : ""}`} />
-            {busy ? `Generating ${count} questions…` : `Generate ${count} questions`}
-          </button>
-        </div>
-      </fieldset>
-    </div>
-  );
-}
-
-// ============================================================================
 // Bilingual question editor (used for staged rows and "Add one question")
 // Supports 1-click "Auto-Translate to Bengali (AI)" AND automatic background
 // translation when saving if Bengali fields are left blank!
@@ -1248,6 +1362,7 @@ function JobEditor({
   onSave,
   saveLabel,
   allowDirectLive = false,
+  reviewOnly = false,
   actions,
 }: {
   draft: StagedQuestionDraft;
@@ -1259,6 +1374,8 @@ function JobEditor({
   onSave: (draft: StagedQuestionDraft, notes: string, insertLive?: boolean) => Promise<boolean>;
   saveLabel: string;
   allowDirectLive?: boolean;
+  /** AI question awaiting review: show it read-only with just Approve / Reject */
+  reviewOnly?: boolean;
   actions?: { busy: boolean; canApprove: boolean; onApprove: () => void; onReject: () => void };
 }) {
   const [d, setD] = useState<StagedQuestionDraft>(() => structuredClone(initialDraft));
@@ -1327,9 +1444,14 @@ function JobEditor({
   const inputCls =
     "w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white disabled:opacity-70";
 
+  const canEdit = editable && !reviewOnly;
+
   return (
-    <fieldset disabled={!editable || saving || translating} className="space-y-4">
-      {!editable && readOnlyReason && <p className="text-xs text-slate-400">{readOnlyReason}</p>}
+    <div className="space-y-4">
+    <fieldset disabled={!canEdit || saving || translating} className="space-y-4">
+      {!editable && !reviewOnly && readOnlyReason && (
+        <p className="text-xs text-slate-400">{readOnlyReason}</p>
+      )}
 
       <SyllabusPicker
         exams={exams}
@@ -1345,7 +1467,7 @@ function JobEditor({
       />
 
       {/* AI Auto-Translate Toolbar */}
-      {editable && (
+      {canEdit && (
         <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-950 border border-slate-800">
           <div className="text-xs text-slate-300">
             <span className="font-semibold text-emerald-300">Bilingual Assistant:</span> Fill the
@@ -1491,31 +1613,36 @@ function JobEditor({
         )}
       </div>
 
-      <label className="flex items-center gap-2 text-xs text-slate-300">
-        <input
-          type="checkbox"
-          checked={d.answerKeyVerified}
-          onChange={(e) => update({ answerKeyVerified: e.target.checked })}
-        />
-        Answer checked against the official WBPSC answer key
-        {d.source === "pyq" && !d.answerKeyVerified && (
-          <span className="text-amber-300">(required before a PYQ can be approved)</span>
-        )}
-      </label>
+      {/* PYQ answers must match the official key; AI answers are checked by approving */}
+      {!reviewOnly && d.source !== "ai_generated" && (
+        <label className="flex items-center gap-2 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            checked={d.answerKeyVerified}
+            onChange={(e) => update({ answerKeyVerified: e.target.checked })}
+          />
+          Answer checked against the official WBPSC answer key
+          {d.source === "pyq" && !d.answerKeyVerified && (
+            <span className="text-amber-300">(required before a PYQ can be approved)</span>
+          )}
+        </label>
+      )}
 
-      <label className="block text-xs text-slate-400 space-y-1">
-        <span>Review notes</span>
-        <input
-          value={notes}
-          onChange={(e) => {
-            setNotes(e.target.value);
-            setDirty(true);
-          }}
-          className={inputCls}
-        />
-      </label>
+      {!reviewOnly && (
+        <label className="block text-xs text-slate-400 space-y-1">
+          <span>Review notes</span>
+          <input
+            value={notes}
+            onChange={(e) => {
+              setNotes(e.target.value);
+              setDirty(true);
+            }}
+            className={inputCls}
+          />
+        </label>
+      )}
 
-      {editable && (
+      {canEdit && (
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -1576,5 +1703,28 @@ function JobEditor({
         </div>
       )}
     </fieldset>
+
+    {/* Outside the disabled fieldset so the buttons stay clickable */}
+    {reviewOnly && actions && (
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={actions.onApprove}
+          disabled={actions.busy || !actions.canApprove}
+          className="flex items-center gap-1 px-3.5 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+        >
+          <CheckCircle2 className="w-3.5 h-3.5" /> Approve
+        </button>
+        <button
+          type="button"
+          onClick={actions.onReject}
+          disabled={actions.busy}
+          className="flex items-center gap-1 px-3.5 py-1.5 text-xs font-semibold bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+        >
+          <XCircle className="w-3.5 h-3.5" /> Reject
+        </button>
+      </div>
+    )}
+    </div>
   );
 }

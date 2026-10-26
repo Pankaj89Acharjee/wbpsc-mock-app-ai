@@ -4,10 +4,12 @@ import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { db } from "../db/index";
 import {
   exams,
+  examSeries,
   subjects,
   chapters,
   subtopics,
   questions,
+  seriesQuestions,
   testAttempts,
   attemptAnswers,
   userSubtopicMastery,
@@ -16,6 +18,8 @@ import {
   OptionKeySchema,
   QuestionAttemptStatusSchema,
   SupportedLanguageSchema,
+  type StudentExamDto,
+  type StudentSeriesDto,
 } from "../../../../packages/shared-types/src/index";
 import { requireUser } from "../lib/auth";
 
@@ -34,6 +38,8 @@ const MockTestQuerySchema = z.object({
 
 const SubmitExamBodySchema = z.object({
   examId: z.string().uuid(),
+  /** Test series that was sat (its marking rules and question list apply) */
+  seriesId: z.string().uuid().optional(),
   attemptId: z.string().uuid().optional(),
   preferredLanguage: SupportedLanguageSchema.default("bn"),
   startedAt: z.string().datetime().optional(),
@@ -61,6 +67,21 @@ const RemedialMockBodySchema = z.object({
   preferredLanguage: SupportedLanguageSchema.default("bn"),
 });
 
+const SeriesTestParamsSchema = z.object({ seriesId: z.string().uuid() });
+
+/** Fields students may see (no answer, no explanation). */
+const clientSafeQuestionColumns = {
+  id: questions.id,
+  examId: questions.examId,
+  examSlug: questions.examSlug,
+  stem: questions.stem,
+  options: questions.options,
+  difficulty: questions.difficulty,
+  marksPositive: questions.marksPositive,
+  marksNegative: questions.marksNegative,
+  previousYearTag: questions.previousYearTag,
+};
+
 // ============================================================================
 // Route Plugin Implementation
 // ============================================================================
@@ -81,12 +102,29 @@ export const examRoutes: FastifyPluginAsync = async (
       .select({
         exam: exams,
         questionCount: sql<number>`(select count(*)::int from questions q where q.exam_id = "exams"."id" and q.is_active)`,
+        subjectCount: sql<number>`(select count(*)::int from subjects s where s.exam_id = "exams"."id")`,
       })
       .from(exams)
       .where(isAdmin ? undefined : eq(exams.isActive, true))
       .orderBy(asc(exams.createdAt));
+
+    // Published test series per exam and kind
+    const countRows = await db
+      .select({
+        examId: examSeries.examId,
+        kind: examSeries.kind,
+        series: sql<number>`count(*)::int`,
+      })
+      .from(examSeries)
+      .where(eq(examSeries.status, "published"))
+      .groupBy(examSeries.examId, examSeries.kind);
+    const seriesCounts = new Map<string, StudentExamDto["seriesCounts"]>();
+    for (const { examId, kind, series } of countRows) {
+      seriesCounts.set(examId, { ...seriesCounts.get(examId), [kind]: series });
+    }
+
     return {
-      exams: rows.map(({ exam, questionCount }) => ({
+      exams: rows.map(({ exam, questionCount, subjectCount }) => ({
         id: exam.id,
         slug: exam.slug,
         titleEn: exam.title.en,
@@ -100,6 +138,8 @@ export const examRoutes: FastifyPluginAsync = async (
         estimatedCutoffMarks: Number(exam.estimatedCutoffMarks),
         isActive: exam.isActive,
         questionCount,
+        subjectCount,
+        seriesCounts: seriesCounts.get(exam.id) ?? {},
       })),
     };
   });
@@ -187,6 +227,91 @@ export const examRoutes: FastifyPluginAsync = async (
   });
 
   /**
+   * 1b. GET /exams/:examId/series
+   * Published test series of an exam (mock tests, previous-year papers,
+   * practice sets). A series is only published once all its questions are in.
+   */
+  fastify.get("/exams/:examId/series", async (request, reply) => {
+    const params = MockTestParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid examId parameter" });
+
+    const rows = await db
+      .select({
+        series: examSeries,
+        questionCount: sql<number>`(select count(*)::int from ${seriesQuestions} sq where sq.series_id = "exam_series"."id")`,
+      })
+      .from(examSeries)
+      .where(and(eq(examSeries.examId, params.data.examId), eq(examSeries.status, "published")))
+      .orderBy(asc(examSeries.displayOrder), asc(examSeries.createdAt));
+
+    const series: StudentSeriesDto[] = rows.map(({ series: s, questionCount }) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      kind: s.kind,
+      totalQuestions: questionCount,
+      durationMinutes: s.durationMinutes,
+      marksPerCorrect: Number(s.marksPerCorrect),
+      negativeMarksPerWrong: Number(s.negativeMarksPerWrong),
+      estimatedCutoffMarks: Number(s.estimatedCutoffMarks),
+    }));
+    return { series };
+  });
+
+  /**
+   * 1c. GET /exams/series/:seriesId/test
+   * The fixed question list of a published series, in selection order,
+   * client-safe. Subject/subtopic names follow the series' exam syllabus
+   * (questions borrowed from another exam show where they sit in THIS test).
+   */
+  fastify.get("/exams/series/:seriesId/test", async (request, reply) => {
+    const params = SeriesTestParamsSchema.safeParse(request.params);
+    const queryParsed = MockTestQuerySchema.safeParse(request.query);
+    if (!params.success || !queryParsed.success) {
+      return reply.status(400).send({ error: "Invalid request" });
+    }
+    const isAdmin = request.user!.role === "admin";
+    const [series] = await db.select().from(examSeries).where(eq(examSeries.id, params.data.seriesId)).limit(1);
+    // Admins may preview drafts; students only see published series
+    if (!series || (!isAdmin && series.status !== "published")) {
+      return reply.status(404).send({ error: "Test series not found" });
+    }
+
+    const seriesQs = await db
+      .select({
+        ...clientSafeQuestionColumns,
+        subjectId: seriesQuestions.subjectId,
+        subjectName: subjects.name,
+        chapterId: seriesQuestions.chapterId,
+        chapterName: chapters.name,
+        subtopicId: seriesQuestions.subtopicId,
+        subtopicName: subtopics.name,
+      })
+      .from(seriesQuestions)
+      .innerJoin(questions, eq(seriesQuestions.questionId, questions.id))
+      .innerJoin(subjects, eq(seriesQuestions.subjectId, subjects.id))
+      .innerJoin(chapters, eq(seriesQuestions.chapterId, chapters.id))
+      .innerJoin(subtopics, eq(seriesQuestions.subtopicId, subtopics.id))
+      .where(eq(seriesQuestions.seriesId, series.id))
+      .orderBy(asc(seriesQuestions.position), asc(seriesQuestions.createdAt));
+
+    return {
+      series: {
+        id: series.id,
+        examId: series.examId,
+        name: series.name,
+        durationMinutes: series.durationMinutes,
+        totalQuestions: seriesQs.length,
+        marksPerCorrect: Number(series.marksPerCorrect),
+        negativeMarksPerWrong: Number(series.negativeMarksPerWrong),
+        estimatedCutoffMarks: Number(series.estimatedCutoffMarks),
+      },
+      preferredLanguage: queryParsed.data.lang,
+      questions: seriesQs,
+    };
+  });
+
+  /**
    * 2. POST /exams/submit
    * Deterministic SQL Grading & Weakness Engine (Zero AI tokens consumed):
    * - Calculates exact score (+1.00 for correct, configurable -0.25 or -0.33 for wrong).
@@ -220,32 +345,72 @@ export const examRoutes: FastifyPluginAsync = async (
         throw new Error(`EXAM_NOT_FOUND:${payload.examId}`);
       }
 
-      const positiveMark = Number(examRecord.marksPerCorrect) || 1.0;
+      // A test series brings its own question list and marking scheme
+      let seriesRecord: typeof examSeries.$inferSelect | null = null;
+      let marking: Pick<
+        typeof exams.$inferSelect,
+        "marksPerCorrect" | "negativeMarksPerWrong" | "estimatedCutoffMarks"
+      > = examRecord;
+      if (payload.seriesId) {
+        const [row] = await tx
+          .select()
+          .from(examSeries)
+          .where(and(eq(examSeries.id, payload.seriesId), eq(examSeries.examId, examRecord.id)))
+          .limit(1);
+        if (!row) throw new Error(`SERIES_NOT_FOUND:${payload.seriesId}`);
+        seriesRecord = row;
+        marking = row;
+      }
+
+      // `|| default` would turn a deliberate 0 (no negative marking) into the default
+      const numberOr = (v: string, fallback: number) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+      const positiveMark = numberOr(marking.marksPerCorrect, 1.0);
       const negativeMark =
         payload.negativeMarkOverride !== undefined
           ? payload.negativeMarkOverride
-          : Number(examRecord.negativeMarksPerWrong) || 0.25;
+          : numberOr(marking.negativeMarksPerWrong, 0.25);
 
-      // Step 2: Fetch authoritative question records & taxonomy metadata in one query
-      const dbQuestions = await tx
-        .select({
-          id: questions.id,
-          correctOption: questions.correctOption,
-          explanation: questions.explanation,
-          subjectId: questions.subjectId,
-          subjectName: subjects.name,
-          chapterId: questions.chapterId,
-          chapterName: chapters.name,
-          subtopicId: questions.subtopicId,
-          subtopicSlug: subtopics.slug,
-          subtopicName: subtopics.name,
-          expectedTimeSeconds: subtopics.expectedTimeSeconds,
-        })
-        .from(questions)
-        .innerJoin(subjects, eq(questions.subjectId, subjects.id))
-        .innerJoin(chapters, eq(questions.chapterId, chapters.id))
-        .innerJoin(subtopics, eq(questions.subtopicId, subtopics.id))
-        .where(inArray(questions.id, questionIds));
+      // Step 2: Fetch authoritative question records & taxonomy metadata in one query.
+      // For a series, only its own questions count and the taxonomy is the
+      // series' classification (so mastery lands in this exam's syllabus).
+      const gradingColumns = {
+        id: questions.id,
+        correctOption: questions.correctOption,
+        explanation: questions.explanation,
+        subjectName: subjects.name,
+        chapterName: chapters.name,
+        subtopicSlug: subtopics.slug,
+        subtopicName: subtopics.name,
+        expectedTimeSeconds: subtopics.expectedTimeSeconds,
+      };
+      const dbQuestions = seriesRecord
+        ? await tx
+            .select({
+              ...gradingColumns,
+              subjectId: seriesQuestions.subjectId,
+              chapterId: seriesQuestions.chapterId,
+              subtopicId: seriesQuestions.subtopicId,
+            })
+            .from(seriesQuestions)
+            .innerJoin(questions, eq(seriesQuestions.questionId, questions.id))
+            .innerJoin(subjects, eq(seriesQuestions.subjectId, subjects.id))
+            .innerJoin(chapters, eq(seriesQuestions.chapterId, chapters.id))
+            .innerJoin(subtopics, eq(seriesQuestions.subtopicId, subtopics.id))
+            .where(
+              and(eq(seriesQuestions.seriesId, seriesRecord.id), inArray(questions.id, questionIds))
+            )
+        : await tx
+            .select({
+              ...gradingColumns,
+              subjectId: questions.subjectId,
+              chapterId: questions.chapterId,
+              subtopicId: questions.subtopicId,
+            })
+            .from(questions)
+            .innerJoin(subjects, eq(questions.subjectId, subjects.id))
+            .innerJoin(chapters, eq(questions.chapterId, chapters.id))
+            .innerJoin(subtopics, eq(questions.subtopicId, subtopics.id))
+            .where(inArray(questions.id, questionIds));
 
       if (dbQuestions.length === 0) {
         throw new Error("NO_VALID_QUESTIONS_IN_SUBMISSION");
@@ -382,6 +547,7 @@ export const examRoutes: FastifyPluginAsync = async (
           ...(payload.attemptId ? { id: payload.attemptId } : {}),
           userId: request.user!.id,
           examId: payload.examId,
+          seriesId: seriesRecord?.id ?? null,
           status: "submitted",
           preferredLanguage: payload.preferredLanguage,
           totalQuestions: totalQuestionsGraded,
@@ -592,8 +758,8 @@ export const examRoutes: FastifyPluginAsync = async (
           maxPossibleScore,
           accuracyPercentage,
           cutoffCleared:
-            finalNetScore >= Number(examRecord.estimatedCutoffMarks),
-          estimatedCutoffMarks: Number(examRecord.estimatedCutoffMarks),
+            finalNetScore >= Number(marking.estimatedCutoffMarks),
+          estimatedCutoffMarks: Number(marking.estimatedCutoffMarks),
         },
         weakSubtopics,
       };

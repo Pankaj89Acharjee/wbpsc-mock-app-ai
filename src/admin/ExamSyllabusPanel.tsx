@@ -408,14 +408,19 @@ export default function ExamSyllabusPanel({
               {activeTool === "ai" && (
                 <AiSyllabusBuilder
                   exam={selected}
+                  existingSubjects={tree?.subjects.map((s) => s.name.en) ?? []}
                   onClose={() => setActiveTool(null)}
-                  onGenerated={async (updatedTree, result, modelUsed) => {
+                  onGenerated={async (updatedTree, result, modelUsed, skippedDuplicates) => {
                     setTree(updatedTree);
                     await reloadExams();
                     setActiveTool(null);
+                    const added = result.created.subjects + result.created.chapters + result.created.subtopics;
                     setNotice({
-                      kind: "success",
-                      text: `AI (${modelUsed}) generated ${result.created.subjects} new subjects, ${result.created.chapters} chapters, and ${result.created.subtopics} topics (${result.updated} existing items updated).`,
+                      kind: added ? "success" : "info",
+                      text: added
+                        ? `AI (${modelUsed}) added ${result.created.subjects} subjects, ${result.created.chapters} chapters and ${result.created.subtopics} subtopics that were missing` +
+                          (skippedDuplicates ? ` · ${skippedDuplicates} already existed (same concept) and were skipped.` : ".")
+                        : `Nothing new: everything the AI suggested already exists in this syllabus${skippedDuplicates ? ` (${skippedDuplicates} duplicates skipped)` : ""}.`,
                     });
                   }}
                   onError={(msg) => setNotice({ kind: "error", text: msg })}
@@ -554,22 +559,34 @@ export default function ExamSyllabusPanel({
 
 function AiSyllabusBuilder({
   exam,
+  existingSubjects,
   onClose,
   onGenerated,
   onError,
 }: {
   exam: ExamDto;
+  /** Subjects the exam already has — pre-selected so the AI fills their gaps */
+  existingSubjects: string[];
   onClose: () => void;
   onGenerated: (
     tree: SyllabusTreeDto,
     result: SyllabusUploadResult,
-    modelUsed: string
+    modelUsed: string,
+    skippedDuplicates: number
   ) => Promise<void>;
   onError: (msg: string) => void;
 }) {
   const allSubjectNames = useMemo(() => WBPSC_SUBJECT_PRESETS.map((s) => s.en), []);
-  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(
-    () => new Set(allSubjectNames)
+  // Nothing ticked = the AI decides this exam's subjects itself
+  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(() => new Set(existingSubjects));
+  const presets = useMemo(
+    () => [
+      ...WBPSC_SUBJECT_PRESETS,
+      ...existingSubjects
+        .filter((n) => !WBPSC_SUBJECT_PRESETS.some((p) => p.en === n))
+        .map((n) => ({ en: n, bn: "" })),
+    ],
+    [existingSubjects]
   );
   const [customSubject, setCustomSubject] = useState("");
   const [busy, setBusy] = useState(false);
@@ -591,23 +608,20 @@ function AiSyllabusBuilder({
   };
 
   const handleGenerate = async () => {
-    if (selectedSubjects.size === 0) {
-      onError("Please select at least one subject to generate.");
-      return;
-    }
     setBusy(true);
     try {
       const res = await adminApi<{
         result: SyllabusUploadResult;
         tree: SyllabusTreeDto;
         modelUsed: string;
+        skippedDuplicates?: number;
       }>(`/syllabus/exams/${exam.slug}/generate-ai`, {
         method: "POST",
         body: {
           subjectsFocus: [...selectedSubjects],
         },
       });
-      await onGenerated(res.tree, res.result, res.modelUsed);
+      await onGenerated(res.tree, res.result, res.modelUsed, res.skippedDuplicates ?? 0);
     } catch (err) {
       onError((err as Error).message);
     } finally {
@@ -624,9 +638,11 @@ function AiSyllabusBuilder({
             AI Bulk Syllabus Generator for {exam.titleEn}
           </h4>
           <p className="text-xs text-slate-300 mt-1">
-            Select the subjects included in this exam. AI will generate a structured, bilingual
-            (English + বাংলা) hierarchy of <strong>Subjects → Chapters → Topics</strong> and save it
-            directly to PostgreSQL. Existing topics are safely preserved.
+            AI builds the complete bilingual (English + বাংলা) <strong>Subjects → Chapters →
+            Subtopics</strong> tree for this exam. It sees what already exists and only adds what is
+            missing — headings that mean the same as an existing one (e.g. “National Movement” vs
+            “Indian National Movement”) are skipped. Leave every subject unticked to let the AI pick
+            this exam's subjects.
           </p>
         </div>
         <button
@@ -662,7 +678,7 @@ function AiSyllabusBuilder({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {WBPSC_SUBJECT_PRESETS.map((preset) => {
+          {presets.map((preset) => {
             const checked = selectedSubjects.has(preset.en);
             return (
               <label
@@ -721,13 +737,15 @@ function AiSyllabusBuilder({
         <button
           type="button"
           onClick={handleGenerate}
-          disabled={busy || selectedSubjects.size === 0}
+          disabled={busy}
           className="flex items-center gap-2 px-4 py-2 text-xs font-semibold bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white rounded-lg cursor-pointer"
         >
           <Sparkles className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />
           {busy
-            ? "Generating Full Syllabus into Database… (15–30s)"
-            : `Generate & Save Syllabus (${selectedSubjects.size} Subjects)`}
+            ? "Generating missing syllabus… (15–60s)"
+            : selectedSubjects.size
+              ? `Generate missing parts (${selectedSubjects.size} subjects)`
+              : "Generate missing parts (AI picks the exam's subjects)"}
         </button>
         <span className="text-[11px] text-slate-400">
           Includes English &amp; Bengali names for all subjects, chapters, and topics.
@@ -1179,6 +1197,7 @@ function EditableSyllabusTree({
     id: string,
     label: string
   ) => {
+    if (!window.confirm(`Delete ${kind} "${label}"${kind === "subtopic" ? "" : " and everything under it"}?`)) return;
     setBusyId(id);
     try {
       const endpoint =
@@ -1460,7 +1479,7 @@ function EditableSyllabusTree({
                               }}
                               className="px-2 py-0.5 text-[11px] bg-slate-900 hover:bg-slate-800 text-emerald-300 border border-slate-800 rounded cursor-pointer"
                             >
-                              + Topic
+                              + Subtopic
                             </button>
                             <button
                               type="button"
@@ -1508,7 +1527,7 @@ function EditableSyllabusTree({
                                 required
                                 value={quickEn}
                                 onChange={(e) => setQuickEn(e.target.value)}
-                                placeholder="Topic Name (English) *"
+                                placeholder="Subtopic name (English) *"
                                 className="px-2.5 py-1 bg-slate-950 border border-slate-800 rounded text-white"
                               />
                               <input
@@ -1524,7 +1543,7 @@ function EditableSyllabusTree({
                                 disabled={busyId === c.id}
                                 className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold rounded cursor-pointer"
                               >
-                                {busyId === c.id ? "Saving…" : "Add Topic"}
+                                {busyId === c.id ? "Saving…" : "Add Subtopic"}
                               </button>
                               <button
                                 type="button"
@@ -1560,7 +1579,7 @@ function EditableSyllabusTree({
                                       })
                                     }
                                     className="p-1 text-slate-500 hover:text-white opacity-75 group-hover:opacity-100 cursor-pointer"
-                                    title="Rename topic"
+                                    title="Rename subtopic"
                                   >
                                     <Pencil className="w-3 h-3" />
                                   </button>
@@ -1568,8 +1587,9 @@ function EditableSyllabusTree({
                                     type="button"
                                     disabled={busyId === t.id}
                                     onClick={() => handleDeleteNode("subtopic", t.id, t.name.en)}
-                                    className="p-1 text-slate-500 hover:text-rose-400 opacity-75 group-hover:opacity-100 cursor-pointer disabled:opacity-40"
-                                    title="Delete topic"
+                                    className="p-1 text-slate-400 hover:text-rose-400 cursor-pointer disabled:opacity-40"
+                                    title="Delete subtopic"
+                                    aria-label={`Delete subtopic ${t.name.en}`}
                                   >
                                     <Trash2 className="w-3 h-3" />
                                   </button>

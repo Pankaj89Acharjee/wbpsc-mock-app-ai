@@ -8,7 +8,9 @@
     "build": "esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/server.js --external:postgres",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "db:push": "drizzle-kit push --config drizzle.config.ts"
+    "db:push": "drizzle-kit push --config drizzle.config.ts",
+    "db:migrate": "tsx --env-file-if-exists=../../.env src/db/migrate.ts",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@wbpsc/shared-types": "*",

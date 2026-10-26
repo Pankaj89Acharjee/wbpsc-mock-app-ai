@@ -8,10 +8,24 @@ import { adminRoutes } from "./routes/admin";
 import { examRoutes } from "./routes/exam";
 import { ingestionRoutes } from "./routes/ingestion";
 import { syllabusRoutes } from "./routes/syllabus";
-import { closeDbConnection, ensureDatabaseReady } from "./db/index";
+import { seriesRoutes } from "./routes/series";
+import { closeDbConnection, ensureDatabaseReady, queryClient } from "./db/index";
+import { pendingMigrations, runMigrations } from "./db/migrate";
 
 export async function buildApiCoreApp(): Promise<FastifyInstance> {
   await ensureDatabaseReady();
+  if (process.env.DB_MIGRATE_ON_START === "true") {
+    await runMigrations(queryClient);
+  } else {
+    // Fail fast instead of serving 500s from queries on columns that don't exist yet
+    const pending = await pendingMigrations(queryClient);
+    if (pending.length > 0) {
+      throw new Error(
+        `Database schema is behind the code — pending migration(s): ${pending.join(", ")}. ` +
+          `Run "npm run db:migrate" (or start with DB_MIGRATE_ON_START=true).`
+      );
+    }
+  }
 
   const app = Fastify({
     logger: {
@@ -72,6 +86,9 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
 
   // Exam configs + Subject → Chapter → Subtopic syllabus management (admin only)
   await app.register(syllabusRoutes, { prefix: "/admin/syllabus" });
+
+  // Exam type → test series (blueprint, selected questions), bank search (admin only)
+  await app.register(seriesRoutes, { prefix: "/admin/series" });
 
   await ensureAdminAccount(app.log);
   await app.ready();

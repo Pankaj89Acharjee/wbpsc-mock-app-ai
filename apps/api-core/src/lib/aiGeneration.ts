@@ -44,6 +44,11 @@ export interface ApiAiGenerateRequest {
   count: number;
   difficulty: "easy" | "moderate" | "hard" | "mixed";
   round: number;
+  /**
+   * 0 for the first call of a request; 1, 2… when api-core asks again because
+   * duplicates were dropped (part of the cache key, so a retry is a fresh batch).
+   */
+  attempt: number;
   examples: Array<{
     stem_en: string;
     options_en: Record<string, string>;
@@ -61,6 +66,7 @@ export interface ApiAiGenerateRequest {
 export async function loadGenerationContext(
   path: ResolvedPath
 ): Promise<Pick<ApiAiGenerateRequest, "examples" | "avoid_stems" | "round">> {
+  // Prompt hint only — duplicates are actually removed in routes/ingestion.ts
   const bestFirst = [
     desc(sql`${questions.source} = 'pyq'`),
     desc(questions.answerKeyVerified),
@@ -103,10 +109,12 @@ export async function loadGenerationContext(
       .where(
         and(
           eq(questionIngestionJobs.subtopicId, path.subtopic.id),
-          inArray(questionIngestionJobs.status, ["pending_ai", "pending_review"])
+          // Rejected stems too, so the model doesn't offer them again
+          inArray(questionIngestionJobs.status, ["pending_ai", "pending_review", "rejected"])
         )
       )
-      .limit(20),
+      .orderBy(desc(questionIngestionJobs.createdAt))
+      .limit(40),
     db
       .select({ rounds: countDistinct(questionIngestionJobs.batchId) })
       .from(questionIngestionJobs)
@@ -135,7 +143,7 @@ export async function loadGenerationContext(
       ...new Set([...liveStems.map((r) => r.stem.en), ...stagedStems.map((r) => r.stem)]),
     ]
       .filter(Boolean)
-      .slice(0, 80),
+      .slice(0, 100),
   };
 }
 

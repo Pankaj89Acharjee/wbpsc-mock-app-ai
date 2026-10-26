@@ -313,3 +313,16 @@ jobs:
             $C logs --tail 30 api-core api-ai web            
             exit 1
 ```
+
+
+## *Current Affairs Automation**
+---
+
+Website - https://www.pyqarena.com/current-affairs-from-the-hindu-2nd-september-2026/
+
+Need a cron job every night to fetch and extract the CA from this site into our pgvector. 
+
+Later form questions and practice set from pgvector.
+
+---
+

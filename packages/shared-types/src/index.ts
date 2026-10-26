@@ -784,21 +784,53 @@ export interface IngestionUploadResult {
 
 export const AI_QUESTION_COUNT_OPTIONS = [10, 15, 20, 25, 30, 40, 50] as const;
 
+/**
+ * Where generated questions are meant to go:
+ *  - "bank":   reusable questions for the central Question Bank (no blueprint limit)
+ *  - "roster": questions for `seriesId`; capped by that series' open vacancies
+ */
+export const GenerationModeSchema = z.enum(["bank", "roster"]);
+export type GenerationMode = z.infer<typeof GenerationModeSchema>;
+
 /** Admin request to draft WBPSC-style MCQs with AI (Pipeline 3). */
-export const GenerateQuestionsInputSchema = z.object({
-  examSlug: z.string().trim().min(1),
-  subjectSlug: z.string().trim().default(""),
-  chapterSlug: z.string().trim().default(""),
-  subtopicSlug: z.string().trim().min(1, "Pick a subtopic"),
-  count: z.coerce.number().int().min(1).max(50),
-  difficulty: z.enum(["easy", "moderate", "hard", "mixed"]).default("mixed"),
-});
+export const GenerateQuestionsInputSchema = z
+  .object({
+    examSlug: z.string().trim().min(1),
+    subjectSlug: z.string().trim().default(""),
+    chapterSlug: z.string().trim().default(""),
+    subtopicSlug: z.string().trim().min(1, "Pick a subtopic"),
+    count: z.coerce.number().int().min(1).max(50),
+    difficulty: z.enum(["easy", "moderate", "hard", "mixed"]).default("mixed"),
+    mode: GenerationModeSchema.default("bank"),
+    seriesId: z.string().uuid().nullable().optional(),
+  })
+  .refine((v) => v.mode === "bank" || !!v.seriesId, {
+    path: ["seriesId"],
+    message: "Pick the test series the questions are for",
+  });
 export type GenerateQuestionsInput = z.infer<typeof GenerateQuestionsInputSchema>;
 
 export interface GenerateQuestionsResult extends IngestionUploadResult {
   modelUsed: string;
   /** Where the batch came from: fresh Gemini call or one of the caches */
   cacheTier: "redis" | "postgres" | "gemini";
+  requested: number;
+  /** Unique questions actually staged for review */
+  uniqueGenerated: number;
+  /** AI calls made (1 + retries asked for fresh questions after duplicates) */
+  attempts: number;
+  duplicatesDropped: { exact: number; near: number; inBatch: number };
+  /** Blueprint vacancy the request was checked against (roster mode only) */
+  vacancy: VacancyDto | null;
+}
+
+/** 409 body when a roster-mode request asks for more than the open vacancies. */
+export interface GenerationOverLimitError {
+  error: string;
+  code: "ROSTER_VACANCY_EXCEEDED" | "NOT_IN_ROSTER";
+  requested: number;
+  allowed: number;
+  vacancy: VacancyDto;
 }
 
 export interface ExtractMediaQuestionsResult extends IngestionUploadResult {
@@ -1119,8 +1151,380 @@ export interface IngestionJobDto {
   reviewNotes: string | null;
   errorMessage: string | null;
   insertedQuestionId: string | null;
+  /** Test series this row was generated for (reserves a vacancy) */
+  targetSeriesId: string | null;
+  /** Most similar existing bank question (warning only), 0–1 */
+  nearDuplicateQuestionId: string | null;
+  nearDuplicateScore: number | null;
   createdAt: string;
   reviewedAt: string | null;
+}
+
+/** Filters shared by the review list and "select all matching". */
+export const JobFilterSchema = z.object({
+  batchId: z.string().max(80).optional(),
+  examSlug: z.string().max(80).optional(),
+  status: z.union([IngestionStatusSchema, z.literal("all")]).default("all"),
+  subjectId: z.string().uuid().optional(),
+  chapterId: z.string().uuid().optional(),
+  subtopicId: z.string().uuid().optional(),
+  difficulty: DifficultyLevelSchema.optional(),
+  source: z.enum(["csv_upload", "json_upload", "pdf_extract", "ai_generated", "manual"]).optional(),
+  targetSeriesId: z.string().uuid().optional(),
+  createdFrom: z.string().date().optional(),
+  createdTo: z.string().date().optional(),
+});
+export type JobFilter = z.infer<typeof JobFilterSchema>;
+
+/**
+ * Approving an AI-generated question IS the human answer check: the reviewer
+ * saw the full question and pressed Approve, so it is recorded as verified.
+ */
+export const ApproveJobsBodySchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+  /** Also add each approved row to its target series (vacancies re-checked) */
+  assignToTargetSeries: z.boolean().default(false),
+});
+export type ApproveJobsBody = z.infer<typeof ApproveJobsBodySchema>;
+
+export type ApproveItemStatus =
+  | "inserted"
+  | "invalid"
+  | "duplicate"
+  | "not_pending"
+  | "inserted_not_assigned";
+
+export interface ApproveJobsResult {
+  inserted: number;
+  assigned: number;
+  notPendingReview: number;
+  invalid: Array<{ id: string; message: string }>;
+  duplicates: Array<{ id: string; message: string }>;
+  /** One entry per requested id, so the UI can show exactly what happened */
+  results: Array<{ id: string; status: ApproveItemStatus; message?: string; questionId?: string }>;
+}
+
+export const RejectJobsBodySchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+  reviewNotes: z.string().trim().max(2000).optional(),
+});
+
+export interface RejectJobsResult {
+  rejected: number;
+  results: Array<{ id: string; status: "rejected" | "not_rejectable"; message?: string }>;
+}
+
+// ============================================================================
+// 5b. Exam Type → Test Series (blueprint + selected questions) & the Question Bank
+// ============================================================================
+
+export const SeriesKindSchema = z.enum(["previous_year", "mock_test", "practice", "custom"]);
+export type SeriesKind = z.infer<typeof SeriesKindSchema>;
+
+export const SERIES_KIND_LABELS: Record<SeriesKind, string> = {
+  previous_year: "Previous Year Papers",
+  mock_test: "Mock Test Series",
+  practice: "Subject-wise Practice",
+  custom: "Other",
+};
+
+export const PublishStatusSchema = z.enum(["draft", "published", "archived"]);
+export type PublishStatus = z.infer<typeof PublishStatusSchema>;
+
+const SlugInputSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug must be lowercase letters, digits and hyphens")
+  .max(120);
+
+export const SeriesInputSchema = z.object({
+  slug: SlugInputSchema.optional(),
+  nameEn: z.string().trim().min(2, "English name is required").max(200),
+  nameBn: z.string().trim().max(200).default(""),
+  descriptionEn: z.string().trim().max(1000).default(""),
+  descriptionBn: z.string().trim().max(1000).default(""),
+  kind: SeriesKindSchema,
+  status: PublishStatusSchema.default("draft"),
+  displayOrder: z.coerce.number().int().min(0).max(10_000).default(1),
+  // Marking scheme of the test
+  durationMinutes: z.coerce.number().int().min(1).max(600),
+  marksPerCorrect: z.coerce.number().positive().max(10),
+  negativeMarksPerWrong: z.coerce.number().min(0).max(5),
+  estimatedCutoffMarks: z.coerce.number().min(0).max(1000).default(0),
+  /**
+   * On create: the subjects in this series and their question counts
+   * (e.g. GS 40 · English 30 · Maths 30). Topic breakdown is set afterwards
+   * via PUT /series/:id/blueprint.
+   */
+  subjectTargets: z
+    .array(z.object({ subjectId: z.string().uuid(), targetCount: z.coerce.number().int().min(1).max(300) }))
+    .max(50)
+    .optional(),
+});
+export type SeriesInput = z.infer<typeof SeriesInputSchema>;
+
+export const RosterSlotInputSchema = z
+  .object({
+    subjectId: z.string().uuid(),
+    chapterId: z.string().uuid().nullable().default(null),
+    subtopicId: z.string().uuid().nullable().default(null),
+    targetCount: z.coerce.number().int().min(0).max(300),
+  })
+  .refine((s) => !s.subtopicId || !!s.chapterId, {
+    path: ["chapterId"],
+    message: "A subtopic slot needs its chapter",
+  });
+export type RosterSlotInput = z.infer<typeof RosterSlotInputSchema>;
+
+export const RosterInputSchema = z.object({
+  slots: z.array(RosterSlotInputSchema).max(400),
+});
+
+export type RosterLevel = "subject" | "chapter" | "subtopic";
+
+export interface BlueprintSlotDto {
+  id: string;
+  level: RosterLevel;
+  subjectId: string;
+  chapterId: string | null;
+  subtopicId: string | null;
+  label: string;
+  parentSlotId: string | null;
+  targetCount: number;
+  /** Seats not earmarked for a topic inside this slot */
+  freeTarget: number;
+}
+
+/** Questions available for a syllabus node in the exam's own bank. */
+export interface BankSupplyDto {
+  /** Approved, active questions */
+  live: number;
+  /** Drafts waiting in the review queue (pending_ai / pending_review) */
+  pending: number;
+}
+
+/** A series' exam pattern: subject counts plus optional topic breakdown. */
+export interface BlueprintDto {
+  seriesId: string;
+  totalQuestions: number;
+  slots: BlueprintSlotDto[];
+  /**
+   * Supply per node of the exam syllabus, keyed "subjectId|chapterId|subtopicId"
+   * with empty parts for broader levels (e.g. "s1||" = whole subject)
+   */
+  bank: Record<string, BankSupplyDto>;
+}
+
+export interface SeriesDto {
+  id: string;
+  examId: string;
+  slug: string;
+  name: BilingualText;
+  description: BilingualText;
+  kind: SeriesKind;
+  status: PublishStatus;
+  displayOrder: number;
+  durationMinutes: number;
+  marksPerCorrect: number;
+  negativeMarksPerWrong: number;
+  estimatedCutoffMarks: number;
+  /** Σ subject counts of the blueprint = length of the test */
+  totalQuestions: number;
+  /** Subject counts of the blueprint, e.g. [{ GS, 40 }, { English, 30 }] */
+  subjects: Array<{
+    subjectId: string;
+    label: string;
+    /** Questions of this subject in the test */
+    targetCount: number;
+    /** Approved questions of this subject in the exam's bank */
+    inBank: number;
+    /** Questions of this subject selected for the test */
+    selected: number;
+  }>;
+  selectedCount: number;
+  /** Pending AI drafts generated for this series (they reserve vacancies) */
+  reservedCount: number;
+  /** selectedCount / totalQuestions, 0–100 */
+  completionPct: number;
+  attemptCount: number;
+  updatedAt: string;
+}
+
+export interface ExamOverviewDto {
+  id: string;
+  slug: string;
+  title: BilingualText;
+  isActive: boolean;
+  seriesCount: number;
+  publishedSeriesCount: number;
+  targetQuestions: number;
+  assignedQuestions: number;
+  bankQuestionCount: number;
+}
+
+export interface RosterSlotDto {
+  id: string;
+  level: RosterLevel;
+  subjectId: string;
+  chapterId: string | null;
+  subtopicId: string | null;
+  label: string;
+  /** Nearest slot this one is a sub-limit of */
+  parentSlotId: string | null;
+  targetCount: number;
+  /** Assigned questions anywhere inside this slot (children included) */
+  assignedCount: number;
+  /** Pending AI rows for this series inside this slot */
+  reservedCount: number;
+  /** target − Σ child targets: seats not earmarked for a child slot */
+  freeTarget: number;
+  /** Seats an eligible question landing directly in this slot can still take */
+  vacancies: number;
+  isFull: boolean;
+}
+
+export interface AssignedQuestionDto {
+  assignmentId: string;
+  questionId: string;
+  position: number;
+  subjectId: string;
+  chapterId: string;
+  subtopicId: string;
+  /** Deepest roster slot the assignment counts toward */
+  slotId: string | null;
+  pathLabel: string;
+  stem: BilingualText;
+  options: QuestionOptions;
+  correctOption: OptionKey;
+  explanation: BilingualText;
+  difficulty: DifficultyLevel;
+  source: QuestionSource;
+  previousYearTag: string | null;
+  /** Question's origin exam differs from the series' exam */
+  crossExam: boolean;
+}
+
+export interface RosterDto {
+  series: SeriesDto;
+  slots: RosterSlotDto[];
+  assigned: AssignedQuestionDto[];
+  rosterTotal: number;
+  assignedTotal: number;
+  completionPct: number;
+  /** Config problems (e.g. no blueprint yet) */
+  warnings: string[];
+}
+
+export interface VacancyLimitDto {
+  slotId: string;
+  label: string;
+  target: number;
+  used: number;
+  remaining: number;
+  /** Why this limit binds, when "is full" alone would mislead (seats given to topics) */
+  note?: string;
+}
+
+/** How many more questions a syllabus node can take in a series. */
+export interface VacancyDto {
+  seriesId: string;
+  eligible: boolean;
+  /** Seats open for manual assignment (assigned questions only) */
+  assignable: number;
+  /** Seats open for new AI drafts (assigned + pending AI reservations) */
+  generatable: number;
+  /** Every roster slot that applies, outermost first */
+  limits: VacancyLimitDto[];
+  /** The slot that decides the number */
+  bindingSlotId: string | null;
+  message: string;
+}
+
+export const AssignQuestionsBodySchema = z.object({
+  questionIds: z.array(z.string().uuid()).min(1).max(300),
+  /**
+   * Classify the questions under this subtopic of the series' exam. Needed for
+   * questions from another exam whose syllabus path doesn't exist here.
+   */
+  subtopicId: z.string().uuid().nullable().optional(),
+});
+
+export const ReplaceAssignmentBodySchema = z.object({
+  removeQuestionId: z.string().uuid(),
+  addQuestionId: z.string().uuid(),
+  subtopicId: z.string().uuid().nullable().optional(),
+});
+
+export interface AssignQuestionsResult {
+  assigned: Array<{ questionId: string; assignmentId: string }>;
+  failed: Array<{ questionId: string; reason: string }>;
+  /** Labels of slots that became full with this request */
+  slotsFilled: string[];
+  roster: RosterDto;
+}
+
+export const BankQueryClientSchema = z.object({
+  /** Whose syllabus the subject/chapter/subtopic filters refer to */
+  examId: z.string().uuid().optional(),
+  subjectId: z.string().uuid().optional(),
+  chapterId: z.string().uuid().optional(),
+  subtopicId: z.string().uuid().optional(),
+  difficulty: DifficultyLevelSchema.optional(),
+  source: QuestionSourceSchema.optional(),
+  q: z.string().trim().max(200).optional(),
+  /** Annotate eligibility / "already selected" for this series */
+  seriesId: z.string().uuid().optional(),
+  /**
+   * With seriesId: only questions that land in this subject of the series'
+   * exam (works across exams — another exam's questions are mapped first)
+   */
+  targetSubjectId: z.string().uuid().optional(),
+  availability: z.enum(["all", "eligible", "unassigned"]).default("all"),
+  // Query strings arrive as "true"/"false" (z.coerce.boolean would read "false" as true)
+  includeRetired: z
+    .union([z.boolean(), z.enum(["true", "false"]).transform((v) => v === "true")])
+    .default(false),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+export type BankQuery = z.infer<typeof BankQueryClientSchema>;
+
+export interface BankQuestionDto {
+  id: string;
+  examId: string;
+  examSlug: string;
+  subjectId: string;
+  chapterId: string;
+  subtopicId: string;
+  pathLabel: string;
+  stem: BilingualText;
+  options: QuestionOptions;
+  correctOption: OptionKey;
+  explanation: BilingualText;
+  difficulty: DifficultyLevel;
+  source: QuestionSource;
+  previousYearTag: string | null;
+  isActive: boolean;
+  createdAt: string;
+  /** Number of test series (any exam) using this question */
+  usedInSeries: number;
+  /** Present when the query had a seriesId */
+  inSeries?: boolean;
+  eligibility?: { ok: boolean; reason: string; subtopicId: string | null };
+}
+
+/** Student-facing: a published (complete) test series. */
+export interface StudentSeriesDto {
+  id: string;
+  name: BilingualText;
+  description: BilingualText;
+  kind: SeriesKind;
+  totalQuestions: number;
+  durationMinutes: number;
+  marksPerCorrect: number;
+  negativeMarksPerWrong: number;
+  estimatedCutoffMarks: number;
 }
 
 // ============================================================================
@@ -1142,6 +1546,10 @@ export interface StudentExamDto {
   isActive: boolean;
   /** Active questions available for this exam */
   questionCount: number;
+  /** Subjects in this exam's syllabus */
+  subjectCount: number;
+  /** Published test series per kind, e.g. { mock_test: 5, previous_year: 15 } */
+  seriesCounts: Partial<Record<SeriesKind, number>>;
 }
 
 export interface AttemptSummaryDto {
@@ -1162,6 +1570,8 @@ export interface AttemptSummaryDto {
   totalTimeSpentSeconds: number;
   cutoffCleared: boolean;
   submittedAt: string | null;
+  /** Set when a test series (not a random/remedial mock) was taken */
+  series?: { id: string; name: BilingualText } | null;
   /** Present in admin listings */
   userEmail?: string;
   userName?: string;

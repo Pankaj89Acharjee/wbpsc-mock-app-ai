@@ -4,6 +4,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "../db/index";
 import {
   attemptAnswers,
+  examSeries,
   exams,
   questions,
   subjects,
@@ -13,6 +14,7 @@ import {
 } from "../db/schema";
 import type {
   AttemptReviewDto,
+  BilingualText,
   AttemptSummaryDto,
   MasteryDto,
 } from "../../../../packages/shared-types/src/index";
@@ -20,9 +22,12 @@ import { requireUser } from "../lib/auth";
 
 type AttemptRow = typeof testAttempts.$inferSelect;
 type ExamRow = typeof exams.$inferSelect;
+/** The test series an attempt was for; it sets the cutoff */
+type SeriesRef = { id: string; name: BilingualText; cutoff: string | number } | null;
 
-export function toAttemptSummary(a: AttemptRow, exam: ExamRow): AttemptSummaryDto {
+export function toAttemptSummary(a: AttemptRow, exam: ExamRow, series: SeriesRef = null): AttemptSummaryDto {
   const finalNetScore = Number(a.finalNetScore);
+  const cutoff = Number(series ? series.cutoff : exam.estimatedCutoffMarks);
   return {
     id: a.id,
     examId: exam.id,
@@ -39,8 +44,9 @@ export function toAttemptSummary(a: AttemptRow, exam: ExamRow): AttemptSummaryDt
     maxPossibleScore: Number(a.maxPossibleScore),
     accuracyPercentage: Number(a.accuracyPercentage),
     totalTimeSpentSeconds: a.totalTimeSpentSeconds,
-    cutoffCleared: finalNetScore >= Number(exam.estimatedCutoffMarks),
+    cutoffCleared: finalNetScore >= cutoff,
     submittedAt: a.submittedAt?.toISOString() ?? null,
+    series: series && { id: series.id, name: series.name },
   };
 }
 
@@ -54,15 +60,32 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
   /** 1. GET /me/attempts — submitted mock tests, newest first */
   fastify.get("/attempts", async (request) => {
     const rows = await db
-      .select({ attempt: testAttempts, exam: exams })
+      .select({
+        attempt: testAttempts,
+        exam: exams,
+        seriesId: examSeries.id,
+        seriesName: examSeries.name,
+        seriesCutoff: examSeries.estimatedCutoffMarks,
+      })
       .from(testAttempts)
       .innerJoin(exams, eq(testAttempts.examId, exams.id))
+      .leftJoin(examSeries, eq(testAttempts.seriesId, examSeries.id))
       .where(
         and(eq(testAttempts.userId, request.user!.id), eq(testAttempts.status, "submitted"))
       )
       .orderBy(desc(testAttempts.submittedAt))
       .limit(100);
-    return { attempts: rows.map((r) => toAttemptSummary(r.attempt, r.exam)) };
+    return {
+      attempts: rows.map((r) =>
+        toAttemptSummary(
+          r.attempt,
+          r.exam,
+          r.seriesId && r.seriesName && r.seriesCutoff != null
+            ? { id: r.seriesId, name: r.seriesName, cutoff: r.seriesCutoff }
+            : null
+        )
+      ),
+    };
   });
 
   /**

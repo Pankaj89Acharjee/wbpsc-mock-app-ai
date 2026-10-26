@@ -115,6 +115,36 @@ export function nodeMatches(n: NamedNode, input: string): boolean {
   return k !== "" && nodeKeys(n).includes(k);
 }
 
+const CONCEPT_STOPWORDS = new Set(["and", "of", "the", "in", "a", "an", "to", "for", "with", "its", "on"]);
+
+/** Content words of an English heading: lower-case, singular, "indian" → "india". */
+function conceptWords(name: string): Set<string> {
+  return new Set(
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w && !CONCEPT_STOPWORDS.has(w))
+      .map((w) => (w === "indian" ? "india" : w.replace(/ies$/, "y").replace(/(?<=[a-z]{3})s$/, "")))
+  );
+}
+
+/**
+ * Whether two English headings name the same syllabus concept, e.g.
+ * "National Movement" ≈ "Indian National Movement", "Constitution of India" ≈
+ * "Indian Constitution". One heading's words all inside the other's (2+ words),
+ * or ≥ 60% word overlap.
+ */
+export function sameConcept(a: string, b: string): boolean {
+  const A = conceptWords(a);
+  const B = conceptWords(b);
+  if (A.size === 0 || B.size === 0) return false;
+  const shared = [...A].filter((w) => B.has(w)).length;
+  const smaller = Math.min(A.size, B.size);
+  if (shared === smaller && (smaller >= 2 || A.size === B.size)) return true;
+  return shared / (A.size + B.size - shared) >= 0.6;
+}
+
 function suggestion(input: string, candidates: NamedNode[]): string {
   const k = matchKey(input);
   let best: NamedNode | null = null;

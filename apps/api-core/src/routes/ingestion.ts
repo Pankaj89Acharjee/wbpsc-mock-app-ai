@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index";
 import {
   chapters,
@@ -13,10 +13,13 @@ import {
 } from "../db/schema";
 import {
   ApprovableQuestionSchema,
+  ApproveJobsBodySchema,
   BULK_IMPORT_MAX_ROWS,
   BulkQuestionRowSchema,
   GenerateQuestionsInputSchema,
-  IngestionStatusSchema,
+  JobFilterSchema,
+  OptionKeySchema,
+  RejectJobsBodySchema,
   StagedQuestionDraftSchema,
   csvTableToRecords,
   isDraftTextComplete,
@@ -25,17 +28,44 @@ import {
   pyqLabel,
   rowToDraft,
   slugify,
+  type ApproveJobsResult,
   type ExtractMediaQuestionsResult,
   type GenerateQuestionsResult,
+  type GenerationOverLimitError,
   type IngestionBatchSummary,
   type IngestionJobDto,
   type IngestionUploadResult,
+  type JobFilter,
+  type RejectJobsResult,
   type StagedQuestionDraft,
+  type VacancyDto,
 } from "../../../../packages/shared-types/src/index";
 import { computeContentHash } from "../lib/contentHash";
 import { formatIssues } from "../lib/validation";
 import { requireAdmin } from "../lib/auth";
-import { generateWithApiAi, loadGenerationContext } from "../lib/aiGeneration";
+import {
+  generateWithApiAi,
+  loadGenerationContext,
+  type ApiAiGenerateResponse,
+} from "../lib/aiGeneration";
+import {
+  existingHashes,
+  findNearDuplicates,
+  nearDuplicateScore,
+  normalizeText,
+  probeOf,
+} from "../lib/dedupe";
+import {
+  SeriesError,
+  assignQuestions,
+  getSeries,
+  loadExamTaxonomy,
+  lockSeries,
+  rosterStateFor,
+  toVacancyDto,
+  type SeriesRow,
+} from "../lib/series";
+import { vacancyFor, type NodePath } from "../lib/roster";
 import {
   extractQuestionsFromMediaWithAi,
   translateAndEnrichQuestionDraft,
@@ -52,13 +82,13 @@ const UploadBodySchema = z.object({
   content: z.string().min(1, "File is empty").max(5_000_000),
 });
 
-const JobListQuerySchema = z.object({
-  batchId: z.string().max(80).optional(),
-  examSlug: z.string().max(80).optional(),
-  status: z.union([IngestionStatusSchema, z.literal("all")]).default("all"),
+const JobListQuerySchema = JobFilterSchema.extend({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+/** Most ids "select all matching" will hand back (= approve/reject batch limit). */
+const SELECT_ALL_CAP = 500;
 
 const JobParamsSchema = z.object({ id: z.string().uuid() });
 
@@ -83,17 +113,21 @@ const ExtractMediaBodySchema = z.object({
   insertDirectlyToBank: z.boolean().default(true),
 });
 
-const IdsBodySchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(500),
-  reviewNotes: z.string().max(2000).optional(),
-});
-
 /** Staging rows that still count as "in the pipeline" for duplicate checks. */
 const ACTIVE_STAGING_STATUSES: IngestionStatusType[] = [
   "pending_ai",
   "pending_review",
   "approved",
 ];
+
+/**
+ * AI output is also checked against REJECTED rows, so a question a reviewer
+ * already threw out is not proposed again in a later batch.
+ */
+const AI_DEDUPE_STATUSES: IngestionStatusType[] = [...ACTIVE_STAGING_STATUSES, "rejected"];
+
+/** Extra AI calls asking for fresh questions when duplicates were dropped. */
+const MAX_GENERATION_RETRIES = 2;
 
 type NewIngestionJob = typeof questionIngestionJobs.$inferInsert;
 type IngestionJobRow = typeof questionIngestionJobs.$inferSelect;
@@ -205,6 +239,8 @@ async function saveStagedBatch(
     }
   }
 
+  await flagNearDuplicates(staged.map((s) => s.job));
+
   await db.transaction(async (tx) => {
     for (let i = 0; i < staged.length; i += 500) {
       await tx
@@ -225,6 +261,64 @@ async function saveStagedBatch(
       .slice(0, 100)
       .map((s) => ({ rowNumber: s.rowNumber, message: s.job.errorMessage ?? "" })),
   };
+}
+
+/**
+ * Marks staged rows that closely resemble a bank question (reworded stem,
+ * shuffled options). A warning for the reviewer — exact copies are already
+ * blocked by the content hash.
+ */
+async function flagNearDuplicates(jobs: NewIngestionJob[]): Promise<void> {
+  const targets = jobs.filter(
+    (j) => j.status !== "failed" && (j.enrichedData as StagedQuestionDraft | null)?.stem?.en
+  );
+  if (targets.length === 0) return;
+  const matches = await findNearDuplicates(
+    targets.map((j) => probeOf(j.enrichedData as StagedQuestionDraft))
+  );
+  targets.forEach((j, i) => {
+    const m = matches[i];
+    j.nearDuplicateQuestionId = m?.id ?? null;
+    j.nearDuplicateScore = m ? m.score.toFixed(3) : null;
+  });
+}
+
+/** Problems with an AI-drafted MCQ the zod schema can't see. */
+function generatedQuestionProblem(d: StagedQuestionDraft): string | null {
+  if (normalizeText(d.stem.en).length < 8) return "Question text is too short";
+  const opts = OptionKeySchema.options.map((k) => normalizeText(d.options[k].en));
+  if (opts.some((o) => o === "")) return "An option is empty";
+  if (new Set(opts).size < opts.length) return "Two options have the same text";
+  return null;
+}
+
+/** Near-duplicate warning columns for one edited / hand-entered draft. */
+async function nearDuplicateColumns(d: StagedQuestionDraft) {
+  const [m] = await findNearDuplicates([probeOf(d)]);
+  return {
+    nearDuplicateQuestionId: m?.id ?? null,
+    nearDuplicateScore: m ? m.score.toFixed(3) : null,
+  };
+}
+
+/** WHERE clause shared by the review list and "select all matching". */
+async function jobWhere(f: JobFilter) {
+  const nextDay = (d: string) => new Date(new Date(`${d}T00:00:00Z`).getTime() + 86_400_000);
+  return and(
+    await examScope(f.examSlug),
+    f.batchId ? eq(questionIngestionJobs.batchId, f.batchId) : undefined,
+    f.status !== "all" ? eq(questionIngestionJobs.status, f.status) : undefined,
+    f.subjectId ? eq(questionIngestionJobs.subjectId, f.subjectId) : undefined,
+    f.chapterId ? eq(questionIngestionJobs.chapterId, f.chapterId) : undefined,
+    f.subtopicId ? eq(questionIngestionJobs.subtopicId, f.subtopicId) : undefined,
+    f.difficulty
+      ? sql`${questionIngestionJobs.enrichedData} ->> 'difficulty' = ${f.difficulty}`
+      : undefined,
+    f.source ? eq(questionIngestionJobs.source, f.source) : undefined,
+    f.targetSeriesId ? eq(questionIngestionJobs.targetSeriesId, f.targetSeriesId) : undefined,
+    f.createdFrom ? gte(questionIngestionJobs.createdAt, new Date(`${f.createdFrom}T00:00:00Z`)) : undefined,
+    f.createdTo ? lt(questionIngestionJobs.createdAt, nextDay(f.createdTo)) : undefined
+  );
 }
 
 /** Rows belonging to an exam, plus unresolved rows that could belong to any exam. */
@@ -255,6 +349,9 @@ function toJobDto(row: IngestionJobRow): IngestionJobDto {
     reviewNotes: row.reviewNotes,
     errorMessage: row.errorMessage,
     insertedQuestionId: row.insertedQuestionId,
+    targetSeriesId: row.targetSeriesId,
+    nearDuplicateQuestionId: row.nearDuplicateQuestionId,
+    nearDuplicateScore: row.nearDuplicateScore === null ? null : Number(row.nearDuplicateScore),
     createdAt: row.createdAt.toISOString(),
     reviewedAt: row.reviewedAt?.toISOString() ?? null,
   };
@@ -762,6 +859,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       .insert(questionIngestionJobs)
       .values({
         ...columns,
+        ...(await nearDuplicateColumns(canon.draft)),
         batchId: `manual-${new Date().toISOString().slice(0, 10)}`,
         source: "manual",
         rawData: { rowNumber: null, fileName: "Added in console", record: draft },
@@ -819,7 +917,18 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   });
 
   /**
-   * 2b. POST /admin/ingestion/generate  { examSlug, subtopicSlug, count, difficulty }
+   * 2b. POST /admin/ingestion/generate
+   *     { examSlug, subjectSlug, chapterSlug, subtopicSlug, count, difficulty, mode, seriesId? }
+   *
+   * mode "roster": refuses (409) to draft more than the series' open vacancies
+   *   for that syllabus node — counting questions already selected AND pending
+   *   AI drafts for the series — and re-checks under a series lock before saving.
+   * mode "bank": reusable questions for the central bank; no blueprint is touched.
+   *
+   * Every AI question is de-duplicated in code (exact hash + near-duplicate
+   * stems) against the bank, pending/rejected staging rows and the batch
+   * itself; if too few survive, the AI is asked again for fresh ones.
+   * Nothing goes live: rows land in the review queue as pending_review.
    */
   fastify.post("/generate", async (request, reply) => {
     const parsed = GenerateQuestionsInputSchema.safeParse(request.body);
@@ -841,70 +950,253 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       return reply.status(400).send({ error: resolved.message });
     }
     const { path } = resolved;
+    const nodePath: NodePath = {
+      subjectId: path.subject.id,
+      chapterId: path.chapter.id,
+      subtopicId: path.subtopic.id,
+    };
 
-    let generated;
+    // ── Blueprint check BEFORE spending any AI tokens ──
+    let series: SeriesRow | null = null;
+    let vacancy: VacancyDto | null = null;
+    if (input.mode === "roster") {
+      try {
+        series = await getSeries(db, input.seriesId!);
+      } catch {
+        return reply.status(404).send({ error: "Test series not found" });
+      }
+      if (series.examId !== path.exam.id) {
+        return reply
+          .status(400)
+          .send({ error: "That series belongs to a different exam — pick a subtopic from its syllabus" });
+      }
+      if (series.status === "archived") {
+        return reply.status(409).send({ error: "That series is archived" });
+      }
+      const tax = await loadExamTaxonomy(db, series.examId);
+      const { state } = await rosterStateFor(db, series.id);
+      vacancy = toVacancyDto(series.id, state, nodePath, tax.label);
+      if (!vacancy.eligible || input.count > vacancy.generatable) {
+        const body: GenerationOverLimitError = {
+          error: !vacancy.eligible
+            ? `${vacancy.message} Give it a count in the series' subjects, or generate for the Question Bank instead.`
+            : `Only ${vacancy.generatable} vacanc${vacancy.generatable === 1 ? "y remains" : "ies remain"} ` +
+              `for ${tax.label(nodePath)} in this series (you asked for ${input.count}). ` +
+              `Generate up to ${vacancy.generatable}, or switch to "Question Bank" mode for extra reusable questions.`,
+          code: vacancy.eligible ? "ROSTER_VACANCY_EXCEEDED" : "NOT_IN_ROSTER",
+          requested: input.count,
+          allowed: vacancy.eligible ? vacancy.generatable : 0,
+          vacancy,
+        };
+        return reply.status(409).send(body);
+      }
+    }
+
+    // ── Generate → de-duplicate → retry for the shortfall ──
+    const source = "ai_generated";
+    const batchId = `${source}-${Date.now()}`;
+    type Kept = { draft: StagedQuestionDraft; q: ApiAiGenerateResponse["questions"][number] };
+    const kept: Kept[] = [];
+    const dropped: StagedRow[] = [];
+    const duplicatesDropped = { exact: 0, near: 0, inBatch: 0 };
+    const seenHashes = new Set<string>();
+    let attempts = 0;
+    let modelUsed = "";
+    let cacheTier: GenerateQuestionsResult["cacheTier"] = "gemini";
+    let rowNumber = 0;
+
     try {
       const context = await loadGenerationContext(path);
-      generated = await generateWithApiAi({
-        exam_slug: path.exam.slug,
-        exam_title: path.exam.name.en,
-        subject_name: path.subject.name.en,
-        chapter_name: path.chapter.name.en,
-        subtopic_slug: path.subtopic.slug,
-        subtopic_name: path.subtopic.name.en,
-        count: input.count,
-        difficulty: input.difficulty,
-        ...context,
-      });
+      const avoid = [...context.avoid_stems];
+
+      while (kept.length < input.count && attempts <= MAX_GENERATION_RETRIES) {
+        const generated = await generateWithApiAi({
+          exam_slug: path.exam.slug,
+          exam_title: path.exam.name.en,
+          subject_name: path.subject.name.en,
+          chapter_name: path.chapter.name.en,
+          subtopic_slug: path.subtopic.slug,
+          subtopic_name: path.subtopic.name.en,
+          count: input.count - kept.length,
+          difficulty: input.difficulty,
+          examples: context.examples,
+          round: context.round,
+          attempt: attempts,
+          // Newest stems last, so the cap keeps what this request just saw
+          avoid_stems: avoid.slice(-150),
+        });
+        if (attempts === 0) cacheTier = generated.cache_tier;
+        else if (generated.cache_tier === "gemini") cacheTier = "gemini";
+        attempts++;
+        modelUsed ||= generated.model_used;
+        if (generated.questions.length === 0) break;
+
+        const drafts: StagedQuestionDraft[] = generated.questions.map((q) => ({
+          examSlug: path.exam.slug,
+          subjectSlug: path.subject.slug,
+          chapterSlug: path.chapter.slug,
+          subtopicSlug: path.subtopic.slug,
+          stem: q.stem,
+          options: q.options,
+          correctOption: q.correct_option,
+          explanation: q.explanation,
+          difficulty: q.difficulty,
+          source,
+          pyqExamSlug: null,
+          pyqYear: null,
+          answerKeyVerified: false,
+        }));
+        const hashes = drafts.map((d) => computeContentHash(d));
+        const [known, near] = await Promise.all([
+          existingHashes(hashes, AI_DEDUPE_STATUSES),
+          findNearDuplicates(drafts.map(probeOf), AI_DEDUPE_STATUSES),
+        ]);
+
+        generated.questions.forEach((q, i) => {
+          const draft = drafts[i];
+          const hash = hashes[i];
+          avoid.push(draft.stem.en);
+          let reason: string | null = generatedQuestionProblem(draft);
+          if (!reason && known.has(hash)) {
+            duplicatesDropped.exact++;
+            reason = `Duplicate of ${known.get(hash)}`;
+          } else if (!reason && seenHashes.has(hash)) {
+            duplicatesDropped.inBatch++;
+            reason = "Duplicate of another question in this batch";
+          } else if (!reason && near[i]) {
+            duplicatesDropped.near++;
+            const m = near[i]!;
+            reason = `Near-duplicate (${Math.round(m.score * 100)}% similar) of ${
+              m.kind === "question" ? "bank question" : "staged row"
+            } ${m.id}`;
+          } else if (!reason) {
+            const twin = kept.find((k) => nearDuplicateScore(probeOf(draft), probeOf(k.draft)) !== null);
+            if (twin) {
+              duplicatesDropped.inBatch++;
+              reason = "Near-duplicate of another question in this batch";
+            }
+          }
+          seenHashes.add(hash);
+          if (!reason && kept.length >= input.count) reason = "Extra question beyond the requested count";
+
+          if (reason) {
+            dropped.push({
+              rowNumber: ++rowNumber,
+              job: {
+                batchId,
+                source,
+                status: "failed",
+                rawData: { rowNumber, fileName: null, record: q, attempt: attempts },
+                enrichedData: draft,
+                examId: path.exam.id,
+                ...nodePath,
+                contentHash: hash,
+                aiConfidenceScore: q.confidence.toFixed(2),
+                errorMessage: reason,
+              },
+            });
+          } else {
+            kept.push({ draft, q });
+          }
+        });
+      }
     } catch (err) {
       request.log.error(err, "AI question generation failed");
       return reply.status(502).send({ error: (err as Error).message });
     }
 
-    const source = "ai_generated";
-    const batchId = `${source}-${Date.now()}`;
-    const staged: StagedRow[] = generated.questions.map((q, i) => {
-      const draft: StagedQuestionDraft = {
-        examSlug: path.exam.slug,
-        subjectSlug: path.subject.slug,
-        chapterSlug: path.chapter.slug,
-        subtopicSlug: path.subtopic.slug,
-        stem: q.stem,
-        options: q.options,
-        correctOption: q.correct_option,
-        explanation: q.explanation,
-        difficulty: q.difficulty,
-        source,
-        pyqExamSlug: null,
-        pyqYear: null,
-        answerKeyVerified: false,
-      };
-      const job: NewIngestionJob = {
-        batchId,
-        source,
-        status: "failed",
-        rawData: {
-          rowNumber: i + 1,
-          fileName: `AI · ${path.subtopic.name.en} (${generated.model_used})`,
-          record: q,
-          cacheTier: generated.cache_tier,
-        },
-        aiConfidenceScore: q.confidence.toFixed(2),
-      };
-      const canon = canonicalizeDraft(syllabus, draft);
-      if (canon.ok) Object.assign(job, draftColumns(canon));
-      else job.errorMessage = canon.message;
-      return { rowNumber: i + 1, job };
-    });
+    // ── Stage, re-checking vacancies under the series lock ──
+    const fileName = `AI · ${path.subtopic.name.en} (${modelUsed || "gemini"})${series ? " · series" : ""}`;
+    let staged: StagedRow[] = [];
+    try {
+      staged = await db.transaction(async (tx) => {
+        let accept = kept;
+        if (series) {
+          const locked = await lockSeries(tx, series.id);
+          if (locked.status === "archived") throw new SeriesError("That series was archived meanwhile", 409);
+          const { state } = await rosterStateFor(tx, series.id);
+          const room = vacancyFor(state, nodePath, "generate").allowed;
+          if (kept.length > room) {
+            accept = kept.slice(0, room);
+            kept.slice(room).forEach(({ draft, q }) =>
+              dropped.push({
+                rowNumber: ++rowNumber,
+                job: {
+                  batchId,
+                  source,
+                  status: "failed",
+                  rawData: { rowNumber, fileName, record: q },
+                  enrichedData: draft,
+                  examId: path.exam.id,
+                  ...nodePath,
+                  contentHash: computeContentHash(draft),
+                  aiConfidenceScore: q.confidence.toFixed(2),
+                  errorMessage: "Not staged: the series' vacancies were taken while generating",
+                },
+              })
+            );
+          }
+        }
+        const rows: StagedRow[] = [
+          ...accept.map(({ draft, q }, i) => {
+            const canon = canonicalizeDraft(syllabus, draft);
+            const job: NewIngestionJob = {
+              batchId,
+              source,
+              status: "failed",
+              rawData: { rowNumber: i + 1, fileName, record: q, cacheTier },
+              aiConfidenceScore: q.confidence.toFixed(2),
+              targetSeriesId: series?.id ?? null,
+            };
+            if (canon.ok) Object.assign(job, draftColumns(canon));
+            else job.errorMessage = canon.message;
+            return { rowNumber: i + 1, job };
+          }),
+          ...dropped.map((d, i) => {
+            const n = accept.length + i + 1;
+            (d.job.rawData as { rowNumber: number; fileName: string }).rowNumber = n;
+            (d.job.rawData as { rowNumber: number; fileName: string }).fileName = fileName;
+            return { rowNumber: n, job: d.job };
+          }),
+        ];
+        if (rows.length) await tx.insert(questionIngestionJobs).values(rows.map((r) => r.job));
+        return rows;
+      });
+    } catch (err) {
+      if (err instanceof SeriesError) return reply.status(err.statusCode).send({ error: err.message });
+      throw err;
+    }
 
-    const summary = await saveStagedBatch(batchId, staged);
+    const uniqueGenerated = staged.filter((s) => s.job.status !== "failed").length;
     const result: GenerateQuestionsResult = {
-      ...summary,
-      modelUsed: generated.model_used,
-      cacheTier: generated.cache_tier,
+      batchId,
+      total: staged.length,
+      pendingReview: staged.filter((s) => s.job.status === "pending_review").length,
+      pendingAi: staged.filter((s) => s.job.status === "pending_ai").length,
+      failed: staged.filter((s) => s.job.status === "failed").length,
+      skippedEmpty: 0,
+      errors: staged
+        .filter((s) => s.job.status === "failed")
+        .slice(0, 100)
+        .map((s) => ({ rowNumber: s.rowNumber, message: s.job.errorMessage ?? "" })),
+      modelUsed: modelUsed || "gemini",
+      cacheTier,
+      requested: input.count,
+      uniqueGenerated,
+      attempts,
+      duplicatesDropped,
+      vacancy,
     };
     request.log.info(
-      { batchId, subtopic: path.subtopic.slug, total: result.total, cacheTier: result.cacheTier },
+      {
+        batchId,
+        subtopic: path.subtopic.slug,
+        seriesId: series?.id,
+        requested: input.count,
+        uniqueGenerated,
+        attempts,
+        duplicatesDropped,
+      },
       "AI questions staged"
     );
     return reply.status(201).send(result);
@@ -946,23 +1238,19 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   });
 
   /**
-   * 4. GET /admin/ingestion/jobs?batchId=&status=&limit=&offset=
+   * 4. GET /admin/ingestion/jobs?batchId=&status=&subjectId=&chapterId=&subtopicId=
+   *        &difficulty=&source=&targetSeriesId=&createdFrom=&createdTo=&limit=&offset=
    */
   fastify.get("/jobs", async (request, reply) => {
     const parsed = JobListQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       return reply.status(400).send({
         error: "Invalid query parameters",
-        details: parsed.error.flatten(),
+        details: formatIssues(parsed.error.issues),
       });
     }
-    const { batchId, examSlug, status, limit, offset } = parsed.data;
-
-    const where = and(
-      await examScope(examSlug),
-      batchId ? eq(questionIngestionJobs.batchId, batchId) : undefined,
-      status !== "all" ? eq(questionIngestionJobs.status, status) : undefined
-    );
+    const { limit, offset, ...filter } = parsed.data;
+    const where = await jobWhere(filter);
 
     const [rows, [{ total }]] = await Promise.all([
       db
@@ -982,6 +1270,29 @@ export const ingestionRoutes: FastifyPluginAsync = async (
     ]);
 
     return { jobs: rows.map(toJobDto), total };
+  });
+
+  /**
+   * 4b. GET /admin/ingestion/jobs/ids?<same filters>
+   * Ids of every row matching the filters (for "select all matching"), capped
+   * at the approve/reject batch size.
+   */
+  fastify.get("/jobs/ids", async (request, reply) => {
+    const parsed = JobFilterSchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: formatIssues(parsed.error.issues) });
+    }
+    const where = await jobWhere(parsed.data);
+    const [rows, [{ total }]] = await Promise.all([
+      db
+        .select({ id: questionIngestionJobs.id })
+        .from(questionIngestionJobs)
+        .where(where)
+        .orderBy(desc(questionIngestionJobs.createdAt))
+        .limit(SELECT_ALL_CAP),
+      db.select({ total: sql<number>`count(*)::int` }).from(questionIngestionJobs).where(where),
+    ]);
+    return { ids: rows.map((r) => r.id), total, capped: total > SELECT_ALL_CAP };
   });
 
   /**
@@ -1038,6 +1349,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       .update(questionIngestionJobs)
       .set({
         ...columns,
+        ...(await nearDuplicateColumns(canon.draft)),
         reviewNotes: reviewNotes === undefined ? job.reviewNotes : reviewNotes,
         errorMessage: null,
       })
@@ -1048,107 +1360,171 @@ export const ingestionRoutes: FastifyPluginAsync = async (
   });
 
   /**
-   * 6. POST /admin/ingestion/jobs/approve  { ids: [...] }
+   * 6. POST /admin/ingestion/jobs/approve
+   *    { ids, assignToTargetSeries? }
+   *
+   * Approving = adding to the central Question Bank. Rows are locked first,
+   * so a double click or a second admin waits and then sees "already done"
+   * instead of creating a duplicate. Each row runs in its own savepoint and
+   * gets its own result; one bad row never undoes the others. Adding to a test
+   * series happens only when asked for, after re-checking that blueprint's seats.
    */
   fastify.post("/jobs/approve", async (request, reply) => {
-    const parsed = IdsBodySchema.safeParse(request.body);
+    const parsed = ApproveJobsBodySchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({
         error: "Invalid approve payload",
-        details: parsed.error.flatten(),
+        details: formatIssues(parsed.error.issues),
       });
     }
-    const { ids } = parsed.data;
-
-    const jobs = await db
-      .select()
-      .from(questionIngestionJobs)
-      .where(
-        and(
-          inArray(questionIngestionJobs.id, ids),
-          eq(questionIngestionJobs.status, "pending_review")
-        )
-      );
+    const { assignToTargetSeries } = parsed.data;
+    const ids = [...new Set(parsed.data.ids)];
     const syllabus = await loadSyllabus();
 
-    const result = {
+    const result: ApproveJobsResult = {
       inserted: 0,
-      notPendingReview: ids.length - jobs.length,
-      invalid: [] as Array<{ id: string; message: string }>,
-      duplicates: [] as Array<{ id: string; message: string }>,
+      assigned: 0,
+      notPendingReview: 0,
+      invalid: [],
+      duplicates: [],
+      results: [],
     };
 
     await db.transaction(async (tx) => {
-      for (const job of jobs) {
-        const valid = ApprovableQuestionSchema.safeParse(job.enrichedData);
-        const canon = valid.success ? canonicalizeDraft(syllabus, valid.data) : null;
-        if (!valid.success || !canon?.ok) {
-          const message = !valid.success
-            ? formatIssues(valid.error.issues)
-            : (canon as { message: string }).message;
-          result.invalid.push({ id: job.id, message });
-          await tx
-            .update(questionIngestionJobs)
-            .set({ errorMessage: message })
-            .where(eq(questionIngestionJobs.id, job.id));
+      const locked = await tx
+        .select()
+        .from(questionIngestionJobs)
+        .where(inArray(questionIngestionJobs.id, ids))
+        .orderBy(asc(questionIngestionJobs.id))
+        .for("update");
+      const byId = new Map(locked.map((j) => [j.id, j]));
+
+      for (const id of ids) {
+        const job = byId.get(id);
+        if (!job || job.status !== "pending_review") {
+          result.notPendingReview++;
+          result.results.push({
+            id,
+            status: "not_pending",
+            message: job ? `Status is "${job.status.replace("_", " ")}"` : "Not found",
+          });
           continue;
         }
-
-        const { draft: q, path, pyqTag } = canon;
-        const contentHash = computeContentHash(q);
-        const [created] = await tx
-          .insert(questions)
-          .values({
-            examId: path.exam.id,
-            examSlug: path.exam.slug,
-            subjectId: path.subject.id,
-            chapterId: path.chapter.id,
-            subtopicId: path.subtopic.id,
-            stem: valid.data.stem,
-            options: valid.data.options,
-            correctOption: q.correctOption,
-            explanation: valid.data.explanation,
-            difficulty: q.difficulty,
-            marksPositive: path.exam.marksPerCorrect,
-            marksNegative: path.exam.negativeMarksPerWrong,
-            previousYearTag: pyqTag,
-            source: q.source,
-            pyqExamSlug: q.pyqExamSlug,
-            pyqYear: q.pyqYear,
-            answerKeyVerified: q.answerKeyVerified,
-            contentHash,
-            ingestionJobId: job.id,
-          })
-          .onConflictDoNothing({ target: questions.contentHash })
-          .returning({ id: questions.id });
-
-        const reviewedAt = new Date();
-        if (!created) {
-          const message = "Duplicate of a question already in the live bank";
-          result.duplicates.push({ id: job.id, message });
-          await tx
-            .update(questionIngestionJobs)
-            .set({ status: "failed", errorMessage: message, reviewedAt })
-            .where(eq(questionIngestionJobs.id, job.id));
-          continue;
-        }
-
-        await tx
-          .update(questionIngestionJobs)
-          .set({
-            status: "inserted",
-            insertedQuestionId: created.id,
-            contentHash,
-            errorMessage: null,
-            reviewedAt,
-          })
-          .where(eq(questionIngestionJobs.id, job.id));
-        result.inserted++;
+        const item = await tx.transaction(async (sp) => approveOne(sp, job)).catch((err: Error) => {
+          // Unexpected database error on this row only — its savepoint was rolled back
+          const message = `Could not approve: ${err.message}`;
+          result.invalid.push({ id, message });
+          return { id, status: "invalid" as const, message };
+        });
+        result.results.push(item);
       }
     });
 
+    /** Validates, inserts into the bank and (optionally) assigns one locked row. */
+    async function approveOne(
+      sp: Parameters<Parameters<typeof db.transaction>[0]>[0],
+      job: typeof questionIngestionJobs.$inferSelect
+    ): Promise<ApproveJobsResult["results"][number]> {
+      let draft = job.enrichedData as StagedQuestionDraft | null;
+      // The admin reviewed the AI question and pressed Approve — that is the answer check
+      if (draft && draft.source === "ai_generated") {
+        draft = { ...draft, answerKeyVerified: true };
+      }
+      const valid = ApprovableQuestionSchema.safeParse(draft);
+      const canon = valid.success ? canonicalizeDraft(syllabus, valid.data) : null;
+      if (!valid.success || !canon?.ok) {
+        const message = !valid.success
+          ? formatIssues(valid.error.issues)
+          : (canon as { message: string }).message;
+        result.invalid.push({ id: job.id, message });
+        await sp
+          .update(questionIngestionJobs)
+          .set({ errorMessage: message })
+          .where(eq(questionIngestionJobs.id, job.id));
+        return { id: job.id, status: "invalid", message };
+      }
+
+      const { draft: q, path, pyqTag } = canon;
+      const contentHash = computeContentHash(q);
+      const [created] = await sp
+        .insert(questions)
+        .values({
+          examId: path.exam.id,
+          examSlug: path.exam.slug,
+          subjectId: path.subject.id,
+          chapterId: path.chapter.id,
+          subtopicId: path.subtopic.id,
+          stem: valid.data.stem,
+          options: valid.data.options,
+          correctOption: q.correctOption,
+          explanation: valid.data.explanation,
+          difficulty: q.difficulty,
+          marksPositive: path.exam.marksPerCorrect,
+          marksNegative: path.exam.negativeMarksPerWrong,
+          previousYearTag: pyqTag,
+          source: q.source,
+          pyqExamSlug: q.pyqExamSlug,
+          pyqYear: q.pyqYear,
+          answerKeyVerified: q.answerKeyVerified,
+          contentHash,
+          ingestionJobId: job.id,
+        })
+        .onConflictDoNothing({ target: questions.contentHash })
+        .returning({ id: questions.id });
+
+      const reviewedAt = new Date();
+      if (!created) {
+        const message = "Duplicate of a question already in the live bank";
+        result.duplicates.push({ id: job.id, message });
+        await sp
+          .update(questionIngestionJobs)
+          .set({ status: "failed", errorMessage: message, reviewedAt })
+          .where(eq(questionIngestionJobs.id, job.id));
+        return { id: job.id, status: "duplicate", message };
+      }
+
+      await sp
+        .update(questionIngestionJobs)
+        .set({
+          status: "inserted",
+          insertedQuestionId: created.id,
+          enrichedData: q,
+          contentHash,
+          errorMessage: null,
+          reviewedAt,
+        })
+        .where(eq(questionIngestionJobs.id, job.id));
+      result.inserted++;
+
+      if (!assignToTargetSeries || !job.targetSeriesId) {
+        return { id: job.id, status: "inserted", questionId: created.id };
+      }
+      // Own savepoint: a full blueprint leaves the question approved in the bank
+      const assignment = await sp
+        .transaction(async (inner) => {
+          const target = await lockSeries(inner, job.targetSeriesId!);
+          return assignQuestions(inner, target, [created.id], { userId: request.user!.id });
+        })
+        .catch((err: Error) => ({ assigned: [], failed: [{ questionId: created.id, reason: err.message }] }));
+      if (assignment.assigned.length) {
+        result.assigned++;
+        return { id: job.id, status: "inserted", questionId: created.id };
+      }
+      return {
+        id: job.id,
+        status: "inserted_not_assigned",
+        questionId: created.id,
+        message: `Added to the bank but not to the series: ${assignment.failed[0]?.reason ?? "unknown reason"}`,
+      };
+    }
+
     request.log.info(
-      { inserted: result.inserted, invalid: result.invalid.length },
+      {
+        inserted: result.inserted,
+        assigned: result.assigned,
+        invalid: result.invalid.length,
+        duplicates: result.duplicates.length,
+      },
       "Staged questions approved"
     );
     return result;
@@ -1156,16 +1532,19 @@ export const ingestionRoutes: FastifyPluginAsync = async (
 
   /**
    * 7. POST /admin/ingestion/jobs/reject  { ids: [...], reviewNotes? }
+   * Rejected rows are kept (with the reason) for auditing and so the AI
+   * generator never proposes the same question again.
    */
   fastify.post("/jobs/reject", async (request, reply) => {
-    const parsed = IdsBodySchema.safeParse(request.body);
+    const parsed = RejectJobsBodySchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({
         error: "Invalid reject payload",
-        details: parsed.error.flatten(),
+        details: formatIssues(parsed.error.issues),
       });
     }
-    const { ids, reviewNotes } = parsed.data;
+    const { reviewNotes } = parsed.data;
+    const ids = [...new Set(parsed.data.ids)];
 
     const rejected = await db
       .update(questionIngestionJobs)
@@ -1186,6 +1565,19 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       )
       .returning({ id: questionIngestionJobs.id });
 
-    return { rejected: rejected.length };
+    const done = new Set(rejected.map((r) => r.id));
+    const result: RejectJobsResult = {
+      rejected: done.size,
+      results: ids.map((id) =>
+        done.has(id)
+          ? { id, status: "rejected" as const }
+          : {
+              id,
+              status: "not_rejectable" as const,
+              message: "Already approved, rejected or not found",
+            }
+      ),
+    };
+    return result;
   });
 };

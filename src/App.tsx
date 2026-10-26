@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AiNoteDto,
   AttemptSummaryDto,
@@ -7,11 +7,13 @@ import type {
   MasteryDto,
   QuestionOptions,
   StudentExamDto,
+  StudentSeriesDto,
   UserDto,
 } from "../packages/shared-types/src/index";
 import { api } from "./api";
 import QuestionBankAdmin from "./admin/QuestionBankAdmin";
-import AttemptReview from "./components/AttemptReview";
+import AttemptHistory from "./components/AttemptHistory";
+import { ExamCards, ExamSeriesView, LibraryStats } from "./components/ExamLibrary";
 import GoogleSignInButton from "./components/GoogleSignInButton";
 import {
   BookOpen,
@@ -44,6 +46,9 @@ import {
 // ============================================================================
 
 type SupportedLang = "en" | "bn";
+
+/** 303 -> "5min 3sec" */
+const formatClock = (sec: number) => `${Math.floor(sec / 60)}min ${sec % 60}sec`;
 type UserRole = UserDto["role"];
 type SubscriptionTier = UserDto["subscriptionTier"];
 
@@ -96,20 +101,6 @@ const toMockQuestion = (q: ApiMockQuestion): MockQuestion => ({
   previousYearTag: q.previousYearTag ?? "",
 });
 
-/** Score card shown right after submitting (graded by api-core in SQL). */
-interface LastResult {
-  attemptId: string;
-  examTitleEn: string;
-  examTitleBn: string;
-  finalNetScore: number;
-  maxPossibleScore: number;
-  accuracyPercentage: number;
-  correctCount: number;
-  incorrectCount: number;
-  cutoffCleared: boolean;
-  weakSubtopicsCount: number;
-}
-
 interface SubmitResponse {
   attemptId: string;
   overallSummary: {
@@ -144,7 +135,7 @@ type ActiveNav =
   | "admin-console"
   | "testing-guide";
 
-type AdminSubTab = "users" | "exams" | "cache-attempts" | "bulk-import";
+type AdminSubTab = "users" | "exams" | "cache-attempts" | "bulk-import" | "series";
 
 export default function App() {
   // 1. Auth & User State
@@ -166,7 +157,6 @@ export default function App() {
   // Student Data
   const [examsList, setExamsList] = useState<StudentExamDto[]>([]);
   const [myAttempts, setMyAttempts] = useState<AttemptSummaryDto[]>([]);
-  const [reviewAttemptId, setReviewAttemptId] = useState<string | null>(null);
   const [myMastery, setMyMastery] = useState<MasteryDto[]>([]);
   const [cachedNotes, setCachedNotes] = useState<CachedNoteRefDto[]>([]);
 
@@ -180,6 +170,11 @@ export default function App() {
 
   // Active Mock Test State
   const [activeExam, setActiveExam] = useState<StudentExamDto | null>(null);
+  /** Test series being sat (null = random mock / remedial test) */
+  const [activeSeriesId, setActiveSeriesId] = useState<string | null>(null);
+  /** Published test series per exam, loaded when a student opens an exam */
+  const [seriesByExam, setSeriesByExam] = useState<Record<string, StudentSeriesDto[]>>({});
+  const [openExamId, setOpenExamId] = useState<string | null>(null);
   const [activeTestQuestions, setActiveTestQuestions] = useState<MockQuestion[]>([]);
   const [isRemedialMode, setIsRemedialMode] = useState<boolean>(false);
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState<number>(0);
@@ -189,7 +184,8 @@ export default function App() {
   const [questionTimers, setQuestionTimers] = useState<Record<string, number>>({});
   const [elapsedTotalSec, setElapsedTotalSec] = useState<number>(0);
   const [submitting, setSubmitting] = useState<boolean>(false);
-  const [lastSubmittedAttempt, setLastSubmittedAttempt] = useState<LastResult | null>(null);
+  /** Highlighted in the history right after submitting */
+  const [lastAttemptId, setLastAttemptId] = useState<string | null>(null);
 
   // AI Tutor Note State
   const [selectedNote, setSelectedNote] = useState<AiNoteDto | null>(null);
@@ -293,6 +289,11 @@ export default function App() {
     if (isUserAdmin && activeNav === "admin-console") loadAdminData();
   }, [isUserAdmin, activeNav, loadAdminData]);
 
+  // Countdown: the exam's/series' duration; 0 = untimed
+  const testLimitSec = activeExam ? Math.max(0, activeExam.durationMinutes) * 60 : 0;
+  const remainingSec = Math.max(0, testLimitSec - elapsedTotalSec);
+  const autoSubmittedRef = useRef(false);
+
   // Live Timer during Active Mock Test
   useEffect(() => {
     if (!activeExam || activeTestQuestions.length === 0) return;
@@ -367,9 +368,8 @@ export default function App() {
     await api("/auth/logout", { method: "POST" }).catch(() => undefined);
     setActiveExam(null);
     setActiveTestQuestions([]);
-    setLastSubmittedAttempt(null);
+    setLastAttemptId(null);
     setSelectedNote(null);
-    setReviewAttemptId(null);
     setActiveNav("mock-center");
     setUser(null);
   };
@@ -410,7 +410,12 @@ export default function App() {
   // 5. Mock Test (questions without answers → server-side SQL grading)
   // =========================================================================
 
-  const beginTest = (exam: StudentExamDto, questions: ApiMockQuestion[], remedial: boolean) => {
+  const beginTest = (
+    exam: StudentExamDto,
+    questions: ApiMockQuestion[],
+    remedial: boolean,
+    seriesId: string | null = null
+  ) => {
     if (questions.length === 0) {
       setStatusBanner({
         type: "info",
@@ -419,14 +424,15 @@ export default function App() {
       return;
     }
     setActiveExam(exam);
+    setActiveSeriesId(seriesId);
     setActiveTestQuestions(questions.map(toMockQuestion));
     setIsRemedialMode(remedial);
     setCurrentQuestionIdx(0);
     setSelectedAnswers({});
     setQuestionTimers({});
     setElapsedTotalSec(0);
-    setLastSubmittedAttempt(null);
-    setReviewAttemptId(null);
+    autoSubmittedRef.current = false;
+    setLastAttemptId(null);
   };
 
   const startMockTest = async (exam: StudentExamDto) => {
@@ -435,6 +441,43 @@ export default function App() {
         `/exams/${exam.id}/mock-test?lang=${lang}`
       );
       beginTest(exam, r.questions, false);
+    } catch (err) {
+      showError(err, "Could not start the test");
+    }
+  };
+
+  const openExamSeries = async (exam: StudentExamDto) => {
+    setOpenExamId(exam.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    try {
+      const r = await api<{ series: StudentSeriesDto[] }>(`/exams/${exam.id}/series`);
+      setSeriesByExam((prev) => ({ ...prev, [exam.id]: r.series }));
+    } catch (err) {
+      showError(err, "Could not load the test series");
+    }
+  };
+
+  /** A fixed, admin-built test series (mock test, previous-year paper, practice set). */
+  const startSeriesTest = async (exam: StudentExamDto, series: StudentSeriesDto) => {
+    try {
+      const r = await api<{ questions: ApiMockQuestion[] }>(
+        `/exams/series/${series.id}/test?lang=${lang}`
+      );
+      beginTest(
+        {
+          ...exam,
+          titleEn: `${exam.titleEn} — ${series.name.en}`,
+          titleBn: `${exam.titleBn} — ${series.name.bn}`,
+          durationMinutes: series.durationMinutes,
+          marksPerCorrect: series.marksPerCorrect,
+          negativeMarksPerWrong: series.negativeMarksPerWrong,
+          estimatedCutoffMarks: series.estimatedCutoffMarks,
+          totalQuestions: series.totalQuestions,
+        },
+        r.questions,
+        false,
+        series.id
+      );
     } catch (err) {
       showError(err, "Could not start the test");
     }
@@ -455,6 +498,14 @@ export default function App() {
     }
   };
 
+  // Time up: submit once (a failed submit leaves the manual button to retry)
+  useEffect(() => {
+    if (!activeExam || testLimitSec === 0 || remainingSec > 0 || autoSubmittedRef.current) return;
+    autoSubmittedRef.current = true;
+    setStatusBanner({ type: "info", text: "Time is up — your test has been submitted." });
+    handleSubmitMockTest();
+  });
+
   const handleSubmitMockTest = async () => {
     if (!activeExam || submitting) return;
     setSubmitting(true);
@@ -463,6 +514,7 @@ export default function App() {
         method: "POST",
         body: {
           examId: activeExam.id,
+          seriesId: activeSeriesId ?? undefined,
           preferredLanguage: lang,
           totalTimeSpentSeconds: elapsedTotalSec,
           startedAt: new Date(Date.now() - elapsedTotalSec * 1000).toISOString(),
@@ -478,24 +530,17 @@ export default function App() {
         },
       });
       const s = r.overallSummary;
-      setLastSubmittedAttempt({
-        attemptId: r.attemptId,
-        examTitleEn: activeExam.titleEn,
-        examTitleBn: activeExam.titleBn,
-        finalNetScore: s.finalNetScore,
-        maxPossibleScore: s.maxPossibleScore,
-        accuracyPercentage: s.accuracyPercentage,
-        correctCount: s.correct,
-        incorrectCount: s.incorrect,
-        cutoffCleared: s.cutoffCleared,
-        weakSubtopicsCount: r.weakSubtopics.length,
-      });
+      setLastAttemptId(r.attemptId);
       setActiveExam(null);
+      setActiveSeriesId(null);
       setActiveTestQuestions([]);
       setStatusBanner({
         type: "success",
-        text: `Submitted. Net score ${s.finalNetScore} / ${s.maxPossibleScore}.`,
+        text: `Submitted. Net score ${s.finalNetScore} / ${s.maxPossibleScore} · accuracy ${s.accuracyPercentage}% · ${
+          s.cutoffCleared ? "cutoff cleared" : "below cutoff"
+        }. Review it in your history below.`,
       });
+      window.scrollTo({ top: 0, behavior: "smooth" });
       loadMyProgress();
     } catch (err) {
       showError(err, "Submission failed — your answers are still here, try again.");
@@ -1020,11 +1065,23 @@ export default function App() {
                     </h2>
                   </div>
 
-                  <div className="flex items-center gap-4">
-                    <div className="text-sm font-mono tabular-nums text-emerald-400">
-                      Time Elapsed: {Math.floor(elapsedTotalSec / 60)}m{" "}
-                      {elapsedTotalSec % 60}s
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-sm font-mono tabular-nums text-emerald-400">
+                      Time Elapsed: {formatClock(elapsedTotalSec)}
                     </div>
+                    {testLimitSec > 0 && (
+                      <div
+                        role="timer"
+                        aria-live={remainingSec <= 600 ? "polite" : "off"}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-mono tabular-nums font-semibold transition-colors ${
+                          remainingSec <= 600
+                            ? "bg-rose-600 text-white animate-pulse"
+                            : "bg-slate-950 border border-slate-800 text-sky-300"
+                        }`}
+                      >
+                        Time Remaining: {formatClock(remainingSec)}
+                      </div>
+                    )}
                     <button
                       onClick={handleSubmitMockTest}
                       disabled={submitting}
@@ -1205,74 +1262,8 @@ export default function App() {
                   )}
                 </div>
 
-                {lastSubmittedAttempt && (
-                  <div className="bg-slate-900 border border-emerald-500/40 rounded-xl p-6 space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <span className="text-xs text-emerald-400 font-semibold">
-                          Instant Deterministic Grading Report
-                        </span>
-                        <h3 className="text-lg font-bold text-white">
-                          {lang === "bn"
-                            ? lastSubmittedAttempt.examTitleBn
-                            : lastSubmittedAttempt.examTitleEn}
-                        </h3>
-                      </div>
-                      <button
-                        onClick={() => setActiveNav("weakness-tutor")}
-                        className="px-3.5 py-2 text-xs font-semibold bg-emerald-500 text-slate-950 rounded-lg hover:bg-emerald-400 cursor-pointer"
-                      >
-                        Inspect Weak Subtopics &amp; AI Notes
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 pt-2 border-t border-slate-800">
-                      <div>
-                        <div className="text-xs text-slate-400">Net Score</div>
-                        <div className="text-xl font-bold text-white font-mono tabular-nums">
-                          {lastSubmittedAttempt.finalNetScore} /{" "}
-                          {lastSubmittedAttempt.maxPossibleScore}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-400">Accuracy</div>
-                        <div className="text-xl font-bold text-emerald-400 font-mono tabular-nums">
-                          {lastSubmittedAttempt.accuracyPercentage}%
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-400">
-                          Correct / Wrong
-                        </div>
-                        <div className="text-xl font-bold text-white font-mono tabular-nums">
-                          {lastSubmittedAttempt.correctCount} /{" "}
-                          {lastSubmittedAttempt.incorrectCount}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-400">Cutoff Status</div>
-                        <div className="text-sm font-semibold text-slate-200 mt-1">
-                          {lastSubmittedAttempt.cutoffCleared
-                            ? "Cleared Cutoff"
-                            : "Below Cutoff"}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-400">
-                          Weak Subtopics Flagged
-                        </div>
-                        <div className="text-xl font-bold text-amber-400 font-mono tabular-nums">
-                          {lastSubmittedAttempt.weakSubtopicsCount}
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setReviewAttemptId(lastSubmittedAttempt.attemptId)}
-                      className="mt-4 px-4 py-2 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg cursor-pointer"
-                    >
-                      Review answers &amp; explanations ↓
-                    </button>
-                  </div>
+                {examsList.length > 0 && (
+                  <LibraryStats exams={examsList} attempts={myAttempts} lang={lang} />
                 )}
 
                 {examsList.length === 0 ? (
@@ -1287,127 +1278,55 @@ export default function App() {
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {examsList.map((exam) => {
-                      const qCount = exam.questionCount;
-                      return (
-                        <div
-                          key={exam.id}
-                          className="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col justify-between space-y-5"
-                        >
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2 text-xs text-slate-400">
-                              <span className="font-mono">{exam.slug}</span>
-                              <span aria-hidden="true">·</span>
-                              <span className="font-mono tabular-nums">
-                                {exam.durationMinutes} mins
-                              </span>
-                              <span aria-hidden="true">·</span>
-                              <span className="font-mono tabular-nums">
-                                Negative: -{exam.negativeMarksPerWrong}
-                              </span>
-                            </div>
-                            <h3 className="text-lg font-bold text-white">
-                              {lang === "bn" ? exam.titleBn : exam.titleEn}
-                            </h3>
-                            <p className="text-sm text-slate-400 leading-relaxed">
-                              {lang === "bn"
-                                ? exam.descriptionBn
-                                : exam.descriptionEn}
-                            </p>
-                          </div>
-
-                          <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
-                            <span className="text-xs text-slate-400 font-mono tabular-nums">
-                              {qCount} Active MCQs · Cutoff:{" "}
-                              {exam.estimatedCutoffMarks}
-                            </span>
-                            <button
-                              onClick={() => startMockTest(exam)}
-                              disabled={qCount === 0}
-                              className="px-4 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                            >
-                              {lang === "bn"
-                                ? "মক টেস্ট শুরু করুন"
-                                : "Start Mock Test"}
-                            </button>
-                          </div>
+                  (() => {
+                    const openExam = examsList.find((e) => e.id === openExamId);
+                    return openExam ? (
+                      <ExamSeriesView
+                        key={openExam.id}
+                        exam={openExam}
+                        series={seriesByExam[openExam.id]}
+                        lang={lang}
+                        onBack={() => setOpenExamId(null)}
+                        onStartSeries={(x) => startSeriesTest(openExam, x)}
+                        onStartRandom={() => startMockTest(openExam)}
+                      >
+                        <div className="space-y-3 border-t border-slate-800 pt-6">
+                          <h3 className="text-base font-bold text-white">
+                            {lang === "bn" ? "এই পরীক্ষায় আপনার ফলাফল" : "Your history in this exam"}
+                          </h3>
+                          <AttemptHistory
+                            attempts={myAttempts.filter((a) => a.examId === openExam.id)}
+                            lang={lang}
+                            showExam={false}
+                            highlightId={lastAttemptId}
+                            emptyText={
+                              lang === "bn"
+                                ? "আপনি এখনও এই পরীক্ষার কোনো টেস্ট দেননি।"
+                                : "You haven't taken a test in this exam yet."
+                            }
+                          />
                         </div>
-                      );
-                    })}
-                  </div>
+                      </ExamSeriesView>
+                    ) : (
+                      <ExamCards exams={examsList} lang={lang} onOpen={openExamSeries} />
+                    );
+                  })()
                 )}
 
-                {/* User's Recent Attempts Table */}
-                {myAttempts.length > 0 && (
+                {/* All attempts, below the exam cards */}
+                {!examsList.some((e) => e.id === openExamId) && (
                   <div className="space-y-3">
-                    <h2 className="text-lg font-bold text-white">
-                      02. Your Recent Mock Attempts
-                    </h2>
-                    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-xs">
-                        <thead>
-                          <tr className="border-b border-slate-800 text-slate-400">
-                            <th className="py-3 px-4">Exam</th>
-                            <th className="py-3 px-4 text-right">Attempted</th>
-                            <th className="py-3 px-4 text-right">Correct</th>
-                            <th className="py-3 px-4 text-right">Wrong</th>
-                            <th className="py-3 px-4 text-right">Net Score</th>
-                            <th className="py-3 px-4 text-right">Accuracy</th>
-                            <th className="py-3 px-4 text-right"></th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800/70">
-                          {myAttempts.map((att) => (
-                            <tr
-                              key={att.id}
-                              className={`hover:bg-slate-800/40 transition-colors ${
-                                reviewAttemptId === att.id ? "bg-slate-800/40" : ""
-                              }`}
-                            >
-                              <td className="py-3 px-4 font-medium text-white">
-                                {lang === "bn" ? att.examTitleBn : att.examTitleEn}
-                              </td>
-                              <td className="py-3 px-4 text-right font-mono tabular-nums">
-                                {att.attemptedCount}/{att.totalQuestions}
-                              </td>
-                              <td className="py-3 px-4 text-right font-mono tabular-nums text-emerald-400">
-                                {att.correctCount}
-                              </td>
-                              <td className="py-3 px-4 text-right font-mono tabular-nums text-rose-400">
-                                {att.incorrectCount}
-                              </td>
-                              <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-white">
-                                {att.finalNetScore}
-                              </td>
-                              <td className="py-3 px-4 text-right font-mono tabular-nums">
-                                {att.accuracyPercentage}%
-                              </td>
-                              <td className="py-3 px-4 text-right">
-                                <button
-                                  onClick={() =>
-                                    setReviewAttemptId(
-                                      reviewAttemptId === att.id ? null : att.id
-                                    )
-                                  }
-                                  className="px-3 py-1 text-xs font-semibold rounded-md bg-slate-800 hover:bg-slate-700 text-amber-300 cursor-pointer"
-                                >
-                                  {reviewAttemptId === att.id ? "Hide" : "Review answers"}
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {reviewAttemptId && (
-                      <AttemptReview
-                        attemptId={reviewAttemptId}
-                        lang={lang}
-                        onClose={() => setReviewAttemptId(null)}
-                      />
-                    )}
+                    <h2 className="text-lg font-bold text-white">02. Your Mock Test History</h2>
+                    <AttemptHistory
+                      attempts={myAttempts}
+                      lang={lang}
+                      highlightId={lastAttemptId}
+                      emptyText={
+                        lang === "bn"
+                          ? "এখনও কোনো টেস্ট দেওয়া হয়নি — উপরের একটি পরীক্ষা খুলে শুরু করুন।"
+                          : "No tests taken yet — open an exam above to start."
+                      }
+                    />
                   </div>
                 )}
               </>
@@ -1879,7 +1798,22 @@ export default function App() {
               >
                 4. Question Bank (Add · Bulk · AI)
               </button>
+              <button
+                onClick={() => setAdminTab("series")}
+                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                  adminTab === "series"
+                    ? "bg-slate-800 text-white"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                5. Exam Series
+              </button>
             </div>
+
+            {/* Sub-Tab 5: Exam type → test series → subjects + questions (Kanban) */}
+            {adminTab === "series" && (
+              <QuestionBankAdmin section="series" onExamsChanged={loadExams} />
+            )}
 
             {/* Sub-Tab 4: Question Bank — one-by-one, bulk CSV/JSON, AI → review → live */}
             {adminTab === "bulk-import" && (

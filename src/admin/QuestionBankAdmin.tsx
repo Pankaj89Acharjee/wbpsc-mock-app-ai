@@ -8,18 +8,20 @@ import {
 import { adminApi, downloadCsv, useSyllabusTrees } from "./adminApi";
 import ExamSyllabusPanel from "./ExamSyllabusPanel";
 import BulkImportPanel from "./BulkImportPanel";
+import ExamSeriesManager from "./ExamSeriesManager";
 
 // ============================================================================
 // Admin Console sections backed by the PostgreSQL question bank (api-core):
 //   section="exams"     → tab 2: exams + syllabus
-//   section="questions" → tab 5: pick an exam → add one / bulk / AI → review
+//   section="questions" → tab 4: pick an exam → add one / bulk / AI → review
+//   section="series"    → tab 5: exam type → test series → subjects + questions
 // ============================================================================
 
 export default function QuestionBankAdmin({
   section,
   onExamsChanged,
 }: {
-  section: "exams" | "questions";
+  section: "exams" | "questions" | "series";
   /** Lets the student-facing exam list refresh after admin edits */
   onExamsChanged?: () => void;
 }) {
@@ -58,6 +60,15 @@ export default function QuestionBankAdmin({
       {error}
     </div>
   );
+
+  if (section === "series") {
+    return (
+      <div className="space-y-4">
+        {errorBox}
+        <ExamSeriesManager exams={exams} trees={trees} />
+      </div>
+    );
+  }
 
   if (section === "exams") {
     return (

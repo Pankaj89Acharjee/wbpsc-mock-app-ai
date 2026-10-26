@@ -44,6 +44,8 @@ ENV PORT=8080
 # Copy only the bundled server and production node_modules needed by postgres driver
 COPY --from=builder --chown=fastify:nodejs /workspace/node_modules ./node_modules
 COPY --from=builder --chown=fastify:nodejs /workspace/apps/api-core/dist ./dist
+# Hand-written SQL migrations (applied with DB_MIGRATE_ON_START=true, see src/db/migrate.ts)
+COPY --from=builder --chown=fastify:nodejs /workspace/apps/api-core/migrations ./migrations
 COPY --from=builder --chown=fastify:nodejs /workspace/apps/api-core/package.json ./package.json
 
 USER fastify

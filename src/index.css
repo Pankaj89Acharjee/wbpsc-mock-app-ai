@@ -9,3 +9,37 @@
     font-family: 'Hind Siliguri', 'Noto Sans Bengali', sans-serif;
   }
 }
+
+/* Mock Tests: an exam's series slide in from the left with a light sweep */
+@keyframes exam-slide-in {
+  from { opacity: 0; transform: translateX(-56px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes exam-flash {
+  0%   { opacity: 0; transform: translateX(-100%) skewX(-20deg); }
+  25%  { opacity: 1; }
+  100% { opacity: 0; transform: translateX(260%) skewX(-20deg); }
+}
+.exam-slide-in {
+  position: relative;
+  animation: exam-slide-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.exam-slide-in::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.16), transparent);
+  animation: exam-flash 760ms ease-out 120ms both;
+}
+.exam-stagger > * {
+  animation: exam-slide-in 480ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 70ms + 160ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .exam-slide-in,
+  .exam-slide-in::after,
+  .exam-stagger > * { animation: none; }
+}

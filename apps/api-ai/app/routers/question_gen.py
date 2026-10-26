@@ -6,7 +6,7 @@ Endpoint:
 POST /internal/questions/generate   (service-to-service; called only by apps/api-core)
   - Auth: `X-Internal-Token` header must equal INTERNAL_SERVICE_TOKEN.
   - Mandatory 3-tier cache BEFORE any Gemini call:
-      key = "qgen:{exam_slug}:{subtopic_slug}:{difficulty}:{count}:r{round}"
+      key = "qgen:{exam_slug}:{subtopic_slug}:{difficulty}:{count}:r{round}[:a{attempt}]"
       L1 Redis → L2 PostgreSQL `ai_question_generation_cache` → L3 Gemini (miss only), saved permanently.
     `round` = number of earlier AI batches for this subtopic (sent by api-core), so retrying the
     same round costs nothing while asking again yields a fresh, different batch.
@@ -92,8 +92,10 @@ class GenerateRequest(BaseModel):
     count: int = Field(ge=1, le=50)
     difficulty: Literal["easy", "moderate", "hard", "mixed"] = "mixed"
     round: int = Field(ge=0, default=0)
+    # Retry number within one api-core request (asked again after duplicates were dropped)
+    attempt: int = Field(ge=0, le=10, default=0)
     examples: list[FewShotExample] = Field(default_factory=list, max_length=8)
-    avoid_stems: list[str] = Field(default_factory=list, max_length=80)
+    avoid_stems: list[str] = Field(default_factory=list, max_length=150)
 
 
 class GenerateResponse(BaseModel):
@@ -135,6 +137,10 @@ def cache_key_for(req: GenerateRequest) -> tuple[str, str]:
         f"qgen:{req.exam_slug.strip().lower()}:{req.subtopic_slug.strip().lower()}:"
         f"{req.difficulty}:{req.count}:r{req.round}"
     )
+    # Retries must miss the cache, or they would replay the batch that had duplicates.
+    # attempt 0 keeps the original key so existing cache entries stay valid.
+    if req.attempt:
+        canonical += f":a{req.attempt}"
     return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -187,7 +193,8 @@ def build_prompt(req: GenerateRequest, chunk_count: int | None = None, extra_avo
     all_avoid = list(req.avoid_stems) + (extra_avoid or [])
     if all_avoid:
         lines += ["", "Already in the bank — do NOT repeat or reword these:"]
-        lines += [f"- {s}" for s in all_avoid[:120]]
+        # Newest last: keep the tail so stems from this request's earlier attempts survive the cap
+        lines += [f"- {s}" for s in all_avoid[-150:]]
     return "\n".join(lines)
 
 

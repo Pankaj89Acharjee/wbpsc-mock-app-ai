@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/index";
-import { exams, subjects, chapters, subtopics, questions } from "../db/schema";
+import { exams, examSeries, seriesRosterSlots, subjects, chapters, subtopics, questions } from "../db/schema";
 import {
   ExamConfigInputSchema,
   ExamSlugSchema,
@@ -19,13 +19,26 @@ import {
 } from "../../../../packages/shared-types/src/index";
 import { formatIssues } from "../lib/validation";
 import { requireAdmin } from "../lib/auth";
-import { loadSyllabus, nodeMatches, toTreeDto } from "../lib/syllabus";
+import { loadSyllabus, nodeMatches, sameConcept, toTreeDto } from "../lib/syllabus";
 import {
   ensureBilingualSyllabusNames,
   generateExamSyllabusWithAi,
 } from "../lib/aiEnrichment";
 
 type LoadedSyllabusMap = Awaited<ReturnType<typeof loadSyllabus>>;
+/** Names of test series whose subject/topic counts use this syllabus node. */
+async function seriesUsing(
+  column: typeof seriesRosterSlots.subjectId | typeof seriesRosterSlots.chapterId | typeof seriesRosterSlots.subtopicId,
+  id: string
+): Promise<string | null> {
+  const rows = await db
+    .selectDistinct({ name: examSeries.name })
+    .from(seriesRosterSlots)
+    .innerJoin(examSeries, eq(seriesRosterSlots.seriesId, examSeries.id))
+    .where(eq(column, id));
+  return rows.length ? rows.map((r) => r.name.en).join(", ") : null;
+}
+
 type LoadedExam = NonNullable<ReturnType<LoadedSyllabusMap["get"]>>;
 
 // ============================================================================
@@ -460,6 +473,8 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
       .limit(1);
     if (!examRow) return reply.status(404).send({ error: "Exam not found" });
 
+    const exam = (await loadSyllabus()).get(params.data.slug)!;
+
     let generatedSubjects;
     try {
       generatedSubjects = await generateExamSyllabusWithAi({
@@ -468,41 +483,79 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
         examDescriptionEn: examRow.description.en,
         focusSubjects: body.data.focusSubjects ?? body.data.subjectsFocus ?? [],
         customInstructions: body.data.customInstructions,
+        // The AI is told what exists; the code below still enforces "no duplicates"
+        existing: exam.subjects.map((s) => ({
+          subject: s.name.en,
+          chapters: s.chapters.map((c) => ({ chapter: c.name.en, subtopics: c.subtopics.map((t) => t.name.en) })),
+        })),
       });
     } catch (err) {
       return reply.status(502).send({ error: (err as Error).message });
     }
 
+    // Map every generated heading onto an existing node that means the same
+    // ("National Movement" → "Indian National Movement"), and drop subtopics the
+    // subject already covers — only genuinely missing nodes are inserted.
+    type Named = { en: string; bn: string };
+    const subjectsSeen: Array<{ name: Named; chapters: Named[]; subtopics: string[] }> = exam.subjects.map((s) => ({
+      name: s.name,
+      chapters: s.chapters.map((c) => c.name),
+      subtopics: s.chapters.flatMap((c) => c.subtopics.map((t) => t.name.en)),
+    }));
     const flatRows: Array<{ rowNumber: number; row: SyllabusRow }> = [];
     let rowNumber = 1;
+    let skippedDuplicates = 0;
     for (const subj of generatedSubjects) {
+      const subjectEn = subj.subject_en.trim();
+      if (!subjectEn) continue;
+      let s = subjectsSeen.find((x) => sameConcept(x.name.en, subjectEn));
+      if (!s) {
+        s = { name: { en: subjectEn, bn: subj.subject_bn.trim() || subjectEn }, chapters: [], subtopics: [] };
+        subjectsSeen.push(s);
+      }
       for (const chap of subj.chapters) {
+        const chapterEn = chap.chapter_en.trim();
+        if (!chapterEn) continue;
+        let c = s.chapters.find((x) => sameConcept(x.en, chapterEn));
+        if (!c) {
+          c = { en: chapterEn, bn: chap.chapter_bn.trim() || chapterEn };
+          s.chapters.push(c);
+        }
         for (const st of chap.subtopics) {
-          if (subj.subject_en.trim() && chap.chapter_en.trim() && st.subtopic_en.trim()) {
-            flatRows.push({
-              rowNumber: rowNumber++,
-              row: {
-                subject_en: subj.subject_en.trim(),
-                subject_bn: subj.subject_bn.trim() || subj.subject_en.trim(),
-                chapter_en: chap.chapter_en.trim(),
-                chapter_bn: chap.chapter_bn.trim() || chap.chapter_en.trim(),
-                subtopic_en: st.subtopic_en.trim(),
-                subtopic_bn: st.subtopic_bn.trim() || st.subtopic_en.trim(),
-              },
-            });
+          const subtopicEn = st.subtopic_en.trim();
+          if (!subtopicEn) continue;
+          if (s.subtopics.some((x) => sameConcept(x, subtopicEn))) {
+            skippedDuplicates++;
+            continue;
           }
+          s.subtopics.push(subtopicEn);
+          flatRows.push({
+            rowNumber: rowNumber++,
+            row: {
+              subject_en: s.name.en,
+              subject_bn: s.name.bn,
+              chapter_en: c.en,
+              chapter_bn: c.bn,
+              subtopic_en: subtopicEn,
+              subtopic_bn: st.subtopic_bn.trim() || subtopicEn,
+            },
+          });
         }
       }
     }
 
     if (flatRows.length === 0) {
-      return reply.status(502).send({ error: "AI did not return any syllabus topics. Try again." });
+      return {
+        result: { created: { subjects: 0, chapters: 0, subtopics: 0 }, updated: 0, errors: [] },
+        tree: toTreeDto(exam),
+        modelUsed: "gemini-2.5-flash",
+        skippedDuplicates,
+      };
     }
 
-    const exam = (await loadSyllabus()).get(params.data.slug)!;
     const result = await upsertSyllabusRows(exam, flatRows);
 
-    return { result, tree: toTreeDto(exam), modelUsed: "gemini-2.5-flash" };
+    return { result, tree: toTreeDto(exam), modelUsed: "gemini-2.5-flash", skippedDuplicates };
   });
 
   /**
@@ -617,6 +670,12 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
         error: `Cannot delete this Subject because ${count} live question(s) are linked to it.`,
       });
     }
+    const usedBy = await seriesUsing(seriesRosterSlots.subjectId, params.data.id);
+    if (usedBy) {
+      return reply.status(409).send({
+        error: `Cannot delete this Subject: the test series ${usedBy} count questions from it. Remove it from their subjects first.`,
+      });
+    }
     await db.delete(subjects).where(eq(subjects.id, params.data.id));
     const tree = await reloadTreeByExamId(subj.examId);
     return { deleted: true, tree };
@@ -667,6 +726,12 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
     if (count > 0) {
       return reply.status(409).send({
         error: `Cannot delete this Chapter because ${count} live question(s) are linked to it.`,
+      });
+    }
+    const usedBy = await seriesUsing(seriesRosterSlots.chapterId, params.data.id);
+    if (usedBy) {
+      return reply.status(409).send({
+        error: `Cannot delete this Chapter: the test series ${usedBy} count questions from it. Remove it from their subjects first.`,
       });
     }
     await db.delete(chapters).where(eq(chapters.id, params.data.id));
@@ -724,6 +789,12 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
     if (count > 0) {
       return reply.status(409).send({
         error: `Cannot delete this Subtopic because ${count} live question(s) are linked to it.`,
+      });
+    }
+    const usedBy = await seriesUsing(seriesRosterSlots.subtopicId, params.data.id);
+    if (usedBy) {
+      return reply.status(409).send({
+        error: `Cannot delete this Subtopic: the test series ${usedBy} count questions from it. Remove it from their subjects first.`,
       });
     }
     await db.delete(subtopics).where(eq(subtopics.id, params.data.id));

@@ -121,12 +121,14 @@ export async function generateExamSyllabusWithAi(params: {
   examDescriptionEn: string;
   focusSubjects: string[];
   customInstructions?: string;
+  /** The exam's current syllabus, so only missing nodes come back */
+  existing?: Array<{ subject: string; chapters: Array<{ chapter: string; subtopics: string[] }> }>;
 }): Promise<GeneratedSyllabusSubject[]> {
   const ai = getGenAIClient();
   const subjectsList =
     params.focusSubjects.length > 0
       ? params.focusSubjects.join(", ")
-      : "History of India & Indian National Movement, Geography of India & West Bengal, Indian Polity & Economy, General Science, Arithmetic & Quantitative Aptitude, General Intelligence & Logical Reasoning, General English, Bengali Language, Current Affairs & General Awareness (Static GK)";
+      : "every subject in this exam's official syllabus (decide them from the exam itself)";
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
@@ -137,9 +139,18 @@ Subjects to include: ${subjectsList}
 ${params.customInstructions ? `Additional Admin Instructions: ${params.customInstructions}` : ""}
 
 Requirements:
-1. Create a structured Subject → Chapter → Subtopic tree covering every requested subject domain thoroughly.
-2. Each Subject should have 2 to 4 Chapters, and each Chapter should have 3 to 5 specific, high-yield exam Subtopics.
-3. Provide both English (_en) and formal West Bengal academic Bengali (_bn) titles for every Subject, Chapter, and Subtopic.`,
+1. Create a structured Subject → Chapter → Subtopic tree that covers this exam's COMPLETE official syllabus: every chapter of each subject, each with all of its exam-relevant subtopics. Only include subjects that are actually part of this exam.
+2. Each concept appears ONCE. Never add a heading that means the same as another one under a different wording (e.g. "National Movement" and "Indian National Movement").
+3. Provide both English (_en) and formal West Bengal academic Bengali (_bn) titles for every Subject, Chapter, and Subtopic.
+${
+  params.existing?.length
+    ? `
+The exam ALREADY has this syllabus (JSON):
+${JSON.stringify(params.existing)}
+
+4. Return ONLY what is missing. For an existing subject or chapter, reuse its English name EXACTLY and list only the new subtopics under it. Do not repeat, rename or re-word anything that already exists. If nothing is missing, return an empty "subjects" array.`
+    : ""
+}`,
     config: {
       systemInstruction:
         "You are the Chief Curriculum Architect for WBPSC (WBCS, Clerkship, Food SI, Miscellaneous, WBP) competitive examinations.",

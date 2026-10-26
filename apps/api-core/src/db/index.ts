@@ -16,6 +16,8 @@ export const queryClient = postgres(connectionString, {
   idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 20),
   connect_timeout: 10,
   prepare: false, // Required for PgBouncer-style transaction pooling
+  // One readable line (e.g. a migration's RAISE NOTICE) instead of the whole notice object
+  onnotice: (n) => console.info(`[postgres] ${n.message}`),
 });
 
 export const db = drizzle(queryClient, { schema });

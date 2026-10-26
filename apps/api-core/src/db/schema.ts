@@ -11,6 +11,10 @@ import {
   pgEnum,
   uniqueIndex,
   index,
+  foreignKey,
+  unique,
+  check,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import type {
@@ -92,6 +96,20 @@ export const questionSourceEnum = pgEnum("question_source", [
   "pyq",           // Real previous-year question (WBCS / Clerkship / Food SI papers)
   "educator",      // Framed by an educator / admin
   "ai_generated",  // Pipeline 3 PYQ-clone generator (always educator-reviewed)
+]);
+
+/** What a series is for; names and the series themselves are admin-defined. */
+export const seriesKindEnum = pgEnum("series_kind", [
+  "previous_year", // Real past papers, one paper per year/sitting
+  "mock_test",     // Full-length mock tests following the exam pattern
+  "practice",      // Subject-wise / topic-wise practice sets
+  "custom",
+]);
+
+export const publishStatusEnum = pgEnum("publish_status", [
+  "draft",
+  "published",
+  "archived",
 ]);
 
 // ============================================================================
@@ -215,6 +233,8 @@ export const subjects = pgTable(
   (table) => [
     uniqueIndex("subjects_exam_slug_unique_idx").on(table.examId, table.slug),
     index("subjects_exam_id_idx").on(table.examId),
+    // Target of composite FKs that pin blueprint slots / selected questions to the series' exam
+    uniqueIndex("subjects_id_exam_unique_idx").on(table.id, table.examId),
   ]
 );
 
@@ -352,6 +372,8 @@ export const questions = pgTable(
     uniqueIndex("questions_content_hash_unique_idx").on(table.contentHash),
     index("questions_source_idx").on(table.source),
     index("questions_pyq_idx").on(table.pyqExamSlug, table.pyqYear),
+    // Near-duplicate stem search (pg_trgm); see migrations/0001
+    index("questions_stem_en_trgm_idx").using("gin", sql`(${table.stem} ->> 'en') gin_trgm_ops`),
   ]
 );
 
@@ -372,6 +394,10 @@ export const testAttempts = pgTable(
       .notNull()
       .references(() => exams.id, { onDelete: "cascade" }),
     isRemedial: boolean("is_remedial").notNull().default(false),
+    /** Test series that was sat; null for a random mock / remedial test (migrations/0004) */
+    seriesId: uuid("series_id").references((): AnyPgColumn => examSeries.id, {
+      onDelete: "set null",
+    }),
     status: attemptStatusEnum("status").notNull().default("in_progress"),
     preferredLanguage: varchar("preferred_language", { length: 2 })
       .$type<"en" | "bn">()
@@ -423,6 +449,7 @@ export const testAttempts = pgTable(
   (table) => [
     index("test_attempts_user_exam_idx").on(table.userId, table.examId),
     index("test_attempts_user_status_idx").on(table.userId, table.status),
+    index("test_attempts_series_idx").on(table.seriesId),
   ]
 );
 
@@ -701,6 +728,18 @@ export const questionIngestionJobs = pgTable(
     // Set after successful insert into questions table
     insertedQuestionId: uuid("inserted_question_id"),
 
+    /**
+     * Series this row was generated for (blueprint-aware AI). While pending it
+     * reserves one vacancy in that series' blueprint; approval may add it.
+     */
+    targetSeriesId: uuid("target_series_id").references((): AnyPgColumn => examSeries.id, {
+      onDelete: "set null",
+    }),
+
+    // Closest existing bank question by stem similarity (warning for reviewers)
+    nearDuplicateQuestionId: uuid("near_duplicate_question_id"),
+    nearDuplicateScore: numeric("near_duplicate_score", { precision: 4, scale: 3 }),
+
     // Error details if status = 'failed'
     errorMessage: text("error_message"),
 
@@ -715,6 +754,12 @@ export const questionIngestionJobs = pgTable(
     index("ingestion_jobs_uploader_idx").on(table.uploadedBy),
     index("ingestion_jobs_exam_idx").on(table.examId),
     index("ingestion_jobs_content_hash_idx").on(table.contentHash),
+    index("ingestion_jobs_target_series_idx").on(table.targetSeriesId, table.status),
+    index("ingestion_jobs_subtopic_status_idx").on(table.subtopicId, table.status),
+    index("ingestion_jobs_stem_en_trgm_idx").using(
+      "gin",
+      sql`((${table.enrichedData} -> 'stem') ->> 'en') gin_trgm_ops`
+    ),
   ]
 );
 
@@ -745,7 +790,145 @@ export const questionIngestionJobsRelations = relations(
 );
 
 // ============================================================================
-// 10. Convenience Type Aliases (used by seed scripts & API services)
+// 10. Exam Type → Test Series, blueprints & selected questions
+//
+//   exams               = exam TYPE + its syllabus (unchanged)
+//   examSeries          = one sittable test ("Clerkship Mock Test 1 - 2026", a
+//                         previous-year paper, a practice set) with its marking
+//   seriesRosterSlots   = the series blueprint: questions per Subject, optionally
+//                         broken down by Chapter / Subtopic (migrations/0003)
+//   seriesQuestions     = bank question ↔ series (many-to-many, no copies;
+//                         migrations/0004)
+// ============================================================================
+
+export const examSeries = pgTable(
+  "exam_series",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuid_generate_v4()`),
+    examId: uuid("exam_id")
+      .notNull()
+      .references(() => exams.id, { onDelete: "cascade" }),
+    slug: varchar("slug", { length: 120 }).notNull(),
+    name: jsonb("name").$type<BilingualText>().notNull(),
+    description: jsonb("description")
+      .$type<BilingualText>()
+      .notNull()
+      .default(sql`'{"en": "", "bn": ""}'::jsonb`),
+    kind: seriesKindEnum("kind").notNull().default("mock_test"),
+    status: publishStatusEnum("status").notNull().default("draft"),
+    displayOrder: integer("display_order").notNull().default(1),
+    // Marking scheme of the test (migrations/0002)
+    durationMinutes: integer("duration_minutes").notNull().default(90),
+    marksPerCorrect: numeric("marks_per_correct", { precision: 5, scale: 2 })
+      .notNull()
+      .default("1.00"),
+    negativeMarksPerWrong: numeric("negative_marks_per_wrong", { precision: 5, scale: 2 })
+      .notNull()
+      .default("0.25"),
+    estimatedCutoffMarks: numeric("estimated_cutoff_marks", { precision: 6, scale: 2 })
+      .notNull()
+      .default("0.00"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check("exam_series_duration_minutes_check", sql`${table.durationMinutes} BETWEEN 1 AND 600`),
+    uniqueIndex("exam_series_exam_slug_unique_idx").on(table.examId, table.slug),
+    uniqueIndex("exam_series_id_exam_unique_idx").on(table.id, table.examId),
+  ]
+);
+
+export const seriesRosterSlots = pgTable(
+  "series_roster_slots",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuid_generate_v4()`),
+    seriesId: uuid("series_id").notNull(),
+    examId: uuid("exam_id").notNull(),
+    subjectId: uuid("subject_id").notNull(),
+    /** null = subject-level slot */
+    chapterId: uuid("chapter_id").references(() => chapters.id, { onDelete: "restrict" }),
+    /** null = subject- or chapter-level slot */
+    subtopicId: uuid("subtopic_id").references(() => subtopics.id, { onDelete: "restrict" }),
+    targetCount: integer("target_count").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      name: "series_roster_slots_series_fk",
+      columns: [table.seriesId, table.examId],
+      foreignColumns: [examSeries.id, examSeries.examId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "series_roster_slots_subject_fk",
+      columns: [table.subjectId, table.examId],
+      foreignColumns: [subjects.id, subjects.examId],
+    }).onDelete("restrict"),
+    check("series_roster_slots_target_count_check", sql`${table.targetCount} BETWEEN 0 AND 300`),
+    check(
+      "series_roster_slots_level_check",
+      sql`${table.subtopicId} IS NULL OR ${table.chapterId} IS NOT NULL`
+    ),
+    unique("series_roster_slots_node_unique")
+      .on(table.seriesId, table.subjectId, table.chapterId, table.subtopicId)
+      .nullsNotDistinct(),
+    index("series_roster_slots_series_idx").on(table.seriesId),
+  ]
+);
+
+export const seriesQuestions = pgTable(
+  "series_questions",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuid_generate_v4()`),
+    seriesId: uuid("series_id").notNull(),
+    examId: uuid("exam_id").notNull(),
+    questionId: uuid("question_id")
+      .notNull()
+      .references(() => questions.id, { onDelete: "restrict" }),
+    // Classification inside this series' exam syllabus (counts toward its blueprint)
+    subjectId: uuid("subject_id").notNull(),
+    chapterId: uuid("chapter_id")
+      .notNull()
+      .references(() => chapters.id, { onDelete: "restrict" }),
+    subtopicId: uuid("subtopic_id")
+      .notNull()
+      .references(() => subtopics.id, { onDelete: "restrict" }),
+    position: integer("position").notNull().default(0),
+    assignedBy: uuid("assigned_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      name: "series_questions_series_fk",
+      columns: [table.seriesId, table.examId],
+      foreignColumns: [examSeries.id, examSeries.examId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "series_questions_subject_fk",
+      columns: [table.subjectId, table.examId],
+      foreignColumns: [subjects.id, subjects.examId],
+    }).onDelete("restrict"),
+    uniqueIndex("series_questions_series_question_unique_idx").on(table.seriesId, table.questionId),
+    index("series_questions_question_idx").on(table.questionId),
+    index("series_questions_series_subtopic_idx").on(table.seriesId, table.subtopicId),
+  ]
+);
+
+// ============================================================================
+// 11. Convenience Type Aliases (used by seed scripts & API services)
 // ============================================================================
 
 /** Exam slug (free text, validated by ExamSlugSchema in shared-types) */
