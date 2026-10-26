@@ -82,12 +82,20 @@ export function SubjectCountsEditor({
                   checked={on}
                   onChange={(e) => {
                     const next = { ...value };
-                    if (e.target.checked) next[s.id] = "";
-                    else delete next[s.id];
+                    if (e.target.checked) {
+                      next[s.id] = (s.weightageQuestions ?? 0) > 0 ? String(s.weightageQuestions) : "";
+                    } else {
+                      delete next[s.id];
+                    }
                     onChange(next);
                   }}
                 />
                 <span className="truncate">{s.name.en}</span>
+                {(s.weightageQuestions ?? 0) > 0 && !on && (
+                  <span className="text-[10px] text-slate-400 shrink-0">
+                    ({s.weightageQuestions} Qs)
+                  </span>
+                )}
               </label>
               {bank && <SupplyText supply={bank[keyOf(s.id)]} />}
               {on && (

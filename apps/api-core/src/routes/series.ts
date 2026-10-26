@@ -6,6 +6,7 @@ import {
   chapters,
   examSeries,
   exams,
+  questionIngestionJobs,
   seriesQuestions,
   seriesRosterSlots,
   questions,
@@ -14,19 +15,39 @@ import {
   testAttempts,
 } from "../db/schema";
 import {
+  ApprovableQuestionSchema,
   AssignQuestionsBodySchema,
   BankQueryClientSchema,
+  BULK_IMPORT_MAX_ROWS,
+  BulkQuestionRowSchema,
   PublishStatusSchema,
   ReplaceAssignmentBodySchema,
   RosterInputSchema,
+  SeriesImportSetBodySchema,
   SeriesInputSchema,
+  csvTableToRecords,
+  isDraftTextComplete,
+  normalizeRecordKeys,
+  parseCsv,
+  pyqLabel,
+  rowToDraft,
   slugify,
   type AssignQuestionsResult,
   type BankQuestionDto,
   type BlueprintDto,
   type ExamOverviewDto,
+  type SeriesExportDto,
+  type SeriesExportQuestionDto,
+  type SeriesImportSetResult,
   type SeriesInput,
+  type StagedQuestionDraft,
 } from "../../../../packages/shared-types/src/index";
+import { computeContentHash } from "../lib/contentHash";
+import {
+  extractQuestionsFromMediaWithAi,
+  translateAndEnrichQuestionDraft,
+} from "../lib/aiEnrichment";
+import { ensureCategoryInExam } from "./ingestion";
 import { formatIssues } from "../lib/validation";
 import { requireAdmin } from "../lib/auth";
 import {
@@ -598,4 +619,466 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     }
     return { questions: dtos, total: count };
   });
+
+  // ── Export & Import Whole Question Set for a Test Series ──────────────────
+
+  /**
+   * 14. GET /admin/series/:id/export
+   * Returns the complete ordered question paper, options A–D, answer key,
+   * explanations, and subject breakdown for exporting in PDF or Excel.
+   */
+  fastify.get("/:id/export", async (request, reply) => {
+    const params = IdParams.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid series id" });
+    try {
+      const series = await getSeries(db, params.data.id);
+      const [[seriesDto], [examRow], assignedRows] = await Promise.all([
+        toSeriesDtos(db, [series]),
+        db.select().from(exams).where(eq(exams.id, series.examId)).limit(1),
+        db
+          .select({
+            pq: seriesQuestions,
+            q: questions,
+            subjectName: subjects.name,
+            chapterName: chapters.name,
+            subtopicName: subtopics.name,
+          })
+          .from(seriesQuestions)
+          .innerJoin(questions, eq(seriesQuestions.questionId, questions.id))
+          .innerJoin(subjects, eq(seriesQuestions.subjectId, subjects.id))
+          .innerJoin(chapters, eq(seriesQuestions.chapterId, chapters.id))
+          .innerJoin(subtopics, eq(seriesQuestions.subtopicId, subtopics.id))
+          .where(eq(seriesQuestions.seriesId, series.id))
+          .orderBy(asc(seriesQuestions.position), asc(seriesQuestions.createdAt)),
+      ]);
+      if (!examRow) return reply.status(404).send({ error: "Exam not found" });
+
+      const exportQuestions: SeriesExportQuestionDto[] = assignedRows.map((r, idx) => ({
+        questionNumber: idx + 1,
+        questionId: r.q.id,
+        subjectId: r.pq.subjectId,
+        subjectName: r.subjectName,
+        chapterId: r.pq.chapterId,
+        chapterName: r.chapterName,
+        subtopicId: r.pq.subtopicId,
+        subtopicName: r.subtopicName,
+        stem: r.q.stem,
+        options: r.q.options,
+        correctOption: r.q.correctOption,
+        explanation: r.q.explanation,
+        difficulty: r.q.difficulty,
+        source: r.q.source,
+        previousYearTag: r.q.previousYearTag,
+        marksPositive: Number(series.marksPerCorrect),
+        marksNegative: Number(series.negativeMarksPerWrong),
+      }));
+
+      const payload: SeriesExportDto = {
+        series: seriesDto,
+        exam: {
+          id: examRow.id,
+          slug: examRow.slug,
+          title: examRow.title,
+          description: examRow.description,
+        },
+        exportedAt: new Date().toISOString(),
+        questions: exportQuestions,
+      };
+      return payload;
+    } catch (err) {
+      return sendSeriesError(reply, err);
+    }
+  });
+
+  /**
+   * 15. POST /admin/series/:id/import-set
+   * Imports a whole Question Set (CSV, Excel CSV/TSV, JSON, or PDF/Image Question Paper)
+   * directly into the exam's Question Bank (`questions` table) AND assigns the questions
+   * into this Test Series (updating the draft series' subject counts if needed).
+   */
+  fastify.post(
+    "/:id/import-set",
+    { bodyLimit: 25 * 1024 * 1024 },
+    async (request, reply) => {
+      const params = IdParams.safeParse(request.params);
+      const body = SeriesImportSetBodySchema.safeParse(request.body);
+      if (!params.success || !body.success) {
+        return reply.status(400).send({
+          error: body.success ? "Invalid series id" : formatIssues(body.error.issues),
+        });
+      }
+
+      try {
+        const series = await getSeries(db, params.data.id);
+        if (series.status === "archived") {
+          throw new SeriesError("Restore the archived series to draft before importing questions", 409);
+        }
+        const [examRow] = await db.select().from(exams).where(eq(exams.id, series.examId)).limit(1);
+        if (!examRow) throw new SeriesError("Exam not found", 404);
+
+        const input = body.data;
+        const errors: Array<{ rowNumber: number; message: string }> = [];
+        let categoriesCreated = 0;
+
+        // Intermediate normalized items ready for category resolution + DB insertion
+        interface ImportItem {
+          rowNumber: number;
+          subjectEn: string;
+          subjectBn: string;
+          chapterEn: string;
+          chapterBn: string;
+          subtopicEn: string;
+          subtopicBn: string;
+          draft: StagedQuestionDraft;
+        }
+        const items: ImportItem[] = [];
+
+        if (input.format === "media") {
+          if (!input.base64Data || !input.mimeType) {
+            return reply.status(400).send({ error: "Missing base64Data or mimeType for PDF/Image upload" });
+          }
+          const existingSubjects = await db.select().from(subjects).where(eq(subjects.examId, examRow.id));
+          const sIds = existingSubjects.map((s) => s.id);
+          const existingChapters = sIds.length
+            ? await db.select().from(chapters).where(sql`${chapters.subjectId} = ANY(${sIds})`)
+            : [];
+          const existingSubtopics = sIds.length
+            ? await db.select().from(subtopics).where(sql`${subtopics.subjectId} = ANY(${sIds})`)
+            : [];
+          const chapMap = new Map(existingChapters.map((c) => [c.id, c]));
+          const subjMap = new Map(existingSubjects.map((s) => [s.id, s]));
+          const existingCategories = existingSubtopics.flatMap((t) => {
+            const c = chapMap.get(t.chapterId);
+            const s = c ? subjMap.get(c.subjectId) : undefined;
+            return c && s ? [{ subjectEn: s.name.en, chapterEn: c.name.en, subtopicEn: t.name.en }] : [];
+          });
+
+          const extracted = await extractQuestionsFromMediaWithAi({
+            examSlug: examRow.slug,
+            examTitleEn: examRow.title.en,
+            mimeType: input.mimeType,
+            fileBase64: input.base64Data,
+            existingCategories,
+          });
+
+          extracted.forEach((q, idx) => {
+            items.push({
+              rowNumber: idx + 1,
+              subjectEn: q.subject_en || "General Studies",
+              subjectBn: q.subject_bn || q.subject_en || "সাধারণ অধ্যয়ন",
+              chapterEn: q.chapter_en || "Core Topics",
+              chapterBn: q.chapter_bn || q.chapter_en || "মূল অধ্যায়",
+              subtopicEn: q.subtopic_en || "General Questions",
+              subtopicBn: q.subtopic_bn || q.subtopic_en || "সাধারণ প্রশ্ন",
+              draft: {
+                examSlug: examRow.slug,
+                subjectSlug: "",
+                chapterSlug: "",
+                subtopicSlug: "",
+                stem: q.stem,
+                options: q.options,
+                correctOption: q.correct_option,
+                explanation: q.explanation,
+                difficulty: q.difficulty,
+                source: input.source,
+                pyqExamSlug: input.source === "pyq" ? examRow.slug : null,
+                pyqYear: input.source === "pyq" ? (input.pyqYear ?? new Date().getFullYear() - 1) : null,
+                answerKeyVerified: true,
+              },
+            });
+          });
+        } else {
+          const rawContent = (input.content ?? "").trim();
+          if (!rawContent) {
+            return reply.status(400).send({ error: "Uploaded file content is empty" });
+          }
+
+          let records: Array<{ rowNumber: number; record: Record<string, unknown> }> = [];
+          if (input.format === "csv") {
+            const parsedCsv = csvTableToRecords(parseCsv(rawContent));
+            records = parsedCsv.records.map((r) => ({
+              rowNumber: r.rowNumber,
+              record: (normalizeRecordKeys(r.record) ?? {}) as Record<string, unknown>,
+            }));
+          } else {
+            let json: unknown;
+            try {
+              json = JSON.parse(rawContent);
+            } catch {
+              return reply.status(400).send({ error: "File is not valid JSON" });
+            }
+            const arr = Array.isArray(json)
+              ? json
+              : json && typeof json === "object" && Array.isArray((json as { questions?: unknown[] }).questions)
+                ? (json as { questions: unknown[] }).questions
+                : null;
+            if (!arr) {
+              return reply.status(400).send({ error: "JSON must be an array of question objects" });
+            }
+            records = arr.map((rec, i) => ({
+              rowNumber: i + 1,
+              record: (normalizeRecordKeys(rec) ?? {}) as Record<string, unknown>,
+            }));
+          }
+
+          // Filter out empty template rows
+          records = records.filter(({ record }) =>
+            ["stem_en", "option_a_en", "option_b_en", "option_c_en", "option_d_en"].some(
+              (k) => typeof record[k] === "string" && (record[k] as string).trim() !== ""
+            )
+          );
+
+          if (records.length === 0) {
+            return reply.status(400).send({ error: "No valid question rows found in the uploaded file" });
+          }
+          if (records.length > BULK_IMPORT_MAX_ROWS) {
+            return reply.status(400).send({
+              error: `Too many rows (${records.length}). Maximum allowed per import is ${BULK_IMPORT_MAX_ROWS}.`,
+            });
+          }
+
+          for (const { rowNumber, record } of records) {
+            // Default exam to this series' exam if left blank in the file
+            const withDefaults = {
+              ...record,
+              exam: (typeof record.exam === "string" && record.exam.trim()) ? record.exam : examRow.slug,
+              subject: (typeof record.subject === "string" && record.subject.trim()) ? record.subject : "General Studies",
+              chapter: (typeof record.chapter === "string" && record.chapter.trim()) ? record.chapter : "Core Concepts",
+              subtopic: (typeof record.subtopic === "string" && record.subtopic.trim()) ? record.subtopic : "General Practice",
+            };
+            const rowParsed = BulkQuestionRowSchema.safeParse(withDefaults);
+            if (!rowParsed.success) {
+              errors.push({ rowNumber, message: formatIssues(rowParsed.error.issues) });
+              continue;
+            }
+            const draft = rowToDraft(rowParsed.data);
+            // Ensure Bengali fallback if blank so the question is immediately live-ready for the test series
+            const ensureBi = (b: { en: string; bn: string }, fallbackEn = ""): { en: string; bn: string } => {
+              const en = b.en.trim() || fallbackEn;
+              return { en, bn: b.bn.trim() || en };
+            };
+            const completeDraft: StagedQuestionDraft = {
+              ...draft,
+              examSlug: examRow.slug,
+              stem: ensureBi(draft.stem),
+              options: {
+                A: ensureBi(draft.options.A),
+                B: ensureBi(draft.options.B),
+                C: ensureBi(draft.options.C),
+                D: ensureBi(draft.options.D),
+              },
+              explanation: ensureBi(
+                draft.explanation,
+                `Correct answer is Option ${draft.correctOption}.`
+              ),
+              answerKeyVerified: true,
+            };
+
+            items.push({
+              rowNumber,
+              subjectEn: rowParsed.data.subject || "General Studies",
+              subjectBn: rowParsed.data.subject || "সাধারণ অধ্যয়ন",
+              chapterEn: rowParsed.data.chapter || "Core Concepts",
+              chapterBn: rowParsed.data.chapter || "মূল ধারণা",
+              subtopicEn: rowParsed.data.subtopic || "General Practice",
+              subtopicBn: rowParsed.data.subtopic || "সাধারণ অনুশীলন",
+              draft: completeDraft,
+            });
+          }
+        }
+
+        if (items.length === 0) {
+          return reply.status(400).send({
+            error: errors.length ? `All rows had errors: ${errors[0].message}` : "No questions could be extracted",
+            errors,
+          });
+        }
+
+        const batchId = `series-import-${Date.now()}`;
+        let insertedToBank = 0;
+        let reusedFromBank = 0;
+        const questionIdsToAssign: string[] = [];
+        const subjectCountNeeded = new Map<string, number>();
+
+        for (const item of items) {
+          const cat = await ensureCategoryInExam(examRow.id, {
+            subjectEn: item.subjectEn,
+            subjectBn: item.subjectBn,
+            chapterEn: item.chapterEn,
+            chapterBn: item.chapterBn,
+            subtopicEn: item.subtopicEn,
+            subtopicBn: item.subtopicBn,
+          });
+          if (cat.createdNew) categoriesCreated++;
+
+          let draft: StagedQuestionDraft = {
+            ...item.draft,
+            examSlug: examRow.slug,
+            subjectSlug: cat.subjectSlug,
+            chapterSlug: cat.chapterSlug,
+            subtopicSlug: cat.subtopicSlug,
+          };
+
+          if (!isDraftTextComplete(draft) && process.env.GEMINI_API_KEY) {
+            draft = await translateAndEnrichQuestionDraft(draft).catch(() => draft);
+          }
+
+          const valid = ApprovableQuestionSchema.safeParse(draft);
+          if (!valid.success) {
+            errors.push({ rowNumber: item.rowNumber, message: formatIssues(valid.error.issues) });
+            continue;
+          }
+
+          const contentHash = computeContentHash(valid.data);
+          const pyqTag =
+            valid.data.source === "pyq" ? pyqLabel(examRow.title.en, valid.data.pyqYear) : null;
+
+          // Check if question already exists in bank
+          const [existingQ] = await db
+            .select({ id: questions.id, subjectId: questions.subjectId })
+            .from(questions)
+            .where(eq(questions.contentHash, contentHash))
+            .limit(1);
+
+          if (existingQ) {
+            reusedFromBank++;
+            questionIdsToAssign.push(existingQ.id);
+            subjectCountNeeded.set(
+              existingQ.subjectId,
+              (subjectCountNeeded.get(existingQ.subjectId) ?? 0) + 1
+            );
+            continue;
+          }
+
+          const [job] = await db
+            .insert(questionIngestionJobs)
+            .values({
+              batchId,
+              source: input.format === "media" ? "pdf_extract" : input.format === "csv" ? "csv_upload" : "json_upload",
+              status: "inserted",
+              rawData: { rowNumber: item.rowNumber, fileName: input.fileName ?? "Series Import" },
+              enrichedData: valid.data,
+              examId: examRow.id,
+              subjectId: cat.subjectId,
+              chapterId: cat.chapterId,
+              subtopicId: cat.subtopicId,
+              contentHash,
+              pyqYear: valid.data.pyqYear,
+              pyqExamName: pyqTag,
+              targetSeriesId: series.id,
+              reviewedAt: new Date(),
+            })
+            .returning({ id: questionIngestionJobs.id });
+
+          const [createdQ] = await db
+            .insert(questions)
+            .values({
+              examId: examRow.id,
+              examSlug: examRow.slug,
+              subjectId: cat.subjectId,
+              chapterId: cat.chapterId,
+              subtopicId: cat.subtopicId,
+              stem: valid.data.stem,
+              options: valid.data.options,
+              correctOption: valid.data.correctOption,
+              explanation: valid.data.explanation,
+              difficulty: valid.data.difficulty,
+              marksPositive: String(examRow.marksPerCorrect),
+              marksNegative: String(examRow.negativeMarksPerWrong),
+              previousYearTag: pyqTag,
+              source: valid.data.source,
+              pyqExamSlug: valid.data.pyqExamSlug,
+              pyqYear: valid.data.pyqYear,
+              answerKeyVerified: true,
+              contentHash,
+              ingestionJobId: job.id,
+            })
+            .onConflictDoNothing({ target: questions.contentHash })
+            .returning({ id: questions.id });
+
+          if (createdQ) {
+            insertedToBank++;
+            questionIdsToAssign.push(createdQ.id);
+            subjectCountNeeded.set(
+              cat.subjectId,
+              (subjectCountNeeded.get(cat.subjectId) ?? 0) + 1
+            );
+            await db
+              .update(questionIngestionJobs)
+              .set({ insertedQuestionId: createdQ.id })
+              .where(eq(questionIngestionJobs.id, job.id));
+          }
+        }
+
+        let blueprintUpdated = false;
+        let assignedToSeries = 0;
+
+        await db.transaction(async (tx) => {
+          const locked = await lockSeries(tx, series.id);
+
+          // If autoUpdateBlueprint is true and series is draft, ensure the blueprint slots accommodate all imported subjects/counts
+          if (input.autoUpdateBlueprint && locked.status === "draft" && subjectCountNeeded.size > 0) {
+            const existingSlots = await tx
+              .select()
+              .from(seriesRosterSlots)
+              .where(eq(seriesRosterSlots.seriesId, locked.id));
+            const { state } = await rosterStateFor(tx, locked.id);
+
+            for (const [subjId, addCount] of subjectCountNeeded.entries()) {
+              const subjSlot = existingSlots.find(
+                (s) => s.subjectId === subjId && s.chapterId === null && s.subtopicId === null
+              );
+              if (!subjSlot) {
+                await tx.insert(seriesRosterSlots).values({
+                  seriesId: locked.id,
+                  examId: locked.examId,
+                  subjectId: subjId,
+                  chapterId: null,
+                  subtopicId: null,
+                  targetCount: addCount,
+                });
+                blueprintUpdated = true;
+              } else {
+                const currentlyAssigned = state.assignedIn.get(subjSlot.id) ?? 0;
+                if (currentlyAssigned + addCount > subjSlot.targetCount) {
+                  await tx
+                    .update(seriesRosterSlots)
+                    .set({ targetCount: currentlyAssigned + addCount })
+                    .where(eq(seriesRosterSlots.id, subjSlot.id));
+                  blueprintUpdated = true;
+                }
+              }
+            }
+          }
+
+          if (questionIdsToAssign.length > 0) {
+            const outcome = await assignQuestions(tx, locked, questionIdsToAssign, {
+              userId: request.user!.id,
+            });
+            assignedToSeries = outcome.assigned.length;
+            outcome.failed.forEach((f, idx) => {
+              errors.push({ rowNumber: idx + 1, message: f.reason });
+            });
+          }
+
+          await touchSeries(tx, locked.id);
+        });
+
+        const result: SeriesImportSetResult = {
+          totalParsed: items.length,
+          insertedToBank,
+          reusedFromBank,
+          assignedToSeries,
+          categoriesCreated,
+          blueprintUpdated,
+          errors,
+          roster: await buildRosterDto(db, series.id),
+        };
+        return reply.status(201).send(result);
+      } catch (err) {
+        return sendSeriesError(reply, err);
+      }
+    }
+  );
 };
+

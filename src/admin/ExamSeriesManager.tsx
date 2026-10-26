@@ -1,11 +1,26 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Archive, ChevronRight, FolderOpen, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
+import {
+  Archive,
+  ChevronRight,
+  Download,
+  FileUp,
+  FolderOpen,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import {
   SERIES_KIND_LABELS,
   type ExamDto,
   type ExamOverviewDto,
+  type GenerateFullQuestionSetResult,
   type PublishStatus,
   type SeriesDto,
+  type SeriesImportSetBody,
+  type SeriesImportSetResult,
   type SeriesInput,
   type SeriesKind,
   type SyllabusTreeDto,
@@ -13,6 +28,11 @@ import {
 import { adminApi, type SyllabusTrees } from "./adminApi";
 import SeriesWorkspace, { type WorkspaceTab } from "./SeriesWorkspace";
 import SeriesBlueprint, { SubjectCountsEditor } from "./SeriesBlueprint";
+import {
+  FullSetAiGeneratorPanel,
+  SeriesExportModal,
+  SeriesImportSetModal,
+} from "./SeriesToolsModals";
 import { ConfirmDialog, NoticeBox, ProgressBar, StatusBadge, btn, inputCls, type Notice } from "./ui";
 
 // ============================================================================
@@ -70,6 +90,9 @@ export default function ExamSeriesManager({
   const [showBlueprint, setShowBlueprint] = useState(false);
   /** Bumped when the subjects change, so the question board reloads */
   const [blueprintVersion, setBlueprintVersion] = useState(0);
+  const [exportingSeries, setExportingSeries] = useState<SeriesDto | null>(null);
+  const [importingSeries, setImportingSeries] = useState<SeriesDto | null>(null);
+  const [aiFullSetSeries, setAiFullSetSeries] = useState<SeriesDto | null>(null);
 
   const fail = (err: unknown) => setNotice({ kind: "error", text: (err as Error).message });
 
@@ -118,21 +141,74 @@ export default function ExamSeriesManager({
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
-  const saveSeries = async (input: SeriesInput, editing: SeriesDto | null) => {
+  const saveSeries = async (
+    input: SeriesInput,
+    editing: SeriesDto | null,
+    postCreateAction?: {
+      mode: "none" | "import" | "ai_full_set";
+      importPayload?: SeriesImportSetBody;
+    }
+  ) => {
     setBusy(true);
     try {
       if (editing) {
         await adminApi(`/series/${editing.id}`, { method: "PUT", body: input });
+        setForm(null);
+        setNotice({ kind: "success", text: `Series “${input.nameEn}” saved` });
       } else {
         const r = await adminApi<{ series: SeriesDto }>(`/series/exams/${examId}`, {
           method: "POST",
           body: input,
         });
-        setSeriesId(r.series.id);
+        const created = r.series;
+        let statusMsg = `Series “${input.nameEn}” created`;
+
+        if (postCreateAction?.mode === "import" && postCreateAction.importPayload) {
+          const impRes = await adminApi<SeriesImportSetResult>(
+            `/series/${created.id}/import-set`,
+            {
+              method: "POST",
+              body: postCreateAction.importPayload,
+            }
+          );
+          statusMsg = `Created “${input.nameEn}” · Imported ${impRes.insertedToBank} question(s) into DB & assigned ${impRes.assignedToSeries} to this test!`;
+        } else if (
+          postCreateAction?.mode === "ai_full_set" &&
+          exam &&
+          input.subjectTargets &&
+          input.subjectTargets.length > 0
+        ) {
+          const subjectsPayload = input.subjectTargets
+            .map((st) => ({
+              subjectId: st.subjectId,
+              count: st.targetCount,
+            }))
+            .filter((s) => s.count > 0);
+
+          if (subjectsPayload.length > 0) {
+            const aiRes = await adminApi<GenerateFullQuestionSetResult>(
+              "/ingestion/generate-full-set",
+              {
+                method: "POST",
+                body: {
+                  examSlug: exam.slug,
+                  seriesId: created.id,
+                  difficulty: "mixed",
+                  insertDirectlyToBank: true,
+                  syncSeriesBlueprint: true,
+                  subjects: subjectsPayload,
+                },
+              }
+            );
+            statusMsg = `Created “${input.nameEn}” · AI generated ${aiRes.totalGenerated} question(s) across ${subjectsPayload.length} subjects & assigned ${aiRes.totalAssignedToSeries} to this test!`;
+          }
+        }
+
+        setSeriesId(created.id);
         setWorkspaceTab("board");
+        setForm(null);
+        setNotice({ kind: "success", text: statusMsg });
       }
-      setForm(null);
-      setNotice({ kind: "success", text: `Series “${input.nameEn}” saved` });
       await refreshAll();
     } catch (err) {
       fail(err);
@@ -287,7 +363,7 @@ export default function ExamSeriesManager({
               tree={examTree}
               busy={busy}
               onCancel={() => setForm(null)}
-              onSubmit={(input) => saveSeries(input, form.editing)}
+              onSubmit={(input, postCreateAction) => saveSeries(input, form.editing, postCreateAction)}
             />
           )}
 
@@ -377,6 +453,27 @@ export default function ExamSeriesManager({
                     >
                       <FolderOpen className="w-3.5 h-3.5" /> Manage Subjects
                     </button>
+                    <button
+                      onClick={() => setExportingSeries(s)}
+                      className={btn.secondary}
+                      title="Export Test Series questions in PDF or Excel"
+                    >
+                      <Download className="w-3.5 h-3.5 text-emerald-400" /> Export (PDF / Excel)
+                    </button>
+                    <button
+                      onClick={() => setImportingSeries(s)}
+                      className={btn.secondary}
+                      title="Import a whole question set (CSV/JSON/PDF/Image) into this test"
+                    >
+                      <FileUp className="w-3.5 h-3.5 text-sky-400" /> Import Set
+                    </button>
+                    <button
+                      onClick={() => setAiFullSetSeries(s)}
+                      className={btn.ai}
+                      title="Generate full question set across subjects with AI in 1 click"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" /> 1-Click AI Set
+                    </button>
                     <button onClick={() => setForm({ editing: s })} className={btn.secondary}>
                       <Pencil className="w-3.5 h-3.5" /> Edit
                     </button>
@@ -420,6 +517,24 @@ export default function ExamSeriesManager({
               </p>
             </div>
             <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => setExportingSeries(currentSeries)}
+                className={btn.secondary}
+              >
+                <Download className="w-3.5 h-3.5 text-emerald-400" /> Export (PDF / Excel)
+              </button>
+              <button
+                onClick={() => setImportingSeries(currentSeries)}
+                className={btn.secondary}
+              >
+                <FileUp className="w-3.5 h-3.5 text-sky-400" /> Import Whole Question Set
+              </button>
+              <button
+                onClick={() => setAiFullSetSeries(currentSeries)}
+                className={btn.ai}
+              >
+                <Sparkles className="w-3.5 h-3.5" /> 1-Click AI Full Question Set
+              </button>
               <button onClick={() => setForm({ editing: currentSeries })} className={btn.secondary}>
                 <Pencil className="w-3.5 h-3.5" /> Edit
               </button>
@@ -482,6 +597,54 @@ export default function ExamSeriesManager({
             />
           )}
         </section>
+      )}
+
+      {exportingSeries && (
+        <SeriesExportModal
+          seriesId={exportingSeries.id}
+          seriesName={exportingSeries.name.en}
+          onClose={() => setExportingSeries(null)}
+        />
+      )}
+
+      {importingSeries && exam && (
+        <SeriesImportSetModal
+          exam={exam}
+          series={importingSeries}
+          tree={examTree}
+          onClose={() => setImportingSeries(null)}
+          onImported={async (res) => {
+            setBlueprintVersion((v) => v + 1);
+            await trees.loadTree(exam.slug, true);
+            await refreshAll();
+            setNotice({
+              kind: "success",
+              text: `Imported ${res.insertedToBank} question(s) into ${exam.titleEn} bank & assigned ${res.assignedToSeries} to “${importingSeries.name.en}”.`,
+            });
+          }}
+        />
+      )}
+
+      {aiFullSetSeries && exam && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="max-w-4xl w-full">
+            <FullSetAiGeneratorPanel
+              exam={exam}
+              tree={examTree}
+              series={aiFullSetSeries}
+              onClose={() => setAiFullSetSeries(null)}
+              onGenerated={async (res) => {
+                setBlueprintVersion((v) => v + 1);
+                await trees.loadTree(exam.slug, true);
+                await refreshAll();
+                setNotice({
+                  kind: "success",
+                  text: `AI generated ${res.totalGenerated} question(s) across ${res.subjectSummaries.length} subjects & assigned ${res.totalAssignedToSeries} to “${aiFullSetSeries.name.en}”!`,
+                });
+              }}
+            />
+          </div>
+        </div>
       )}
 
       {confirmDelete && (
@@ -551,7 +714,13 @@ function SeriesForm({
   /** The exam's syllabus — its subjects are offered for the pattern */
   tree: SyllabusTreeDto | undefined;
   busy: boolean;
-  onSubmit: (input: SeriesInput) => void;
+  onSubmit: (
+    input: SeriesInput,
+    postCreateAction?: {
+      mode: "none" | "import" | "ai_full_set";
+      importPayload?: SeriesImportSetBody;
+    }
+  ) => void;
   onCancel: () => void;
 }) {
   const [v, setV] = useState<SeriesInput>(
@@ -574,26 +743,114 @@ function SeriesForm({
   const set = (patch: Partial<SeriesInput>) => setV((prev) => ({ ...prev, ...patch }));
   const num = (k: keyof SeriesInput) => (e: React.ChangeEvent<HTMLInputElement>) =>
     set({ [k]: e.target.value === "" ? 0 : Number(e.target.value) } as Partial<SeriesInput>);
-  const [subjectCounts, setSubjectCounts] = useState<Record<string, string>>({});
+
+  // Pre-populate subjectCounts with the exam's configured weightageQuestions when creating a new series
+  const [subjectCounts, setSubjectCounts] = useState<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    if (!initial && tree) {
+      for (const s of tree.subjects) {
+        if ((s.weightageQuestions ?? 0) > 0) {
+          map[s.id] = String(s.weightageQuestions);
+        }
+      }
+    }
+    return map;
+  });
+
+  useEffect(() => {
+    if (!initial && tree && Object.keys(subjectCounts).length === 0) {
+      const map: Record<string, string> = {};
+      for (const s of tree.subjects) {
+        if ((s.weightageQuestions ?? 0) > 0) {
+          map[s.id] = String(s.weightageQuestions);
+        }
+      }
+      if (Object.keys(map).length > 0) setSubjectCounts(map);
+    }
+  }, [initial, tree]);
+
+  // Creation-time Question Set Populate Mode: "none" | "import" | "ai_full_set"
+  const [populateMode, setPopulateMode] = useState<"none" | "import" | "ai_full_set">("none");
+  const [importKind, setImportKind] = useState<"csv" | "media">("csv");
+  const [importFileName, setImportFileName] = useState("");
+  const [importFormat, setImportFormat] = useState<"csv" | "json">("csv");
+  const [importText, setImportText] = useState("");
+  const [importBase64, setImportBase64] = useState("");
+  const [importMime, setImportMime] = useState<
+    "application/pdf" | "image/png" | "image/jpeg" | "image/webp"
+  >("application/pdf");
+
+  const handleCreationFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setImportFileName(f.name);
+    if (importKind === "csv") {
+      setImportFormat(f.name.toLowerCase().endsWith(".json") ? "json" : "csv");
+      setImportText(await f.text());
+    } else {
+      setImportMime(
+        (f.type as "application/pdf" | "image/png" | "image/jpeg" | "image/webp") ||
+          "application/pdf"
+      );
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        setImportBase64(dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl);
+      };
+      reader.readAsDataURL(f);
+    }
+  };
+
   const countsIncomplete = Object.values(subjectCounts).some((c) => !Number(c));
   const noSubjects = !initial && Object.keys(subjectCounts).length === 0;
+  const totalConfigured = Object.values(subjectCounts).reduce(
+    (sum, c) => sum + (Number(c) || 0),
+    0
+  );
+
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit(
-          initial
-            ? v
-            : {
-                ...v,
-                subjectTargets: Object.entries(subjectCounts).map(([subjectId, c]) => ({
-                  subjectId,
-                  targetCount: Number(c),
-                })),
+        const seriesInput: SeriesInput = initial
+          ? v
+          : {
+              ...v,
+              subjectTargets: Object.entries(subjectCounts).map(([subjectId, c]) => ({
+                subjectId,
+                targetCount: Number(c),
+              })),
+            };
+
+        if (initial || populateMode === "none") {
+          onSubmit(seriesInput, { mode: "none" });
+          return;
+        }
+        if (populateMode === "ai_full_set") {
+          onSubmit(seriesInput, { mode: "ai_full_set" });
+          return;
+        }
+        const importPayload: SeriesImportSetBody =
+          importKind === "csv"
+            ? {
+                format: importFormat,
+                fileName: importFileName,
+                content: importText,
+                source: "educator",
+                autoUpdateBlueprint: true,
               }
-        );
+            : {
+                format: "media",
+                fileName: importFileName,
+                mimeType: importMime,
+                base64Data: importBase64,
+                source: "educator",
+                autoUpdateBlueprint: true,
+              };
+        onSubmit(seriesInput, { mode: "import", importPayload });
       }}
-      className="bg-slate-900 border border-emerald-500/30 rounded-xl p-4 space-y-3"
+      className="bg-slate-900 border border-emerald-500/30 rounded-xl p-4 space-y-4"
     >
       <h3 className="text-sm font-bold text-white">{initial ? "Edit series" : "New series"}</h3>
       <fieldset disabled={busy} className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -665,26 +922,188 @@ function SeriesForm({
           </div>
         </div>
         {!initial && (
-          <div className="md:col-span-2 space-y-2">
-            <p className="text-xs font-semibold text-white">
-              Subjects and questions per subject *{" "}
-              <span className="font-normal text-slate-400">
-                — e.g. General Studies 40 · English 30 · Mathematics 30. You can split each subject by
-                topic after saving.
-              </span>
-            </p>
-            <SubjectCountsEditor tree={tree} value={subjectCounts} onChange={setSubjectCounts} />
-          </div>
+          <>
+            <div className="md:col-span-2 space-y-2">
+              <p className="text-xs font-semibold text-white">
+                Subjects and questions per subject *{" "}
+                <span className="font-normal text-slate-400">
+                  — Pre-filled from {defaults.titleEn} exam settings (e.g. General Studies 40 ·
+                  English 30 · Mathematics 30 = 100 Qs). Adjust as needed.
+                </span>
+              </p>
+              <SubjectCountsEditor tree={tree} value={subjectCounts} onChange={setSubjectCounts} />
+            </div>
+
+            {/* Populate Questions Option Right During Test Creation */}
+            <div className="md:col-span-2 p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+              <p className="text-xs font-semibold text-white">
+                How would you like to populate questions for this test?
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs cursor-pointer ${
+                    populateMode === "none"
+                      ? "bg-emerald-500/10 border-emerald-500/40 text-white"
+                      : "border-slate-800 text-slate-400"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="populateMode"
+                    checked={populateMode === "none"}
+                    onChange={() => setPopulateMode("none")}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <span className="block font-semibold">Pick / Add Later</span>
+                    <span className="block text-[11px] text-slate-400">
+                      Create test structure first, then pick from bank or generate
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs cursor-pointer ${
+                    populateMode === "import"
+                      ? "bg-sky-500/15 border-sky-400/50 text-white"
+                      : "border-slate-800 text-slate-400"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="populateMode"
+                    checked={populateMode === "import"}
+                    onChange={() => setPopulateMode("import")}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <span className="block font-semibold flex items-center gap-1">
+                      <FileUp className="w-3.5 h-3.5 text-sky-400" /> Import Whole Question Set
+                    </span>
+                    <span className="block text-[11px] text-slate-400">
+                      Upload CSV, JSON, or PDF/Image Paper into DB &amp; attach now
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs cursor-pointer ${
+                    populateMode === "ai_full_set"
+                      ? "bg-violet-500/15 border-violet-400/50 text-white"
+                      : "border-slate-800 text-slate-400"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="populateMode"
+                    checked={populateMode === "ai_full_set"}
+                    onChange={() => setPopulateMode("ai_full_set")}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <span className="block font-semibold flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5 text-violet-300" /> 1-Click AI Full Set (
+                      {totalConfigured} Qs)
+                    </span>
+                    <span className="block text-[11px] text-slate-400">
+                      AI generates exact count for each chosen subject above
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {populateMode === "import" && (
+                <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2.5">
+                  <div className="flex gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImportKind("csv");
+                        setImportFileName("");
+                      }}
+                      className={`px-2.5 py-1 rounded border cursor-pointer ${
+                        importKind === "csv"
+                          ? "bg-sky-500/20 border-sky-400 text-white"
+                          : "border-slate-800 text-slate-400"
+                      }`}
+                    >
+                      CSV / JSON File
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImportKind("media");
+                        setImportFileName("");
+                      }}
+                      className={`px-2.5 py-1 rounded border cursor-pointer ${
+                        importKind === "media"
+                          ? "bg-violet-500/20 border-violet-400 text-white"
+                          : "border-slate-800 text-slate-400"
+                      }`}
+                    >
+                      PDF / Image Question Paper
+                    </button>
+                  </div>
+
+                  <label className="flex items-center justify-center gap-2 p-4 border border-dashed border-slate-700 hover:border-sky-400 rounded-lg cursor-pointer text-xs text-slate-300">
+                    <Upload className="w-4 h-4 text-sky-400" />
+                    <span>
+                      {importFileName ||
+                        (importKind === "csv"
+                          ? "Choose .csv or .json question set file…"
+                          : "Choose .pdf or image question paper…")}
+                    </span>
+                    <input
+                      type="file"
+                      accept={
+                        importKind === "csv"
+                          ? ".csv,.json,text/csv,application/json"
+                          : ".pdf,image/png,image/jpeg,image/webp,application/pdf"
+                      }
+                      onChange={handleCreationFilePick}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              )}
+
+              {populateMode === "ai_full_set" && (
+                <p className="text-xs text-violet-200 bg-violet-500/10 border border-violet-500/30 p-2.5 rounded-lg">
+                  When you click <strong>Create &amp; Generate {totalConfigured} Questions</strong>,
+                  AI will immediately generate the bilingual questions for each selected subject in
+                  your blueprint above, insert them into the <strong>{defaults.titleEn}</strong>{" "}
+                  Question Bank, and assign them to this test.
+                </p>
+              )}
+            </div>
+          </>
         )}
       </fieldset>
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={busy || v.nameEn.trim().length < 2 || noSubjects || countsIncomplete}
+          disabled={
+            busy ||
+            v.nameEn.trim().length < 2 ||
+            noSubjects ||
+            countsIncomplete ||
+            (populateMode === "import" &&
+              (importKind === "csv" ? !importText.trim() : !importBase64))
+          }
           title={noSubjects ? "Choose at least one subject" : countsIncomplete ? "Give every chosen subject a count" : undefined}
           className={btn.primary}
         >
-          {busy ? "Saving…" : "Save series"}
+          {busy
+            ? populateMode === "ai_full_set"
+              ? `Creating & Generating ${totalConfigured} Qs with AI…`
+              : populateMode === "import"
+                ? "Creating & Importing Question Set…"
+                : "Saving…"
+            : !initial && populateMode === "ai_full_set"
+              ? `Create & Generate ${totalConfigured} Questions (AI)`
+              : !initial && populateMode === "import"
+                ? "Create & Import Question Set"
+                : "Save series"}
         </button>
         <button type="button" onClick={onCancel} className={btn.secondary}>
           Cancel

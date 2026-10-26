@@ -8,12 +8,14 @@ import {
   ExamSlugSchema,
   SYLLABUS_REQUIRED_COLUMNS,
   SyllabusRowSchema,
+  WBPSC_SUBJECT_PRESETS,
   csvTableToRecords,
   parseCsv,
   slugify,
   type BilingualText,
   type ExamConfigInput,
   type ExamDto,
+  type ExamSubjectWeightage,
   type SyllabusRow,
   type SyllabusUploadResult,
 } from "../../../../packages/shared-types/src/index";
@@ -86,12 +88,120 @@ const UpdateNodeNameBodySchema = z.union([
   z.object({
     en: z.string().trim().min(1, "English name is required").max(200),
     bn: z.string().trim().max(200).optional().default(""),
+    weightageQuestions: z.coerce.number().int().min(1).max(300).optional(),
   }),
   z.object({
     nameEn: z.string().trim().min(1, "English name is required").max(200),
     nameBn: z.string().trim().max(200).optional().default(""),
+    weightageQuestions: z.coerce.number().int().min(1).max(300).optional(),
   }),
 ]);
+
+async function applySubjectWeightages(examId: string, weightages: ExamSubjectWeightage[]) {
+  if (!weightages || weightages.length === 0) return;
+  const existingSubjects = await db
+    .select()
+    .from(subjects)
+    .where(eq(subjects.examId, examId))
+    .orderBy(asc(subjects.displayOrder));
+
+  for (let i = 0; i < weightages.length; i++) {
+    const w = weightages[i];
+    const preset = WBPSC_SUBJECT_PRESETS.find(
+      (p) => p.en.toLowerCase() === w.subjectEn.trim().toLowerCase()
+    );
+    const subjectBn = w.subjectBn?.trim() || preset?.bn || w.subjectEn.trim();
+    const existing = existingSubjects.find((s) =>
+      nodeMatches(s, w.subjectEn) || sameConcept(s.name.en, w.subjectEn)
+    );
+
+    let subjectId: string;
+    if (existing) {
+      subjectId = existing.id;
+      await db
+        .update(subjects)
+        .set({
+          weightageQuestions: w.weightageQuestions,
+          name: {
+            en: w.subjectEn.trim(),
+            bn: w.subjectBn?.trim() || existing.name.bn || subjectBn,
+          },
+        })
+        .where(eq(subjects.id, existing.id));
+    } else {
+      const baseSlug = slugify(w.subjectEn) || `subject-${i + 1}`;
+      const slug = uniqueSlug(
+        baseSlug,
+        existingSubjects.map((s) => s.slug)
+      );
+      const [inserted] = await db
+        .insert(subjects)
+        .values({
+          examId,
+          slug,
+          name: { en: w.subjectEn.trim(), bn: subjectBn },
+          weightageQuestions: w.weightageQuestions,
+          displayOrder: existingSubjects.length + 1,
+        })
+        .returning();
+      subjectId = inserted.id;
+      existingSubjects.push(inserted);
+    }
+
+    // Ensure the subject has at least one chapter & subtopic so questions can immediately be generated or imported for it
+    const existingChaps = await db
+      .select({ id: chapters.id })
+      .from(chapters)
+      .where(eq(chapters.subjectId, subjectId))
+      .limit(1);
+
+    if (existingChaps.length === 0) {
+      const chaptersToSeed = preset?.chapters.length
+        ? preset.chapters
+        : [
+            {
+              en: `${w.subjectEn.trim()} — Core Topics`,
+              bn: `${subjectBn} — মূল অধ্যায়`,
+              subtopics: [
+                {
+                  en: `${w.subjectEn.trim()} — Fundamentals & Practice`,
+                  bn: `${subjectBn} — মৌলিক ধারণা ও অনুশীলন`,
+                },
+              ],
+            },
+          ];
+
+      for (let ci = 0; ci < chaptersToSeed.length; ci++) {
+        const ch = chaptersToSeed[ci];
+        const chapSlug = slugify(ch.en) || `chapter-${ci + 1}`;
+        const [insChap] = await db
+          .insert(chapters)
+          .values({
+            subjectId,
+            slug: chapSlug,
+            name: { en: ch.en, bn: ch.bn || ch.en },
+            displayOrder: ci + 1,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (!insChap) continue;
+        for (let ti = 0; ti < ch.subtopics.length; ti++) {
+          const st = ch.subtopics[ti];
+          const subSlug = slugify(st.en) || `topic-${ti + 1}`;
+          await db
+            .insert(subtopics)
+            .values({
+              subjectId,
+              chapterId: insChap.id,
+              slug: subSlug,
+              name: { en: st.en, bn: st.bn || st.en },
+            })
+            .onConflictDoNothing();
+        }
+      }
+    }
+  }
+}
 
 type ExamRow = typeof exams.$inferSelect;
 
@@ -329,7 +439,19 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
     if (!created) {
       return reply.status(409).send({ error: `An exam with slug "${slug}" already exists` });
     }
-    return reply.status(201).send({ exam: toExamDto(created) });
+    if (input.subjectWeightages?.length) {
+      await applySubjectWeightages(created.id, input.subjectWeightages);
+    }
+    const syllabus = await loadSyllabus();
+    const subtopicList =
+      syllabus.get(created.slug)?.subjects.flatMap((s) => s.chapters.flatMap((c) => c.subtopics)) ?? [];
+    return reply.status(201).send({
+      exam: toExamDto(created, {
+        subjectCount: syllabus.get(created.slug)?.subjects.length ?? 0,
+        subtopicCount: subtopicList.length,
+        questionCount: 0,
+      }),
+    });
   });
 
   /**
@@ -353,7 +475,19 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
     if (!updated) {
       return reply.status(404).send({ error: "Exam not found" });
     }
-    return { exam: toExamDto(updated) };
+    if (parsed.data.subjectWeightages?.length) {
+      await applySubjectWeightages(updated.id, parsed.data.subjectWeightages);
+    }
+    const syllabus = await loadSyllabus();
+    const subtopicList =
+      syllabus.get(updated.slug)?.subjects.flatMap((s) => s.chapters.flatMap((c) => c.subtopics)) ?? [];
+    return {
+      exam: toExamDto(updated, {
+        subjectCount: syllabus.get(updated.slug)?.subjects.length ?? 0,
+        subtopicCount: subtopicList.length,
+        questionCount: subtopicList.reduce((sum, t) => sum + t.questionCount, 0),
+      }),
+    };
   });
 
   /**
@@ -642,7 +776,12 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
     });
     const [updated] = await db
       .update(subjects)
-      .set({ name: { en: nameEn, bn: bn.subjectBn } })
+      .set({
+        name: { en: nameEn, bn: bn.subjectBn },
+        ...(body.data.weightageQuestions !== undefined
+          ? { weightageQuestions: body.data.weightageQuestions }
+          : {}),
+      })
       .where(eq(subjects.id, params.data.id))
       .returning();
     if (!updated) return reply.status(404).send({ error: "Subject not found" });

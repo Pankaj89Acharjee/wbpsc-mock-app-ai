@@ -177,6 +177,15 @@ export default function SeriesWorkspace({
               text: `${r.uniqueGenerated} AI draft(s) are waiting in “Review AI drafts”. They hold their seats until approved or rejected.`,
             });
           }}
+          onFullSetGenerated={async (res) => {
+            await trees.loadTree(exam.slug, true);
+            await reload();
+            onChanged();
+            setNotice({
+              kind: "success",
+              text: `AI generated ${res.totalGenerated} question(s) across ${res.subjectSummaries.length} subjects (${res.totalAssignedToSeries} assigned directly to this test)!`,
+            });
+          }}
         />
       )}
       {tab === "review" && (
