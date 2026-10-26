@@ -145,20 +145,35 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
 
   // ── Exam types ────────────────────────────────────────────────────────────
 
-  /** 1. GET /admin/series/overview — every exam type with its series totals */
+  /** 1. GET /admin/series/overview — every exam type with its series totals & per-series attempt/score stats */
   fastify.get("/overview", async () => {
-    const [examRows, seriesRows, bankCounts] = await Promise.all([
+    const [examRows, seriesRows, bankCounts, examAttemptStats] = await Promise.all([
       db.select().from(exams).orderBy(asc(exams.createdAt)),
-      db.select().from(examSeries).where(ne(examSeries.status, "archived")),
+      db
+        .select()
+        .from(examSeries)
+        .where(ne(examSeries.status, "archived"))
+        .orderBy(asc(examSeries.displayOrder), asc(examSeries.createdAt)),
       db
         .select({ examId: questions.examId, n: sql<number>`count(*)::int` })
         .from(questions)
         .where(eq(questions.isActive, true))
         .groupBy(questions.examId),
+      db
+        .select({
+          examId: testAttempts.examId,
+          attempts: sql<number>`count(*)::int`,
+          students: sql<number>`count(distinct ${testAttempts.userId})::int`,
+          avgScore: sql<number | null>`round(avg(${testAttempts.finalNetScore})::numeric, 2)::float`,
+        })
+        .from(testAttempts)
+        .groupBy(testAttempts.examId),
     ]);
     const dtos = await toSeriesDtos(db, seriesRows);
     const overview: ExamOverviewDto[] = examRows.map((e) => {
       const mine = dtos.filter((s) => s.examId === e.id);
+      const exStat = examAttemptStats.find((a) => a.examId === e.id);
+      const seriesAttemptsSum = mine.reduce((sum, s) => sum + s.attemptCount, 0);
       return {
         id: e.id,
         slug: e.slug,
@@ -169,6 +184,25 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         targetQuestions: mine.reduce((sum, s) => sum + s.totalQuestions, 0),
         assignedQuestions: mine.reduce((sum, s) => sum + s.selectedCount, 0),
         bankQuestionCount: bankCounts.find((b) => b.examId === e.id)?.n ?? 0,
+        totalAttempts: exStat?.attempts ?? seriesAttemptsSum,
+        totalStudentsAttempted: exStat?.students ?? mine.reduce((sum, s) => sum + (s.studentCount ?? 0), 0),
+        averageScore: exStat && exStat.attempts > 0 ? (exStat.avgScore ?? 0) : null,
+        seriesStats: mine.map((s) => {
+          const qCount = s.selectedCount > 0 ? s.selectedCount : s.totalQuestions;
+          return {
+            id: s.id,
+            slug: s.slug,
+            name: s.name,
+            kind: s.kind,
+            status: s.status,
+            totalQuestions: s.totalQuestions,
+            selectedCount: s.selectedCount,
+            maxMarks: Number((qCount * s.marksPerCorrect).toFixed(2)),
+            attemptCount: s.attemptCount,
+            studentCount: s.studentCount ?? 0,
+            averageScore: s.averageScore ?? null,
+          };
+        }),
       };
     });
     return { exams: overview };

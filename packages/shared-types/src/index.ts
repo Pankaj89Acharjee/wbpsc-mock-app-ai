@@ -1438,7 +1438,25 @@ export interface SeriesDto {
   /** selectedCount / totalQuestions, 0–100 */
   completionPct: number;
   attemptCount: number;
+  /** Distinct students who attempted this test series */
+  studentCount?: number;
+  /** Average finalNetScore across submitted attempts on this test series */
+  averageScore?: number | null;
   updatedAt: string;
+}
+
+export interface ExamSeriesStatItemDto {
+  id: string;
+  slug: string;
+  name: BilingualText;
+  kind: SeriesKind;
+  status: PublishStatus;
+  totalQuestions: number;
+  selectedCount: number;
+  maxMarks: number;
+  attemptCount: number;
+  studentCount: number;
+  averageScore: number | null;
 }
 
 export interface ExamOverviewDto {
@@ -1451,6 +1469,10 @@ export interface ExamOverviewDto {
   targetQuestions: number;
   assignedQuestions: number;
   bankQuestionCount: number;
+  totalAttempts?: number;
+  totalStudentsAttempted?: number;
+  averageScore?: number | null;
+  seriesStats?: ExamSeriesStatItemDto[];
 }
 
 export interface RosterSlotDto {
