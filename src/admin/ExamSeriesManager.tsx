@@ -319,14 +319,19 @@ export default function ExamSeriesManager({
                     <span className="text-sm font-bold text-white">{e.title.en}</span>
                     {!e.isActive && <span className="text-[11px] text-slate-400">inactive</span>}
                   </div>
-                  <dl className="grid grid-cols-3 gap-2 text-xs">
-                    <Stat label="Series" value={e.seriesCount} />
-                    <Stat label="Published" value={e.publishedSeriesCount} />
-                    <Stat label="Bank Qs" value={e.bankQuestionCount} />
+                  <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                    <Stat label="Test Series" value={`${e.seriesCount} (${e.publishedSeriesCount} pub)`} />
+                    <Stat label="Series Qs" value={`${e.assignedQuestions}/${e.targetQuestions}`} />
+                    <Stat label="Students" value={`${e.totalStudentsAttempted ?? 0} (${e.totalAttempts ?? 0})`} />
+                    <Stat
+                      label="Avg Score"
+                      value={e.averageScore !== null && e.averageScore !== undefined ? `${e.averageScore}` : "—"}
+                    />
                   </dl>
                   <ProgressBar value={e.assignedQuestions} max={e.targetQuestions} label="Questions selected" />
                   <p className="text-[11px] text-slate-400">
-                    {e.assignedQuestions}/{e.targetQuestions} questions selected across its series
+                    {e.assignedQuestions}/{e.targetQuestions} questions set across {e.seriesCount} series ·{" "}
+                    {e.bankQuestionCount} Qs in Exam Bank
                   </p>
                 </button>
               ))}
@@ -344,8 +349,13 @@ export default function ExamSeriesManager({
                 Test series in {exam.titleEn}
               </h2>
               <p className="text-xs text-slate-400">
-                {examOverview?.bankQuestionCount ?? 0} questions in this exam's bank ·{" "}
-                {examOverview?.publishedSeriesCount ?? 0} of {examOverview?.seriesCount ?? 0} series published
+                {examOverview?.seriesCount ?? 0} test series ({examOverview?.publishedSeriesCount ?? 0} published) ·{" "}
+                {examOverview?.totalStudentsAttempted ?? 0} students attempted ({examOverview?.totalAttempts ?? 0} attempts) ·{" "}
+                Avg Score:{" "}
+                {examOverview?.averageScore !== null && examOverview?.averageScore !== undefined
+                  ? `${examOverview.averageScore} marks`
+                  : "No attempts yet"}{" "}
+                · {examOverview?.bankQuestionCount ?? 0} Qs in bank
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -391,9 +401,33 @@ export default function ExamSeriesManager({
                       {s.estimatedCutoffMarks ? ` · cutoff ${s.estimatedCutoffMarks}` : ""}
                     </span>
                   </div>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-xs text-slate-400">Total questions</span>
-                    <span className="text-lg font-mono tabular-nums text-white">{s.totalQuestions}</span>
+                  <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80 text-xs">
+                    <div>
+                      <span className="block text-[10px] uppercase tracking-wider text-slate-500">
+                        Questions
+                      </span>
+                      <span className="font-mono font-bold text-white">
+                        {s.selectedCount}/{s.totalQuestions}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="block text-[10px] uppercase tracking-wider text-slate-500">
+                        Students Attempted
+                      </span>
+                      <span className="font-mono font-bold text-amber-300">
+                        {s.studentCount ?? 0} ({s.attemptCount})
+                      </span>
+                    </div>
+                    <div>
+                      <span className="block text-[10px] uppercase tracking-wider text-slate-500">
+                        Avg Score
+                      </span>
+                      <span className="font-mono font-bold text-emerald-400">
+                        {s.averageScore !== null && s.averageScore !== undefined
+                          ? `${s.averageScore}/${Math.round(s.totalQuestions * s.marksPerCorrect * 100) / 100}`
+                          : "—"}
+                      </span>
+                    </div>
                   </div>
                   {s.subjects.length === 0 ? (
                     <p className="text-xs text-amber-300">No subjects yet — open Manage Subjects to add them.</p>
@@ -441,7 +475,7 @@ export default function ExamSeriesManager({
                   <p className="text-[11px] text-slate-400">
                     {s.selectedCount}/{s.totalQuestions} questions selected
                     {s.reservedCount > 0 && ` · ${s.reservedCount} AI draft(s) awaiting review`}
-                    {s.attemptCount > 0 && ` · ${s.attemptCount} attempt(s)`}
+                    {s.attemptCount > 0 && ` · ${s.studentCount ?? 0} student(s) (${s.attemptCount} attempts)`}
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     <button
@@ -769,8 +803,15 @@ function SeriesForm({
     }
   }, [initial, tree]);
 
-  // Creation-time Question Set Populate Mode: "none" | "import" | "ai_full_set"
-  const [populateMode, setPopulateMode] = useState<"none" | "import" | "ai_full_set">("none");
+  // Two strictly isolated creation paths so the admin never gets confused:
+  // Path 1 ("subject_pattern"): Manually configure number of questions per subject -> then either Generate by AI or Add from Question Bank
+  // Path 2 ("full_paper_import"): Upload a complete question paper (100 Qs Clerkship, 200 Qs WBCS, etc.) -> auto-imports questions & builds blueprint
+  const [creationPath, setCreationPath] = useState<"subject_pattern" | "full_paper_import">(
+    "subject_pattern"
+  );
+  const [patternPopulateMethod, setPatternPopulateMethod] = useState<"ai_full_set" | "question_bank">(
+    "ai_full_set"
+  );
   const [importKind, setImportKind] = useState<"csv" | "media">("csv");
   const [importFileName, setImportFileName] = useState("");
   const [importFormat, setImportFormat] = useState<"csv" | "json">("csv");
@@ -809,50 +850,71 @@ function SeriesForm({
     0
   );
 
+  const isSubmitDisabled = () => {
+    if (busy || v.nameEn.trim().length < 2) return true;
+    if (initial) return false;
+    if (creationPath === "subject_pattern") {
+      return noSubjects || countsIncomplete;
+    }
+    // creationPath === "full_paper_import"
+    return importKind === "csv" ? !importText.trim() : !importBase64;
+  };
+
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        const seriesInput: SeriesInput = initial
-          ? v
-          : {
-              ...v,
-              subjectTargets: Object.entries(subjectCounts).map(([subjectId, c]) => ({
-                subjectId,
-                targetCount: Number(c),
-              })),
-            };
+        if (initial) {
+          onSubmit(v, { mode: "none" });
+          return;
+        }
 
-        if (initial || populateMode === "none") {
-          onSubmit(seriesInput, { mode: "none" });
+        if (creationPath === "full_paper_import") {
+          // Option 2: Fully import a question paper — blueprint subjects & counts are built automatically from the imported paper
+          const importPayload: SeriesImportSetBody =
+            importKind === "csv"
+              ? {
+                  format: importFormat,
+                  fileName: importFileName,
+                  content: importText,
+                  source: "educator",
+                  autoUpdateBlueprint: true,
+                }
+              : {
+                  format: "media",
+                  fileName: importFileName,
+                  mimeType: importMime,
+                  base64Data: importBase64,
+                  source: "educator",
+                  autoUpdateBlueprint: true,
+                };
+          onSubmit(v, { mode: "import", importPayload });
           return;
         }
-        if (populateMode === "ai_full_set") {
-          onSubmit(seriesInput, { mode: "ai_full_set" });
-          return;
+
+        // Option 1: Subject-wise question counts configured by Admin
+        const seriesInputWithSubjects: SeriesInput = {
+          ...v,
+          subjectTargets: Object.entries(subjectCounts).map(([subjectId, c]) => ({
+            subjectId,
+            targetCount: Number(c),
+          })),
+        };
+
+        if (patternPopulateMethod === "ai_full_set") {
+          onSubmit(seriesInputWithSubjects, { mode: "ai_full_set" });
+        } else {
+          onSubmit(seriesInputWithSubjects, { mode: "none" });
         }
-        const importPayload: SeriesImportSetBody =
-          importKind === "csv"
-            ? {
-                format: importFormat,
-                fileName: importFileName,
-                content: importText,
-                source: "educator",
-                autoUpdateBlueprint: true,
-              }
-            : {
-                format: "media",
-                fileName: importFileName,
-                mimeType: importMime,
-                base64Data: importBase64,
-                source: "educator",
-                autoUpdateBlueprint: true,
-              };
-        onSubmit(seriesInput, { mode: "import", importPayload });
       }}
-      className="bg-slate-900 border border-emerald-500/30 rounded-xl p-4 space-y-4"
+      className="bg-slate-900 border border-emerald-500/30 rounded-xl p-5 space-y-5"
     >
-      <h3 className="text-sm font-bold text-white">{initial ? "Edit series" : "New series"}</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-bold text-white">
+          {initial ? `Edit Test Series — ${initial.name.en}` : `Create New Test Series in ${defaults.titleEn}`}
+        </h3>
+      </div>
+
       <fieldset disabled={busy} className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <label className="text-xs text-slate-400 space-y-1">
           <span>Name (English) *</span>
@@ -921,189 +983,270 @@ function SeriesForm({
             </label>
           </div>
         </div>
+
+        {/* ── Strictly Isolated Two Creation Modes (Only when creating a new series) ── */}
         {!initial && (
-          <>
-            <div className="md:col-span-2 space-y-2">
-              <p className="text-xs font-semibold text-white">
-                Subjects and questions per subject *{" "}
-                <span className="font-normal text-slate-400">
-                  — Pre-filled from {defaults.titleEn} exam settings (e.g. General Studies 40 ·
-                  English 30 · Mathematics 30 = 100 Qs). Adjust as needed.
-                </span>
+          <div className="md:col-span-2 space-y-4 pt-2 border-t border-slate-800">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                Choose How to Build This Test Series (2 Isolated Options)
               </p>
-              <SubjectCountsEditor tree={tree} value={subjectCounts} onChange={setSubjectCounts} />
+              <p className="text-xs text-slate-400 mt-0.5">
+                Pick Option 1 to set subject-wise question counts (for AI generation or Question Bank
+                selection), OR pick Option 2 to directly import a complete question paper.
+              </p>
             </div>
 
-            {/* Populate Questions Option Right During Test Creation */}
-            <div className="md:col-span-2 p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
-              <p className="text-xs font-semibold text-white">
-                How would you like to populate questions for this test?
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                <label
-                  className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs cursor-pointer ${
-                    populateMode === "none"
-                      ? "bg-emerald-500/10 border-emerald-500/40 text-white"
-                      : "border-slate-800 text-slate-400"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="populateMode"
-                    checked={populateMode === "none"}
-                    onChange={() => setPopulateMode("none")}
-                    className="mt-0.5"
-                  />
-                  <div>
-                    <span className="block font-semibold">Pick / Add Later</span>
-                    <span className="block text-[11px] text-slate-400">
-                      Create test structure first, then pick from bank or generate
-                    </span>
-                  </div>
-                </label>
+            {/* 2 Isolated Mode Selector Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setCreationPath("subject_pattern")}
+                className={`text-left p-4 rounded-xl border-2 transition-all cursor-pointer space-y-1.5 ${
+                  creationPath === "subject_pattern"
+                    ? "bg-violet-500/15 border-violet-400 text-white shadow-lg shadow-violet-950/30"
+                    : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-violet-300">
+                    Option 1 · Subject-Wise Blueprint
+                  </span>
+                  <span
+                    className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                      creationPath === "subject_pattern"
+                        ? "border-violet-400 bg-violet-500 text-white"
+                        : "border-slate-600"
+                    }`}
+                  >
+                    {creationPath === "subject_pattern" && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                  </span>
+                </div>
+                <p className="text-sm font-bold text-white">
+                  Set Questions per Subject (AI Generate or Add from Bank)
+                </p>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Manually set how many questions come from each subject, then either generate the
+                  entire set by AI in 1 click or pick questions from the Question Bank.
+                </p>
+              </button>
 
-                <label
-                  className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs cursor-pointer ${
-                    populateMode === "import"
-                      ? "bg-sky-500/15 border-sky-400/50 text-white"
-                      : "border-slate-800 text-slate-400"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="populateMode"
-                    checked={populateMode === "import"}
-                    onChange={() => setPopulateMode("import")}
-                    className="mt-0.5"
-                  />
-                  <div>
-                    <span className="block font-semibold flex items-center gap-1">
-                      <FileUp className="w-3.5 h-3.5 text-sky-400" /> Import Whole Question Set
-                    </span>
-                    <span className="block text-[11px] text-slate-400">
-                      Upload CSV, JSON, or PDF/Image Paper into DB &amp; attach now
-                    </span>
-                  </div>
-                </label>
+              <button
+                type="button"
+                onClick={() => setCreationPath("full_paper_import")}
+                className={`text-left p-4 rounded-xl border-2 transition-all cursor-pointer space-y-1.5 ${
+                  creationPath === "full_paper_import"
+                    ? "bg-sky-500/15 border-sky-400 text-white shadow-lg shadow-sky-950/30"
+                    : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-sky-300">
+                    Option 2 · Full Paper Upload
+                  </span>
+                  <span
+                    className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                      creationPath === "full_paper_import"
+                        ? "border-sky-400 bg-sky-500 text-white"
+                        : "border-slate-600"
+                    }`}
+                  >
+                    {creationPath === "full_paper_import" && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                  </span>
+                </div>
+                <p className="text-sm font-bold text-white">
+                  Fully Import a Question Paper (100 Qs Clerkship / 200 Qs WBCS)
+                </p>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Upload a complete question paper (CSV, Excel, JSON, PDF, or Image). Automatically
+                  inserts all questions into DB and builds the test series in one step.
+                </p>
+              </button>
+            </div>
 
-                <label
-                  className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs cursor-pointer ${
-                    populateMode === "ai_full_set"
-                      ? "bg-violet-500/15 border-violet-400/50 text-white"
-                      : "border-slate-800 text-slate-400"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="populateMode"
-                    checked={populateMode === "ai_full_set"}
-                    onChange={() => setPopulateMode("ai_full_set")}
-                    className="mt-0.5"
-                  />
-                  <div>
-                    <span className="block font-semibold flex items-center gap-1">
-                      <Sparkles className="w-3.5 h-3.5 text-violet-300" /> 1-Click AI Full Set (
-                      {totalConfigured} Qs)
-                    </span>
-                    <span className="block text-[11px] text-slate-400">
-                      AI generates exact count for each chosen subject above
+            {/* ── OPTION 1 ISOLATED PANEL: Subject Counts + AI or Bank ── */}
+            {creationPath === "subject_pattern" && (
+              <div className="p-4 rounded-xl bg-slate-950 border border-violet-500/35 space-y-4">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-bold text-white">
+                      Step 1: Set Number of Questions from Each Subject *
+                    </p>
+                    <span className="px-2.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30 text-xs font-mono text-violet-200">
+                      Total Configured: {totalConfigured} Questions
                     </span>
                   </div>
+                  <p className="text-xs text-slate-400">
+                    Pre-filled from {defaults.titleEn} settings. Tick subjects and enter how many
+                    questions each subject will have in this test series.
+                  </p>
+                  <SubjectCountsEditor tree={tree} value={subjectCounts} onChange={setSubjectCounts} />
+                </div>
+
+                <div className="space-y-2 pt-3 border-t border-slate-800">
+                  <p className="text-xs font-bold text-white">
+                    Step 2: How do you want to add these {totalConfigured || 0} questions?
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <label
+                      className={`flex items-start gap-2.5 p-3 rounded-lg border text-xs cursor-pointer transition-colors ${
+                        patternPopulateMethod === "ai_full_set"
+                          ? "bg-violet-500/15 border-violet-400 text-white"
+                          : "bg-slate-900 border-slate-800 text-slate-400"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="patternPopulateMethod"
+                        checked={patternPopulateMethod === "ai_full_set"}
+                        onChange={() => setPatternPopulateMethod("ai_full_set")}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <span className="font-bold flex items-center gap-1.5 text-white">
+                          <Sparkles className="w-3.5 h-3.5 text-violet-300" />
+                          Generate Full Question Set by AI ({totalConfigured} Qs)
+                        </span>
+                        <span className="block text-[11px] text-slate-300 mt-0.5">
+                          AI generates the exact number of bilingual questions for each subject
+                          chosen above and assigns them to this test series automatically.
+                        </span>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex items-start gap-2.5 p-3 rounded-lg border text-xs cursor-pointer transition-colors ${
+                        patternPopulateMethod === "question_bank"
+                          ? "bg-emerald-500/15 border-emerald-400 text-white"
+                          : "bg-slate-900 border-slate-800 text-slate-400"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="patternPopulateMethod"
+                        checked={patternPopulateMethod === "question_bank"}
+                        onChange={() => setPatternPopulateMethod("question_bank")}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <span className="font-bold flex items-center gap-1.5 text-white">
+                          <FolderOpen className="w-3.5 h-3.5 text-emerald-300" />
+                          Add / Select from Question Bank
+                        </span>
+                        <span className="block text-[11px] text-slate-300 mt-0.5">
+                          Creates the test series with your subject counts above and opens the
+                          Question Board so you can pick or add questions subject-by-subject.
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── OPTION 2 ISOLATED PANEL: Full Question Paper Import ── */}
+            {creationPath === "full_paper_import" && (
+              <div className="p-4 rounded-xl bg-slate-950 border border-sky-500/40 space-y-3.5">
+                <div>
+                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <FileUp className="w-4 h-4 text-sky-400" />
+                    Import Complete Question Paper (100 Qs Clerkship / 200 Qs WBCS / Full Set)
+                  </h4>
+                  <p className="text-xs text-slate-300 mt-1">
+                    No manual subject count entry is required here. Upload your full question paper
+                    below — all questions will be extracted, inserted into the{" "}
+                    <strong>{defaults.titleEn}</strong> Question Bank, grouped by subject, and
+                    attached to this test series automatically.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportKind("csv");
+                      setImportFileName("");
+                    }}
+                    className={`px-3 py-1.5 rounded-lg border font-medium cursor-pointer ${
+                      importKind === "csv"
+                        ? "bg-sky-500/20 border-sky-400 text-white"
+                        : "bg-slate-900 border-slate-800 text-slate-400"
+                    }`}
+                  >
+                    Excel (.csv) / JSON Question Paper
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportKind("media");
+                      setImportFileName("");
+                    }}
+                    className={`px-3 py-1.5 rounded-lg border font-medium cursor-pointer ${
+                      importKind === "media"
+                        ? "bg-violet-500/20 border-violet-400 text-white"
+                        : "bg-slate-900 border-slate-800 text-slate-400"
+                    }`}
+                  >
+                    PDF / Scanned Image Question Paper (AI OCR)
+                  </button>
+                </div>
+
+                <label className="flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-slate-700 hover:border-sky-400 bg-slate-900/60 rounded-xl cursor-pointer text-xs text-slate-200 transition-colors">
+                  <Upload className="w-6 h-6 text-sky-400" />
+                  <span className="font-semibold">
+                    {importFileName
+                      ? `Selected File: ${importFileName}`
+                      : importKind === "csv"
+                        ? "Click to choose a full .csv or .json question paper (e.g. 100 Qs Clerkship / 200 Qs WBCS)…"
+                        : "Click to choose a .pdf or image question paper to extract & import…"}
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    Automatically maps subjects &amp; topics, translates missing Bengali text, and
+                    populates this test series.
+                  </span>
+                  <input
+                    type="file"
+                    accept={
+                      importKind === "csv"
+                        ? ".csv,.json,text/csv,application/json"
+                        : ".pdf,image/png,image/jpeg,image/webp,application/pdf"
+                    }
+                    onChange={handleCreationFilePick}
+                    className="hidden"
+                  />
                 </label>
               </div>
-
-              {populateMode === "import" && (
-                <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2.5">
-                  <div className="flex gap-2 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setImportKind("csv");
-                        setImportFileName("");
-                      }}
-                      className={`px-2.5 py-1 rounded border cursor-pointer ${
-                        importKind === "csv"
-                          ? "bg-sky-500/20 border-sky-400 text-white"
-                          : "border-slate-800 text-slate-400"
-                      }`}
-                    >
-                      CSV / JSON File
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setImportKind("media");
-                        setImportFileName("");
-                      }}
-                      className={`px-2.5 py-1 rounded border cursor-pointer ${
-                        importKind === "media"
-                          ? "bg-violet-500/20 border-violet-400 text-white"
-                          : "border-slate-800 text-slate-400"
-                      }`}
-                    >
-                      PDF / Image Question Paper
-                    </button>
-                  </div>
-
-                  <label className="flex items-center justify-center gap-2 p-4 border border-dashed border-slate-700 hover:border-sky-400 rounded-lg cursor-pointer text-xs text-slate-300">
-                    <Upload className="w-4 h-4 text-sky-400" />
-                    <span>
-                      {importFileName ||
-                        (importKind === "csv"
-                          ? "Choose .csv or .json question set file…"
-                          : "Choose .pdf or image question paper…")}
-                    </span>
-                    <input
-                      type="file"
-                      accept={
-                        importKind === "csv"
-                          ? ".csv,.json,text/csv,application/json"
-                          : ".pdf,image/png,image/jpeg,image/webp,application/pdf"
-                      }
-                      onChange={handleCreationFilePick}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-              )}
-
-              {populateMode === "ai_full_set" && (
-                <p className="text-xs text-violet-200 bg-violet-500/10 border border-violet-500/30 p-2.5 rounded-lg">
-                  When you click <strong>Create &amp; Generate {totalConfigured} Questions</strong>,
-                  AI will immediately generate the bilingual questions for each selected subject in
-                  your blueprint above, insert them into the <strong>{defaults.titleEn}</strong>{" "}
-                  Question Bank, and assign them to this test.
-                </p>
-              )}
-            </div>
-          </>
+            )}
+          </div>
         )}
       </fieldset>
-      <div className="flex gap-2">
+
+      <div className="flex flex-wrap items-center gap-2 pt-1">
         <button
           type="submit"
-          disabled={
-            busy ||
-            v.nameEn.trim().length < 2 ||
-            noSubjects ||
-            countsIncomplete ||
-            (populateMode === "import" &&
-              (importKind === "csv" ? !importText.trim() : !importBase64))
+          disabled={isSubmitDisabled()}
+          title={
+            !initial && creationPath === "subject_pattern" && noSubjects
+              ? "Choose at least one subject"
+              : !initial && creationPath === "subject_pattern" && countsIncomplete
+                ? "Give every chosen subject a question count"
+                : undefined
           }
-          title={noSubjects ? "Choose at least one subject" : countsIncomplete ? "Give every chosen subject a count" : undefined}
           className={btn.primary}
         >
           {busy
-            ? populateMode === "ai_full_set"
-              ? `Creating & Generating ${totalConfigured} Qs with AI…`
-              : populateMode === "import"
-                ? "Creating & Importing Question Set…"
+            ? !initial && creationPath === "full_paper_import"
+              ? "Creating Series & Importing Full Question Paper…"
+              : !initial && patternPopulateMethod === "ai_full_set"
+                ? `Creating Series & Generating ${totalConfigured} Qs with AI…`
                 : "Saving…"
-            : !initial && populateMode === "ai_full_set"
-              ? `Create & Generate ${totalConfigured} Questions (AI)`
-              : !initial && populateMode === "import"
-                ? "Create & Import Question Set"
-                : "Save series"}
+            : initial
+              ? "Save Changes"
+              : creationPath === "full_paper_import"
+                ? "Create Test Series & Import Full Question Paper"
+                : patternPopulateMethod === "ai_full_set"
+                  ? `Create Series & Generate ${totalConfigured} Questions by AI`
+                  : `Create Series (${totalConfigured} Qs Blueprint) & Pick from Bank`}
         </button>
         <button type="button" onClick={onCancel} className={btn.secondary}>
           Cancel

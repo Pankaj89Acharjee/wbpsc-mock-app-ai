@@ -1,5 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
+  BarChart3,
   BookOpen,
   Check,
   ChevronDown,
@@ -13,9 +15,11 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Users,
   X,
 } from "lucide-react";
 import {
+  SERIES_KIND_LABELS,
   SYLLABUS_CSV_COLUMNS,
   SYLLABUS_TEMPLATE_EXAMPLES,
   WBPSC_EXAM_PRESETS,
@@ -23,6 +27,7 @@ import {
   toCsv,
   type ExamConfigInput,
   type ExamDto,
+  type ExamOverviewDto,
   type SyllabusTreeDto,
   type SyllabusUploadResult,
 } from "../../packages/shared-types/src/index";
@@ -31,15 +36,23 @@ import { adminApi, downloadCsv, type SyllabusTrees } from "./adminApi";
 // ============================================================================
 // Admin Console → Tab 2: Exams & Syllabus
 // Designed for non-technical educators & admins:
-// 1. One-click WBPSC Exam Presets (WBCS, Clerkship, Food SI, Misc, WBP, TET)
-// 2. AI Bulk Syllabus Generator (Mathematics, History, Geography, Polity,
-//    Science, Current Affairs, General Awareness, Reasoning, English, Bengali)
+// 1. Live Exam Category & Test Series Statistics Banner (Series count, questions
+//    per series, students attempted, and average score for each series)
+// 2. AI Bulk Syllabus Generator with live Subject Add, Inline Edit & Cascade Delete
 // 3. Guided Manual / Pre-populated Subject -> Chapter -> Subtopic Builder
-//    (Bengali auto-filled from presets or translated automatically by AI)
-// 4. Full Interactive CRUD Tree (Inline Rename/Edit, Add Child, Delete)
+// 4. Full Interactive CRUD Tree with Transactional Cascade Delete for Subjects,
+//    Chapters, Subtopics, Entire Syllabus, and Exam Categories
 // ============================================================================
 
 type Notice = { kind: "success" | "error" | "info"; text: string; details?: string[] };
+
+type CascadeDeleteTarget = {
+  kind: "subject" | "chapter" | "subtopic" | "entire_syllabus" | "exam";
+  id?: string;
+  slug?: string;
+  label: string;
+  details: string;
+};
 
 const EMPTY_EXAM: ExamConfigInput = {
   titleEn: "",
@@ -68,10 +81,26 @@ export default function ExamSyllabusPanel({
   const [activeTool, setActiveTool] = useState<"ai" | "manual" | "csv" | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [overviewList, setOverviewList] = useState<ExamOverviewDto[]>([]);
+  const [cascadeTarget, setCascadeTarget] = useState<CascadeDeleteTarget | null>(null);
+  const [cascadeBusy, setCascadeBusy] = useState(false);
 
   const selected = exams.find((e) => e.slug === selectedSlug) ?? null;
   const tree = selected ? trees.trees[selected.slug] : undefined;
   const { loadTree, setTree } = trees;
+
+  const loadOverview = useCallback(async () => {
+    try {
+      const res = await adminApi<{ exams: ExamOverviewDto[] }>("/series/overview");
+      setOverviewList(res.exams);
+    } catch {
+      // ignore if overview fails transiently
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOverview();
+  }, [loadOverview, exams]);
 
   useEffect(() => {
     if (!selectedSlug && exams.length > 0) setSelectedSlug(exams[0].slug);
@@ -80,6 +109,14 @@ export default function ExamSyllabusPanel({
   useEffect(() => {
     if (selectedSlug) loadTree(selectedSlug, true);
   }, [selectedSlug]);
+
+  const selectedOverview = useMemo(
+    () =>
+      selected
+        ? overviewList.find((o) => o.id === selected.id || o.slug === selected.slug) ?? null
+        : null,
+    [overviewList, selected]
+  );
 
   const handleSyllabusFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -101,6 +138,7 @@ export default function ExamSyllabusPanel({
       });
       setTree(updated);
       await reloadExams();
+      await loadOverview();
       const c = result.created;
       setNotice({
         kind: result.errors.length ? "error" : "success",
@@ -136,15 +174,67 @@ export default function ExamSyllabusPanel({
     downloadCsv(`${selected.slug}-syllabus.csv`, toCsv(rows, SYLLABUS_CSV_COLUMNS));
   };
 
-  const handleDeleteExam = async (exam: ExamDto) => {
+  const executeCascadeDelete = async () => {
+    if (!cascadeTarget || !selected) return;
+    setCascadeBusy(true);
     try {
-      await adminApi(`/syllabus/exams/${exam.slug}`, { method: "DELETE" });
-      await reloadExams();
-      const remaining = exams.filter((e) => e.slug !== exam.slug);
-      setSelectedSlug(remaining[0]?.slug ?? null);
-      setNotice({ kind: "success", text: `Deleted exam "${exam.titleEn}".` });
+      if (cascadeTarget.kind === "exam" && cascadeTarget.slug) {
+        const res = await adminApi<{ deleted: boolean; deletedQuestions?: number }>(
+          `/syllabus/exams/${cascadeTarget.slug}`,
+          { method: "DELETE" }
+        );
+        await reloadExams();
+        await loadOverview();
+        const remaining = exams.filter((e) => e.slug !== cascadeTarget.slug);
+        setSelectedSlug(remaining[0]?.slug ?? null);
+        setNotice({
+          kind: "success",
+          text: `Cascade deleted exam "${cascadeTarget.label}"${
+            res.deletedQuestions ? ` along with ${res.deletedQuestions} linked question(s).` : "."
+          }`,
+        });
+      } else if (cascadeTarget.kind === "entire_syllabus" && cascadeTarget.slug) {
+        const res = await adminApi<{
+          deleted: boolean;
+          deletedQuestions?: number;
+          tree: SyllabusTreeDto | null;
+        }>(`/syllabus/exams/${cascadeTarget.slug}/tree`, { method: "DELETE" });
+        if (res.tree) setTree(res.tree);
+        await reloadExams();
+        await loadOverview();
+        setNotice({
+          kind: "success",
+          text: `Cascade deleted entire syllabus for "${cascadeTarget.label}"${
+            res.deletedQuestions ? ` and removed ${res.deletedQuestions} linked question(s).` : "."
+          }`,
+        });
+      } else if (cascadeTarget.id) {
+        const endpoint =
+          cascadeTarget.kind === "subject"
+            ? `/syllabus/subjects/${cascadeTarget.id}`
+            : cascadeTarget.kind === "chapter"
+              ? `/syllabus/chapters/${cascadeTarget.id}`
+              : `/syllabus/subtopics/${cascadeTarget.id}`;
+        const res = await adminApi<{
+          deleted: boolean;
+          deletedQuestions?: number;
+          tree: SyllabusTreeDto | null;
+        }>(endpoint, { method: "DELETE" });
+        if (res.tree) setTree(res.tree);
+        await reloadExams();
+        await loadOverview();
+        setNotice({
+          kind: "success",
+          text: `Cascade deleted ${cascadeTarget.kind} "${cascadeTarget.label}"${
+            res.deletedQuestions ? ` and ${res.deletedQuestions} linked question(s).` : "."
+          }`,
+        });
+      }
+      setCascadeTarget(null);
     } catch (err) {
       setNotice({ kind: "error", text: (err as Error).message });
+    } finally {
+      setCascadeBusy(false);
     }
   };
 
@@ -183,6 +273,7 @@ export default function ExamSyllabusPanel({
         <div className="space-y-1.5 pt-1">
           {exams.map((e) => {
             const isSelected = selectedSlug === e.slug && formMode !== "create";
+            const ov = overviewList.find((o) => o.id === e.id || o.slug === e.slug);
             return (
               <button
                 key={e.slug}
@@ -202,7 +293,7 @@ export default function ExamSyllabusPanel({
                   {e.titleBn}
                 </span>
                 <span className="block text-[11px] text-slate-500 mt-1">
-                  {e.subtopicCount} topics · {e.questionCount} questions
+                  {ov?.seriesCount ?? 0} test series · {e.subtopicCount} topics · {e.questionCount} bank Qs
                   {!e.isActive && <span className="text-rose-400"> · Hidden</span>}
                 </span>
               </button>
@@ -216,7 +307,7 @@ export default function ExamSyllabusPanel({
         </div>
       </div>
 
-      {/* ── Right Column: Exam Details & Syllabus Builder ─────────────── */}
+      {/* ── Right Column: Exam Statistics Banner & Syllabus Builder ───── */}
       <div className="space-y-4 min-w-0">
         {notice && (
           <div
@@ -253,6 +344,12 @@ export default function ExamSyllabusPanel({
             mode={formMode}
             exam={formMode === "edit" ? selected : null}
             tree={formMode === "edit" ? tree : undefined}
+            onTreeUpdated={async (updated, msg) => {
+              setTree(updated);
+              await reloadExams();
+              await loadOverview();
+              if (msg) setNotice({ kind: "success", text: msg });
+            }}
             onCancel={() => setFormMode(null)}
             onSave={async (input) => {
               try {
@@ -267,6 +364,7 @@ export default function ExamSyllabusPanel({
                         body: input,
                       });
                 await reloadExams();
+                await loadOverview();
                 await loadTree(exam.slug, true);
                 setSelectedSlug(exam.slug);
                 setFormMode(null);
@@ -287,7 +385,7 @@ export default function ExamSyllabusPanel({
           />
         ) : selected ? (
           <>
-            {/* ── Exam Header Summary ──────────────────────────────────── */}
+            {/* ── Exam Category & Test Series Statistics Banner ──────────── */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -315,45 +413,179 @@ export default function ExamSyllabusPanel({
                   >
                     <Pencil className="w-3.5 h-3.5" /> Edit Exam Settings
                   </button>
-                  {selected.questionCount === 0 && (
-                    <button
-                      onClick={() => handleDeleteExam(selected)}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 rounded-lg cursor-pointer"
-                      title="Delete this exam"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                  <button
+                    onClick={() =>
+                      setCascadeTarget({
+                        kind: "exam",
+                        slug: selected.slug,
+                        label: selected.titleEn,
+                        details: `This will cascade-delete the entire exam "${selected.titleEn}", all ${tree?.subjects.length ?? 0} subjects, ${totalSubtopics} topics, ${selected.questionCount} bank questions, and ${selectedOverview?.seriesCount ?? 0} test series.`,
+                      })
+                    }
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/25 rounded-lg cursor-pointer"
+                    title="Cascade & delete this exam category"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete Exam
+                  </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-slate-800/80 text-xs">
-                <div>
-                  <span className="block text-slate-500">Questions / Test</span>
-                  <span className="font-semibold text-white">{selected.totalQuestions} MCQs</span>
+              {/* Category-Wide Live Test Series & Student Statistics KPIs */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-3 border-t border-slate-800/80 text-xs">
+                <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                  <span className="block text-[11px] text-slate-400">Test Series in Category</span>
+                  <span className="text-sm font-bold font-mono text-white">
+                    {selectedOverview?.seriesCount ?? 0} Series
+                  </span>
+                  <span className="block text-[11px] text-emerald-400 mt-0.5">
+                    {selectedOverview?.publishedSeriesCount ?? 0} Published ·{" "}
+                    {(selectedOverview?.seriesCount ?? 0) -
+                      (selectedOverview?.publishedSeriesCount ?? 0)}{" "}
+                    Draft
+                  </span>
                 </div>
-                <div>
-                  <span className="block text-slate-500">Duration</span>
-                  <span className="font-semibold text-white">{selected.durationMinutes} mins</span>
+
+                <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                  <span className="block text-[11px] text-slate-400">Series Questions Set</span>
+                  <span className="text-sm font-bold font-mono text-sky-300">
+                    {selectedOverview?.assignedQuestions ?? 0} /{" "}
+                    {selectedOverview?.targetQuestions || selected.totalQuestions} Qs
+                  </span>
+                  <span className="block text-[11px] text-slate-400 mt-0.5">
+                    {selected.questionCount} Qs in Exam Bank
+                  </span>
                 </div>
-                <div>
-                  <span className="block text-slate-500">Correct Answer</span>
-                  <span className="font-semibold text-emerald-400">+{selected.marksPerCorrect}</span>
+
+                <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                  <span className="block text-[11px] text-slate-400">Students Attempted</span>
+                  <span className="text-sm font-bold font-mono text-amber-300">
+                    {selectedOverview?.totalStudentsAttempted ?? 0} Students
+                  </span>
+                  <span className="block text-[11px] text-slate-400 mt-0.5">
+                    {selectedOverview?.totalAttempts ?? 0} Total Attempts
+                  </span>
                 </div>
-                <div>
-                  <span className="block text-slate-500">Wrong Answer</span>
-                  <span className="font-semibold text-rose-400">−{selected.negativeMarksPerWrong}</span>
+
+                <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                  <span className="block text-[11px] text-slate-400">Category Average Score</span>
+                  <span className="text-sm font-bold font-mono text-emerald-400">
+                    {selectedOverview?.averageScore !== null &&
+                    selectedOverview?.averageScore !== undefined
+                      ? `${selectedOverview.averageScore} marks`
+                      : "No attempts yet"}
+                  </span>
+                  <span className="block text-[11px] text-slate-400 mt-0.5">
+                    Target Cutoff: {selected.estimatedCutoffMarks} marks
+                  </span>
                 </div>
-                <div>
-                  <span className="block text-slate-500">Target Cutoff</span>
-                  <span className="font-semibold text-amber-300">
-                    {selected.estimatedCutoffMarks} marks
+
+                <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                  <span className="block text-[11px] text-slate-400">Default Exam Pattern</span>
+                  <span className="text-sm font-bold font-mono text-white">
+                    {selected.totalQuestions} MCQs · {selected.durationMinutes}m
+                  </span>
+                  <span className="block text-[11px] text-slate-400 mt-0.5">
+                    <span className="text-emerald-400">+{selected.marksPerCorrect}</span> /{" "}
+                    <span className="text-rose-400">−{selected.negativeMarksPerWrong}</span>
                   </span>
                 </div>
               </div>
+
+              {/* Per-Test-Series Breakdown Banner Table */}
+              <div className="pt-2 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                    <BarChart3 className="w-3.5 h-3.5 text-amber-400" />
+                    Test Series Breakdown in {selected.titleEn} (
+                    {selectedOverview?.seriesStats?.length ?? 0})
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    Live question count, student participation &amp; average score per test series
+                  </span>
+                </div>
+
+                {!selectedOverview ||
+                !selectedOverview.seriesStats ||
+                selectedOverview.seriesStats.length === 0 ? (
+                  <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 text-xs text-slate-400">
+                    No test series created for <strong>{selected.titleEn}</strong> yet. Open the{" "}
+                    <strong>Test Series</strong> tab to create mock tests or import full question
+                    papers.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/70">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400 bg-slate-900/60">
+                          <th className="text-left py-2 px-3 font-semibold">Test Series Name</th>
+                          <th className="text-left py-2 px-3 font-semibold">Type &amp; Status</th>
+                          <th className="text-right py-2 px-3 font-semibold">
+                            Number of Questions
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold">
+                            Students Attempted
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold">Average Score</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/70">
+                        {selectedOverview.seriesStats.map((st) => (
+                          <tr key={st.id} className="hover:bg-slate-900/40">
+                            <td className="py-2 px-3 font-medium text-white">
+                              <span>{st.name.en}</span>
+                              {st.name.bn && st.name.bn !== st.name.en && (
+                                <span className="block text-[11px] font-bengali text-slate-400">
+                                  {st.name.bn}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-slate-300">
+                              <span className="inline-block px-2 py-0.5 rounded bg-slate-800 text-[11px] text-slate-200 mr-1.5">
+                                {SERIES_KIND_LABELS[st.kind]}
+                              </span>
+                              <span
+                                className={`text-[11px] font-medium ${
+                                  st.status === "published"
+                                    ? "text-emerald-400"
+                                    : st.status === "draft"
+                                      ? "text-amber-300"
+                                      : "text-slate-500"
+                                }`}
+                              >
+                                • {st.status}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono text-sky-300">
+                              {st.selectedCount} / {st.totalQuestions} Qs
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono text-amber-300">
+                              <span className="inline-flex items-center gap-1">
+                                <Users className="w-3 h-3 text-amber-400" />
+                                {st.studentCount} student{st.studentCount === 1 ? "" : "s"}
+                              </span>
+                              <span className="block text-[10px] text-slate-400">
+                                ({st.attemptCount} attempt{st.attemptCount === 1 ? "" : "s"})
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono">
+                              {st.averageScore !== null ? (
+                                <span className="text-emerald-400 font-semibold">
+                                  {st.averageScore} / {st.maxMarks}
+                                </span>
+                              ) : (
+                                <span className="text-slate-500">No attempts</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* ── Syllabus Action Bar (AI / Guided Entry / CSV) ────────── */}
+            {/* ── Syllabus Action Bar (AI / Guided Entry / CSV / Cascade Delete) ── */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
@@ -366,7 +598,7 @@ export default function ExamSyllabusPanel({
                     Build or edit the complete syllabus for <strong>{selected.titleEn}</strong>. Use{" "}
                     <strong>Generate Syllabus with AI</strong> for a complete 1-click setup,{" "}
                     <strong>Add Subject / Topic</strong> for guided manual entry with presets, or
-                    click any item in the tree below to rename or delete it.
+                    use the edit/delete buttons on any subject, chapter, or subtopic below.
                   </p>
                 </div>
 
@@ -403,6 +635,23 @@ export default function ExamSyllabusPanel({
                   >
                     <Upload className="w-3.5 h-3.5" /> Excel / CSV
                   </button>
+
+                  {tree && tree.subjects.length > 0 && (
+                    <button
+                      onClick={() =>
+                        setCascadeTarget({
+                          kind: "entire_syllabus",
+                          slug: selected.slug,
+                          label: `${selected.titleEn} Syllabus`,
+                          details: `This will cascade-delete all ${tree.subjects.length} subjects, ${totalChapters} chapters, ${totalSubtopics} subtopics, and all ${selected.questionCount} questions linked to this syllabus so you can start fresh.`,
+                        })
+                      }
+                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/25 rounded-lg cursor-pointer transition-colors"
+                      title="Cascade delete all subjects, topics, and linked questions in this syllabus"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Delete Entire Syllabus
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -410,11 +659,19 @@ export default function ExamSyllabusPanel({
               {activeTool === "ai" && (
                 <AiSyllabusBuilder
                   exam={selected}
+                  tree={tree}
                   existingSubjects={tree?.subjects.map((s) => s.name.en) ?? []}
                   onClose={() => setActiveTool(null)}
+                  onTreeUpdated={async (updatedTree, msg) => {
+                    setTree(updatedTree);
+                    await reloadExams();
+                    await loadOverview();
+                    if (msg) setNotice({ kind: "success", text: msg });
+                  }}
                   onGenerated={async (updatedTree, result, modelUsed, skippedDuplicates) => {
                     setTree(updatedTree);
                     await reloadExams();
+                    await loadOverview();
                     setActiveTool(null);
                     const added = result.created.subjects + result.created.chapters + result.created.subtopics;
                     setNotice({
@@ -438,6 +695,7 @@ export default function ExamSyllabusPanel({
                   onSaved={async (updatedTree, msg) => {
                     setTree(updatedTree);
                     await reloadExams();
+                    await loadOverview();
                     setNotice({ kind: "success", text: msg });
                   }}
                   onError={(msg) => setNotice({ kind: "error", text: msg })}
@@ -533,9 +791,11 @@ export default function ExamSyllabusPanel({
                 <EditableSyllabusTree
                   exam={selected}
                   tree={tree}
+                  onRequestCascadeDelete={(target) => setCascadeTarget(target)}
                   onTreeUpdated={async (updated, message) => {
                     setTree(updated);
                     await reloadExams();
+                    await loadOverview();
                     if (message) setNotice({ kind: "success", text: message });
                   }}
                   onError={(msg) => setNotice({ kind: "error", text: msg })}
@@ -551,25 +811,71 @@ export default function ExamSyllabusPanel({
           </div>
         )}
       </div>
+
+      {/* ── Cascade & Delete Confirmation Modal ───────────────────────── */}
+      {cascadeTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-500/40 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-rose-500/15 text-rose-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-sm font-bold text-white">
+                  Cascade &amp; Delete “{cascadeTarget.label}”?
+                </h4>
+                <p className="text-xs text-slate-300 leading-relaxed">{cascadeTarget.details}</p>
+                <p className="text-[11px] text-rose-300 font-medium pt-1">
+                  All child topics, linked questions in the Question Bank, and test series slots
+                  referencing this item will be automatically cascade-deleted.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={cascadeBusy}
+                onClick={() => setCascadeTarget(null)}
+                className="px-3.5 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={cascadeBusy}
+                onClick={executeCascadeDelete}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {cascadeBusy ? "Cascade Deleting…" : "Yes, Cascade & Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ============================================================================
-// 1. AI Bulk Syllabus Generator Component
+// 1. AI Bulk Syllabus Generator Component (with Add, Edit & Delete Subject)
 // ============================================================================
 
 function AiSyllabusBuilder({
   exam,
+  tree,
   existingSubjects,
   onClose,
+  onTreeUpdated,
   onGenerated,
   onError,
 }: {
   exam: ExamDto;
+  tree: SyllabusTreeDto | undefined;
   /** Subjects the exam already has — pre-selected so the AI fills their gaps */
   existingSubjects: string[];
   onClose: () => void;
+  onTreeUpdated: (tree: SyllabusTreeDto, message?: string) => Promise<void>;
   onGenerated: (
     tree: SyllabusTreeDto,
     result: SyllabusUploadResult,
@@ -578,20 +884,75 @@ function AiSyllabusBuilder({
   ) => Promise<void>;
   onError: (msg: string) => void;
 }) {
-  const allSubjectNames = useMemo(() => WBPSC_SUBJECT_PRESETS.map((s) => s.en), []);
-  // Nothing ticked = the AI decides this exam's subjects itself
-  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(() => new Set(existingSubjects));
-  const presets = useMemo(
-    () => [
-      ...WBPSC_SUBJECT_PRESETS,
-      ...existingSubjects
-        .filter((n) => !WBPSC_SUBJECT_PRESETS.some((p) => p.en === n))
-        .map((n) => ({ en: n, bn: "" })),
-    ],
-    [existingSubjects]
+  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(
+    () => new Set(existingSubjects)
   );
+  // Track custom/renamed preset items and hidden preset names so every item in the list is editable & deletable
+  const [customPresets, setCustomPresets] = useState<Array<{ en: string; bn: string }>>([]);
+  const [hiddenPresetNames, setHiddenPresetNames] = useState<Set<string>>(() => new Set());
   const [customSubject, setCustomSubject] = useState("");
+  const [customSubjectBn, setCustomSubjectBn] = useState("");
+  const [addingSubject, setAddingSubject] = useState(false);
+  const [editingSubjectKey, setEditingSubjectKey] = useState<string | null>(null);
+  const [editEn, setEditEn] = useState("");
+  const [editBn, setEditBn] = useState("");
+  const [subjectBusy, setSubjectBusy] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Merge DB subjects + default WBPSC presets + custom added subjects into one unified list
+  const subjectItems = useMemo(() => {
+    const list: Array<{ id?: string; en: string; bn: string; questionCount?: number }> = [];
+    const seen = new Set<string>();
+
+    // First include all presets that haven't been deleted/hidden, attaching DB id if present in tree
+    for (const p of WBPSC_SUBJECT_PRESETS) {
+      if (hiddenPresetNames.has(p.en.toLowerCase())) continue;
+      const dbMatch = tree?.subjects.find(
+        (s) => s.name.en.toLowerCase() === p.en.toLowerCase()
+      );
+      const qCount = dbMatch
+        ? dbMatch.chapters.reduce(
+            (n, c) => n + c.subtopics.reduce((m, t) => m + t.questionCount, 0),
+            0
+          )
+        : 0;
+      seen.add(p.en.toLowerCase());
+      if (dbMatch) seen.add(dbMatch.name.en.toLowerCase());
+      list.push({
+        id: dbMatch?.id,
+        en: dbMatch?.name.en ?? p.en,
+        bn: dbMatch?.name.bn || p.bn,
+        questionCount: qCount,
+      });
+    }
+
+    // Next include any DB subjects in tree not already in WBPSC_SUBJECT_PRESETS
+    for (const s of tree?.subjects ?? []) {
+      const key = s.name.en.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const qCount = s.chapters.reduce(
+        (n, c) => n + c.subtopics.reduce((m, t) => m + t.questionCount, 0),
+        0
+      );
+      list.push({
+        id: s.id,
+        en: s.name.en,
+        bn: s.name.bn,
+        questionCount: qCount,
+      });
+    }
+
+    // Finally include any custom added subjects not yet in DB
+    for (const c of customPresets) {
+      const key = c.en.toLowerCase();
+      if (seen.has(key) || hiddenPresetNames.has(key)) continue;
+      seen.add(key);
+      list.push({ en: c.en, bn: c.bn });
+    }
+
+    return list;
+  }, [tree?.subjects, customPresets, hiddenPresetNames]);
 
   const toggleSubject = (name: string) => {
     setSelectedSubjects((prev) => {
@@ -602,11 +963,140 @@ function AiSyllabusBuilder({
     });
   };
 
-  const handleAddCustom = () => {
+  // Add a new subject: immediately displays in the grid AND saves to the exam's syllabus in DB
+  const handleAddCustom = async () => {
     const trimmed = customSubject.trim();
     if (!trimmed) return;
+    const trimmedBn = customSubjectBn.trim();
+
+    // Ensure it isn't hidden if it was previously removed
+    setHiddenPresetNames((prev) => {
+      const next = new Set(prev);
+      next.delete(trimmed.toLowerCase());
+      return next;
+    });
+    setCustomPresets((prev) => [
+      ...prev.filter((p) => p.en.toLowerCase() !== trimmed.toLowerCase()),
+      { en: trimmed, bn: trimmedBn },
+    ]);
     setSelectedSubjects((prev) => new Set([...prev, trimmed]));
     setCustomSubject("");
+    setCustomSubjectBn("");
+
+    setAddingSubject(true);
+    try {
+      const res = await adminApi<{ tree: SyllabusTreeDto }>(
+        `/syllabus/exams/${exam.slug}/nodes`,
+        {
+          method: "POST",
+          body: {
+            subjectEn: trimmed,
+            subjectBn: trimmedBn || undefined,
+            chapterEn: `${trimmed} — Core Topics`,
+            subtopicEn: `${trimmed} — Fundamentals & Practice`,
+          },
+        }
+      );
+      await onTreeUpdated(res.tree, `Added subject "${trimmed}" to ${exam.titleEn} syllabus.`);
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setAddingSubject(false);
+    }
+  };
+
+  const handleSaveSubjectEdit = async (item: { id?: string; en: string; bn: string }) => {
+    const nextEn = editEn.trim();
+    const nextBn = editBn.trim();
+    if (!nextEn) return;
+
+    setSubjectBusy(item.en);
+    try {
+      if (item.id) {
+        const res = await adminApi<{ tree: SyllabusTreeDto }>(`/syllabus/subjects/${item.id}`, {
+          method: "PATCH",
+          body: {
+            nameEn: nextEn,
+            nameBn: nextBn || undefined,
+          },
+        });
+        await onTreeUpdated(res.tree, `Renamed subject "${item.en}" to "${nextEn}".`);
+      } else {
+        // Rename preset/custom item and persist to DB so it's saved
+        setHiddenPresetNames((prev) => new Set([...prev, item.en.toLowerCase()]));
+        setCustomPresets((prev) => [
+          ...prev.filter(
+            (p) =>
+              p.en.toLowerCase() !== item.en.toLowerCase() &&
+              p.en.toLowerCase() !== nextEn.toLowerCase()
+          ),
+          { en: nextEn, bn: nextBn },
+        ]);
+        const res = await adminApi<{ tree: SyllabusTreeDto }>(
+          `/syllabus/exams/${exam.slug}/nodes`,
+          {
+            method: "POST",
+            body: {
+              subjectEn: nextEn,
+              subjectBn: nextBn || undefined,
+              chapterEn: `${nextEn} — Core Topics`,
+              subtopicEn: `${nextEn} — Fundamentals & Practice`,
+            },
+          }
+        );
+        await onTreeUpdated(res.tree, `Saved subject "${nextEn}" to syllabus.`);
+      }
+
+      setSelectedSubjects((prev) => {
+        const next = new Set(prev);
+        if (next.has(item.en)) {
+          next.delete(item.en);
+          next.add(nextEn);
+        }
+        return next;
+      });
+      setEditingSubjectKey(null);
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setSubjectBusy(null);
+    }
+  };
+
+  const handleDeleteSubjectItem = async (item: { id?: string; en: string; bn: string }) => {
+    setSubjectBusy(item.en);
+    try {
+      if (item.id) {
+        const res = await adminApi<{
+          deleted: boolean;
+          deletedQuestions?: number;
+          tree: SyllabusTreeDto | null;
+        }>(`/syllabus/subjects/${item.id}`, {
+          method: "DELETE",
+        });
+        if (res.tree) {
+          await onTreeUpdated(
+            res.tree,
+            `Deleted subject "${item.en}"${
+              res.deletedQuestions ? ` and ${res.deletedQuestions} linked question(s).` : "."
+            }`
+          );
+        }
+      }
+      setHiddenPresetNames((prev) => new Set([...prev, item.en.toLowerCase()]));
+      setCustomPresets((prev) =>
+        prev.filter((p) => p.en.toLowerCase() !== item.en.toLowerCase())
+      );
+      setSelectedSubjects((prev) => {
+        const next = new Set(prev);
+        next.delete(item.en);
+        return next;
+      });
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setSubjectBusy(null);
+    }
   };
 
   const handleGenerate = async () => {
@@ -641,10 +1131,9 @@ function AiSyllabusBuilder({
           </h4>
           <p className="text-xs text-slate-300 mt-1">
             AI builds the complete bilingual (English + বাংলা) <strong>Subjects → Chapters →
-            Subtopics</strong> tree for this exam. It sees what already exists and only adds what is
-            missing — headings that mean the same as an existing one (e.g. “National Movement” vs
-            “Indian National Movement”) are skipped. Leave every subject unticked to let the AI pick
-            this exam's subjects.
+            Subtopics</strong> tree for this exam. You can also <strong>+ Add</strong> a new subject,
+            or click the <strong>Edit (Pencil)</strong> / <strong>Delete (Trash)</strong> icons on
+            any subject card below.
           </p>
         </div>
         <button
@@ -656,15 +1145,15 @@ function AiSyllabusBuilder({
         </button>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-2.5">
         <div className="flex items-center justify-between text-xs">
           <span className="text-slate-300 font-medium">
-            Included Subjects ({selectedSubjects.size} selected)
+            Included Subjects ({selectedSubjects.size} selected of {subjectItems.length})
           </span>
           <div className="flex gap-3">
             <button
               type="button"
-              onClick={() => setSelectedSubjects(new Set(allSubjectNames))}
+              onClick={() => setSelectedSubjects(new Set(subjectItems.map((s) => s.en)))}
               className="text-violet-300 hover:underline cursor-pointer"
             >
               Select All
@@ -680,57 +1169,153 @@ function AiSyllabusBuilder({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {presets.map((preset) => {
-            const checked = selectedSubjects.has(preset.en);
+          {subjectItems.map((item) => {
+            const checked = selectedSubjects.has(item.en);
+            const isEditing = editingSubjectKey === item.en;
+            const isBusy = subjectBusy === item.en;
+
+            if (isEditing) {
+              return (
+                <div
+                  key={item.en}
+                  className="p-2.5 rounded-lg border border-amber-500/50 bg-slate-950 space-y-2 text-xs"
+                >
+                  <input
+                    value={editEn}
+                    onChange={(e) => setEditEn(e.target.value)}
+                    placeholder="Subject Name (English) *"
+                    className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-white"
+                  />
+                  <input
+                    value={editBn}
+                    onChange={(e) => setEditBn(e.target.value)}
+                    placeholder="বিষয়ের নাম (বাংলা — optional)"
+                    className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-white font-bengali"
+                  />
+                  <div className="flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      disabled={isBusy || !editEn.trim()}
+                      onClick={() => handleSaveSubjectEdit(item)}
+                      className="flex items-center gap-1 px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold rounded cursor-pointer"
+                    >
+                      <Check className="w-3 h-3" /> {isBusy ? "Saving…" : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingSubjectKey(null)}
+                      className="px-2 py-1 text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
             return (
-              <label
-                key={preset.en}
-                className={`flex items-start gap-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+              <div
+                key={item.en}
+                className={`flex items-start justify-between gap-2 p-2.5 rounded-lg border text-xs transition-colors ${
                   checked
                     ? "bg-violet-500/15 border-violet-500/40 text-white"
                     : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"
                 }`}
               >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggleSubject(preset.en)}
-                  disabled={busy}
-                  className="mt-0.5"
-                />
-                <div className="min-w-0">
-                  <span className="block font-medium truncate">{preset.en}</span>
-                  <span className="block text-[11px] font-bengali text-slate-400 truncate">
-                    {preset.bn}
-                  </span>
+                <label className="flex items-start gap-2.5 flex-1 min-w-0 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleSubject(item.en)}
+                    disabled={busy || isBusy}
+                    className="mt-0.5"
+                  />
+                  <div className="min-w-0">
+                    <span className="block font-medium truncate" title={item.en}>
+                      {item.en}
+                    </span>
+                    {item.bn && (
+                      <span className="block text-[11px] font-bengali text-slate-400 truncate">
+                        {item.bn}
+                      </span>
+                    )}
+                    {item.id && (
+                      <span className="inline-block text-[10px] text-emerald-400 mt-0.5">
+                        Saved in Syllabus
+                        {item.questionCount ? ` · ${item.questionCount} Qs` : ""}
+                      </span>
+                    )}
+                  </div>
+                </label>
+
+                <div className="flex items-center gap-0.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={busy || isBusy}
+                    onClick={() => {
+                      setEditingSubjectKey(item.en);
+                      setEditEn(item.en);
+                      setEditBn(item.bn || "");
+                    }}
+                    className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
+                    title={`Edit "${item.en}"`}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || isBusy}
+                    onClick={() => handleDeleteSubjectItem(item)}
+                    className="p-1 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-800 cursor-pointer"
+                    title={
+                      item.id
+                        ? `Cascade delete "${item.en}" from syllabus`
+                        : `Remove "${item.en}" from list`
+                    }
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              </label>
+              </div>
             );
           })}
         </div>
 
-        {/* Custom subject input */}
-        <div className="flex gap-2 pt-1 max-w-md">
+        {/* Custom subject input — adds to list AND saves directly into syllabus */}
+        <div className="flex flex-wrap gap-2 pt-1">
           <input
             value={customSubject}
             onChange={(e) => setCustomSubject(e.target.value)}
             placeholder="Add another subject (e.g. Computer Literacy)…"
-            disabled={busy}
+            disabled={busy || addingSubject}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
                 handleAddCustom();
               }
             }}
-            className="flex-1 px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white"
+            className="flex-1 min-w-[220px] max-w-sm px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white"
+          />
+          <input
+            value={customSubjectBn}
+            onChange={(e) => setCustomSubjectBn(e.target.value)}
+            placeholder="বাংলা নাম (optional — auto-translated)"
+            disabled={busy || addingSubject}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleAddCustom();
+              }
+            }}
+            className="flex-1 min-w-[180px] max-w-xs px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white font-bengali"
           />
           <button
             type="button"
             onClick={handleAddCustom}
-            disabled={busy || !customSubject.trim()}
-            className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+            disabled={busy || addingSubject || !customSubject.trim()}
+            className="px-3.5 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
           >
-            + Add
+            {addingSubject ? "Adding…" : "+ Add Subject"}
           </button>
         </div>
       </div>
@@ -1116,11 +1701,13 @@ type QuickAddChild = {
 function EditableSyllabusTree({
   exam,
   tree,
+  onRequestCascadeDelete,
   onTreeUpdated,
   onError,
 }: {
   exam: ExamDto;
   tree: SyllabusTreeDto;
+  onRequestCascadeDelete: (target: CascadeDeleteTarget) => void;
   onTreeUpdated: (tree: SyllabusTreeDto, message?: string) => Promise<void>;
   onError: (msg: string) => void;
 }) {
@@ -1198,29 +1785,18 @@ function EditableSyllabusTree({
     }
   };
 
-  const handleDeleteNode = async (
+  const handleDeleteNode = (
     kind: "subject" | "chapter" | "subtopic",
     id: string,
-    label: string
+    label: string,
+    details: string
   ) => {
-    if (!window.confirm(`Delete ${kind} "${label}"${kind === "subtopic" ? "" : " and everything under it"}?`)) return;
-    setBusyId(id);
-    try {
-      const endpoint =
-        kind === "subject"
-          ? `/syllabus/subjects/${id}`
-          : kind === "chapter"
-            ? `/syllabus/chapters/${id}`
-            : `/syllabus/subtopics/${id}`;
-      const { tree: updated } = await adminApi<{ tree: SyllabusTreeDto }>(endpoint, {
-        method: "DELETE",
-      });
-      await onTreeUpdated(updated, `Deleted ${kind} "${label}".`);
-    } catch (err) {
-      onError((err as Error).message);
-    } finally {
-      setBusyId(null);
-    }
+    onRequestCascadeDelete({
+      kind,
+      id,
+      label,
+      details,
+    });
   };
 
   const handleQuickAddSubmit = async (e: React.FormEvent) => {
@@ -1382,9 +1958,16 @@ function EditableSyllabusTree({
                   <button
                     type="button"
                     disabled={busyId === s.id}
-                    onClick={() => handleDeleteNode("subject", s.id, s.name.en)}
+                    onClick={() =>
+                      handleDeleteNode(
+                        "subject",
+                        s.id,
+                        s.name.en,
+                        `Delete subject "${s.name.en}" along with its ${s.chapters.length} chapter(s), ${topicCount} subtopic(s), and ${questionCount} linked question(s) in the Question Bank.`
+                      )
+                    }
                     className="p-1 text-slate-500 hover:text-rose-400 cursor-pointer disabled:opacity-40"
-                    title="Delete subject"
+                    title="Cascade & delete subject"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -1462,6 +2045,10 @@ function EditableSyllabusTree({
                 <div className="p-3 space-y-3 border-t border-slate-800/80">
                   {s.chapters.map((c) => {
                     const isEditingChap = editing?.kind === "chapter" && editing.id === c.id;
+                    const chapQuestionCount = c.subtopics.reduce(
+                      (m, t) => m + t.questionCount,
+                      0
+                    );
                     return (
                       <div
                         key={c.id}
@@ -1511,9 +2098,16 @@ function EditableSyllabusTree({
                             <button
                               type="button"
                               disabled={busyId === c.id}
-                              onClick={() => handleDeleteNode("chapter", c.id, c.name.en)}
+                              onClick={() =>
+                                handleDeleteNode(
+                                  "chapter",
+                                  c.id,
+                                  c.name.en,
+                                  `Delete chapter "${c.name.en}" under ${s.name.en} along with its ${c.subtopics.length} subtopic(s) and ${chapQuestionCount} linked question(s).`
+                                )
+                              }
                               className="p-1 text-slate-500 hover:text-rose-400 cursor-pointer disabled:opacity-40"
-                              title="Delete chapter"
+                              title="Cascade & delete chapter"
                             >
                               <Trash2 className="w-3 h-3" />
                             </button>
@@ -1598,9 +2192,16 @@ function EditableSyllabusTree({
                                   <button
                                     type="button"
                                     disabled={busyId === t.id}
-                                    onClick={() => handleDeleteNode("subtopic", t.id, t.name.en)}
+                                    onClick={() =>
+                                      handleDeleteNode(
+                                        "subtopic",
+                                        t.id,
+                                        t.name.en,
+                                        `Delete subtopic "${t.name.en}" (${s.name.en} → ${c.name.en}) and ${t.questionCount} linked question(s).`
+                                      )
+                                    }
                                     className="p-1 text-slate-400 hover:text-rose-400 cursor-pointer disabled:opacity-40"
-                                    title="Delete subtopic"
+                                    title="Cascade & delete subtopic"
                                     aria-label={`Delete subtopic ${t.name.en}`}
                                   >
                                     <Trash2 className="w-3 h-3" />
@@ -1700,12 +2301,14 @@ function ExamForm({
   mode,
   exam,
   tree,
+  onTreeUpdated,
   onSave,
   onCancel,
 }: {
   mode: "create" | "edit";
   exam: ExamDto | null;
   tree?: SyllabusTreeDto;
+  onTreeUpdated?: (tree: SyllabusTreeDto, msg?: string) => Promise<void>;
   onSave: (input: ExamConfigInput) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -1737,6 +2340,14 @@ function ExamForm({
     }
     return map;
   });
+  const [customSubjects, setCustomSubjects] = useState<Array<{ en: string; bn: string }>>([]);
+  const [hiddenSubjects, setHiddenSubjects] = useState<Set<string>>(() => new Set());
+  const [newSubjEn, setNewSubjEn] = useState("");
+  const [newSubjBn, setNewSubjBn] = useState("");
+  const [newSubjCount, setNewSubjCount] = useState("25");
+  const [editingSubjKey, setEditingSubjKey] = useState<string | null>(null);
+  const [editSubjEn, setEditSubjEn] = useState("");
+  const [editSubjBn, setEditSubjBn] = useState("");
   const [saving, setSaving] = useState(false);
 
   const set = <K extends keyof ExamConfigInput>(k: K, v: ExamConfigInput[K]) =>
@@ -1767,22 +2378,42 @@ function ExamForm({
 
   // All subjects to display in the per-subject question count configurator
   const subjectOptions = useMemo(() => {
-    const items: Array<{ en: string; bn: string }> = [...WBPSC_SUBJECT_PRESETS];
-    const seen = new Set(items.map((i) => i.en.toLowerCase()));
+    const items: Array<{ id?: string; en: string; bn: string }> = [];
+    const seen = new Set<string>();
+
+    for (const p of WBPSC_SUBJECT_PRESETS) {
+      if (hiddenSubjects.has(p.en.toLowerCase())) continue;
+      const dbMatch = tree?.subjects.find((s) => s.name.en.toLowerCase() === p.en.toLowerCase());
+      seen.add(p.en.toLowerCase());
+      if (dbMatch) seen.add(dbMatch.name.en.toLowerCase());
+      items.push({
+        id: dbMatch?.id,
+        en: dbMatch?.name.en ?? p.en,
+        bn: dbMatch?.name.bn || p.bn,
+      });
+    }
     for (const s of tree?.subjects ?? []) {
-      if (!seen.has(s.name.en.toLowerCase())) {
-        seen.add(s.name.en.toLowerCase());
-        items.push({ en: s.name.en, bn: s.name.bn });
+      const k = s.name.en.toLowerCase();
+      if (!seen.has(k) && !hiddenSubjects.has(k)) {
+        seen.add(k);
+        items.push({ id: s.id, en: s.name.en, bn: s.name.bn });
+      }
+    }
+    for (const c of customSubjects) {
+      const k = c.en.toLowerCase();
+      if (!seen.has(k) && !hiddenSubjects.has(k)) {
+        seen.add(k);
+        items.push({ en: c.en, bn: c.bn });
       }
     }
     for (const k of Object.keys(subjectCounts)) {
-      if (!seen.has(k.toLowerCase())) {
+      if (!seen.has(k.toLowerCase()) && !hiddenSubjects.has(k.toLowerCase())) {
         seen.add(k.toLowerCase());
         items.push({ en: k, bn: "" });
       }
     }
     return items;
-  }, [tree?.subjects, subjectCounts]);
+  }, [tree?.subjects, customSubjects, hiddenSubjects, subjectCounts]);
 
   const configuredSubjectSum = useMemo(
     () =>
@@ -1801,6 +2432,87 @@ function ExamForm({
       } else {
         next[en] = "25";
       }
+      return next;
+    });
+  };
+
+  const handleAddSubjectOption = () => {
+    const trimmed = newSubjEn.trim();
+    if (!trimmed) return;
+    setHiddenSubjects((prev) => {
+      const next = new Set(prev);
+      next.delete(trimmed.toLowerCase());
+      return next;
+    });
+    setCustomSubjects((prev) => [
+      ...prev.filter((c) => c.en.toLowerCase() !== trimmed.toLowerCase()),
+      { en: trimmed, bn: newSubjBn.trim() },
+    ]);
+    setSubjectCounts((prev) => ({
+      ...prev,
+      [trimmed]: String(Number(newSubjCount) || 25),
+    }));
+    setNewSubjEn("");
+    setNewSubjBn("");
+  };
+
+  const handleSaveSubjectRename = async (subj: { id?: string; en: string; bn: string }) => {
+    const nextEn = editSubjEn.trim();
+    const nextBn = editSubjBn.trim();
+    if (!nextEn) return;
+
+    if (subj.id && onTreeUpdated) {
+      try {
+        const res = await adminApi<{ tree: SyllabusTreeDto }>(`/syllabus/subjects/${subj.id}`, {
+          method: "PATCH",
+          body: { nameEn: nextEn, nameBn: nextBn || undefined },
+        });
+        await onTreeUpdated(res.tree, `Renamed subject "${subj.en}" to "${nextEn}".`);
+      } catch {
+        // fallback to local update
+      }
+    }
+
+    setHiddenSubjects((prev) => new Set([...prev, subj.en.toLowerCase()]));
+    setCustomSubjects((prev) => [
+      ...prev.filter(
+        (c) =>
+          c.en.toLowerCase() !== subj.en.toLowerCase() &&
+          c.en.toLowerCase() !== nextEn.toLowerCase()
+      ),
+      { en: nextEn, bn: nextBn },
+    ]);
+    setSubjectCounts((prev) => {
+      const next = { ...prev };
+      if (next[subj.en] !== undefined) {
+        const countVal = next[subj.en];
+        delete next[subj.en];
+        next[nextEn] = countVal;
+      }
+      return next;
+    });
+    setEditingSubjKey(null);
+  };
+
+  const handleDeleteSubjectOption = async (subj: { id?: string; en: string; bn: string }) => {
+    if (subj.id && onTreeUpdated) {
+      try {
+        const res = await adminApi<{ tree: SyllabusTreeDto | null }>(
+          `/syllabus/subjects/${subj.id}`,
+          { method: "DELETE" }
+        );
+        if (res.tree) {
+          await onTreeUpdated(res.tree, `Deleted subject "${subj.en}".`);
+        }
+      } catch {
+        // fallback to local removal
+      }
+    }
+    setHiddenSubjects((prev) => new Set([...prev, subj.en.toLowerCase()]));
+    setCustomSubjects((prev) => prev.filter((c) => c.en.toLowerCase() !== subj.en.toLowerCase()));
+    setSubjectCounts((prev) => {
+      const next = { ...prev };
+      delete next[subj.en];
       return next;
     });
   };
@@ -1947,7 +2659,7 @@ function ExamForm({
             </span>
             <span className="block text-[11px] text-slate-400">
               Set how many questions each subject has in this exam (e.g. Clerkship: GS 40, Arithmetic 30,
-              English 30 = 100 Qs). Used automatically when creating Test Series or 1-Click AI Question Sets.
+              English 30 = 100 Qs). You can also add, rename, or delete subjects below.
             </span>
           </div>
           {configuredSubjectSum > 0 && (
@@ -1960,6 +2672,46 @@ function ExamForm({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
           {subjectOptions.map((subj) => {
             const checked = subjectCounts[subj.en] !== undefined;
+            const isEditing = editingSubjKey === subj.en;
+
+            if (isEditing) {
+              return (
+                <div
+                  key={subj.en}
+                  className="p-2.5 rounded-lg border border-amber-500/50 bg-slate-900 space-y-2 text-xs"
+                >
+                  <input
+                    value={editSubjEn}
+                    onChange={(e) => setEditSubjEn(e.target.value)}
+                    placeholder="Subject Name (English) *"
+                    className="w-full px-2 py-1 bg-slate-950 border border-slate-700 rounded text-white"
+                  />
+                  <input
+                    value={editSubjBn}
+                    onChange={(e) => setEditSubjBn(e.target.value)}
+                    placeholder="বিষয়ের নাম (বাংলা)"
+                    className="w-full px-2 py-1 bg-slate-950 border border-slate-700 rounded text-white font-bengali"
+                  />
+                  <div className="flex justify-end gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleSaveSubjectRename(subj)}
+                      className="px-2.5 py-1 bg-amber-500 text-slate-950 font-semibold rounded cursor-pointer"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingSubjKey(null)}
+                      className="px-2 py-1 text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div
                 key={subj.en}
@@ -1985,23 +2737,78 @@ function ExamForm({
                     )}
                   </div>
                 </label>
-                {checked && (
-                  <input
-                    type="number"
-                    min={1}
-                    max={200}
-                    value={subjectCounts[subj.en]}
-                    onChange={(e) => {
-                      const val = e.target.value.replace(/[^\d]/g, "");
-                      setSubjectCounts((prev) => ({ ...prev, [subj.en]: val }));
+                <div className="flex items-center gap-1 shrink-0">
+                  {checked && (
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={subjectCounts[subj.en]}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/[^\d]/g, "");
+                        setSubjectCounts((prev) => ({ ...prev, [subj.en]: val }));
+                      }}
+                      placeholder="Qs"
+                      className="w-14 px-1.5 py-1 text-xs text-right font-mono bg-slate-950 border border-slate-700 rounded text-white"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingSubjKey(subj.en);
+                      setEditSubjEn(subj.en);
+                      setEditSubjBn(subj.bn || "");
                     }}
-                    placeholder="Qs"
-                    className="w-16 px-2 py-1 text-xs text-right font-mono bg-slate-950 border border-slate-700 rounded text-white"
-                  />
-                )}
+                    className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
+                    title={`Edit "${subj.en}"`}
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteSubjectOption(subj)}
+                    className="p-1 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-800 cursor-pointer"
+                    title={`Delete "${subj.en}"`}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
             );
           })}
+        </div>
+
+        {/* Add Custom Subject in Exam Form */}
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <input
+            value={newSubjEn}
+            onChange={(e) => setNewSubjEn(e.target.value)}
+            placeholder="Add another subject (e.g. Computer Literacy)…"
+            className="flex-1 min-w-[200px] max-w-xs px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white"
+          />
+          <input
+            value={newSubjBn}
+            onChange={(e) => setNewSubjBn(e.target.value)}
+            placeholder="বাংলা নাম (optional)"
+            className="flex-1 min-w-[160px] max-w-xs px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white font-bengali"
+          />
+          <input
+            type="number"
+            min={1}
+            max={200}
+            value={newSubjCount}
+            onChange={(e) => setNewSubjCount(e.target.value)}
+            placeholder="Qs"
+            className="w-20 px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white font-mono text-right"
+          />
+          <button
+            type="button"
+            onClick={handleAddSubjectOption}
+            disabled={!newSubjEn.trim()}
+            className="px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+          >
+            + Add Subject
+          </button>
         </div>
       </div>
 

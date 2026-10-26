@@ -254,7 +254,12 @@ export async function toSeriesDtos(dbx: Dbx, rows: SeriesRow[]): Promise<SeriesD
       )
       .groupBy(questionIngestionJobs.targetSeriesId),
     dbx
-      .select({ seriesId: testAttempts.seriesId, n: sql<number>`count(*)::int` })
+      .select({
+        seriesId: testAttempts.seriesId,
+        n: sql<number>`count(*)::int`,
+        students: sql<number>`count(distinct ${testAttempts.userId})::int`,
+        avgScore: sql<number | null>`round(avg(${testAttempts.finalNetScore})::numeric, 2)::float`,
+      })
       .from(testAttempts)
       .where(inArray(testAttempts.seriesId, ids))
       .groupBy(testAttempts.seriesId),
@@ -280,6 +285,7 @@ export async function toSeriesDtos(dbx: Dbx, rows: SeriesRow[]): Promise<SeriesD
     ).rosterTotal;
     const mine = selectedRows.filter((x) => x.seriesId === r.id);
     const selectedCount = mine.reduce((sum, x) => sum + x.n, 0);
+    const att = attempts.find((x) => x.seriesId === r.id);
     return {
       id: r.id,
       examId: r.examId,
@@ -301,7 +307,9 @@ export async function toSeriesDtos(dbx: Dbx, rows: SeriesRow[]): Promise<SeriesD
       selectedCount,
       reservedCount: reserved.find((x) => x.seriesId === r.id)?.n ?? 0,
       completionPct: total > 0 ? Math.min(100, Math.round((selectedCount / total) * 100)) : 0,
-      attemptCount: attempts.find((x) => x.seriesId === r.id)?.n ?? 0,
+      attemptCount: att?.n ?? 0,
+      studentCount: att?.students ?? 0,
+      averageScore: att && att.n > 0 ? (att.avgScore ?? 0) : null,
       updatedAt: r.updatedAt.toISOString(),
     };
   });

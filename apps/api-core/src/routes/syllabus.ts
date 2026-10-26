@@ -1,8 +1,20 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { asc, eq, sql } from "drizzle-orm";
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/index";
-import { exams, examSeries, seriesRosterSlots, subjects, chapters, subtopics, questions } from "../db/schema";
+import {
+  attemptAnswers,
+  chapters,
+  exams,
+  examSeries,
+  questionIngestionJobs,
+  questions,
+  seriesQuestions,
+  seriesRosterSlots,
+  subjects,
+  subtopics,
+  testAttempts,
+} from "../db/schema";
 import {
   ExamConfigInputSchema,
   ExamSlugSchema,
@@ -28,17 +40,157 @@ import {
 } from "../lib/aiEnrichment";
 
 type LoadedSyllabusMap = Awaited<ReturnType<typeof loadSyllabus>>;
-/** Names of test series whose subject/topic counts use this syllabus node. */
-async function seriesUsing(
-  column: typeof seriesRosterSlots.subjectId | typeof seriesRosterSlots.chapterId | typeof seriesRosterSlots.subtopicId,
-  id: string
-): Promise<string | null> {
-  const rows = await db
-    .selectDistinct({ name: examSeries.name })
-    .from(seriesRosterSlots)
-    .innerJoin(examSeries, eq(seriesRosterSlots.seriesId, examSeries.id))
-    .where(eq(column, id));
-  return rows.length ? rows.map((r) => r.name.en).join(", ") : null;
+
+/**
+ * Performs a safe, transactional cascade delete of a syllabus node (subtopic, chapter,
+ * subject, entire exam syllabus tree, or entire exam) along with any dependent questions,
+ * series question assignments, series blueprint slots, and attempt answer references.
+ */
+async function cascadeDeleteSyllabusScope(scope: {
+  subtopicId?: string;
+  chapterId?: string;
+  subjectId?: string;
+  examIdForTreeOnly?: string;
+  examIdFullDelete?: string;
+}): Promise<{ deletedQuestions: number }> {
+  return db.transaction(async (tx) => {
+    let targetSubjectIds: string[] = [];
+    let targetSubtopicIds: string[] = [];
+    let targetQuestionIds: string[] = [];
+
+    const examId = scope.examIdForTreeOnly ?? scope.examIdFullDelete;
+
+    if (examId) {
+      const subjRows = await tx
+        .select({ id: subjects.id })
+        .from(subjects)
+        .where(eq(subjects.examId, examId));
+      targetSubjectIds = subjRows.map((r) => r.id);
+
+      if (targetSubjectIds.length > 0) {
+        const subRows = await tx
+          .select({ id: subtopics.id })
+          .from(subtopics)
+          .where(inArray(subtopics.subjectId, targetSubjectIds));
+        targetSubtopicIds = subRows.map((r) => r.id);
+      }
+
+      const qRows = await tx
+        .select({ id: questions.id })
+        .from(questions)
+        .where(eq(questions.examId, examId));
+      targetQuestionIds = qRows.map((r) => r.id);
+    } else if (scope.subjectId) {
+      targetSubjectIds = [scope.subjectId];
+      const subRows = await tx
+        .select({ id: subtopics.id })
+        .from(subtopics)
+        .where(eq(subtopics.subjectId, scope.subjectId));
+      targetSubtopicIds = subRows.map((r) => r.id);
+
+      const qRows = await tx
+        .select({ id: questions.id })
+        .from(questions)
+        .where(eq(questions.subjectId, scope.subjectId));
+      targetQuestionIds = qRows.map((r) => r.id);
+    } else if (scope.chapterId) {
+      const subRows = await tx
+        .select({ id: subtopics.id })
+        .from(subtopics)
+        .where(eq(subtopics.chapterId, scope.chapterId));
+      targetSubtopicIds = subRows.map((r) => r.id);
+
+      const qRows = await tx
+        .select({ id: questions.id })
+        .from(questions)
+        .where(eq(questions.chapterId, scope.chapterId));
+      targetQuestionIds = qRows.map((r) => r.id);
+    } else if (scope.subtopicId) {
+      targetSubtopicIds = [scope.subtopicId];
+      const qRows = await tx
+        .select({ id: questions.id })
+        .from(questions)
+        .where(eq(questions.subtopicId, scope.subtopicId));
+      targetQuestionIds = qRows.map((r) => r.id);
+    }
+
+    // 1. Delete attemptAnswers referencing questions or subtopics in scope
+    if (targetQuestionIds.length > 0) {
+      await tx.delete(attemptAnswers).where(inArray(attemptAnswers.questionId, targetQuestionIds));
+    }
+    if (targetSubtopicIds.length > 0) {
+      await tx.delete(attemptAnswers).where(inArray(attemptAnswers.subtopicId, targetSubtopicIds));
+    }
+
+    // 2. Delete seriesQuestions referencing questions or nodes in scope
+    if (targetQuestionIds.length > 0) {
+      await tx.delete(seriesQuestions).where(inArray(seriesQuestions.questionId, targetQuestionIds));
+    }
+    if (scope.subtopicId) {
+      await tx.delete(seriesQuestions).where(eq(seriesQuestions.subtopicId, scope.subtopicId));
+    }
+    if (scope.chapterId) {
+      await tx.delete(seriesQuestions).where(eq(seriesQuestions.chapterId, scope.chapterId));
+    }
+    if (targetSubjectIds.length > 0) {
+      await tx.delete(seriesQuestions).where(inArray(seriesQuestions.subjectId, targetSubjectIds));
+    }
+
+    // 3. Delete seriesRosterSlots referencing nodes in scope
+    if (scope.subtopicId) {
+      await tx.delete(seriesRosterSlots).where(eq(seriesRosterSlots.subtopicId, scope.subtopicId));
+    }
+    if (scope.chapterId) {
+      await tx.delete(seriesRosterSlots).where(eq(seriesRosterSlots.chapterId, scope.chapterId));
+    }
+    if (targetSubjectIds.length > 0) {
+      await tx.delete(seriesRosterSlots).where(inArray(seriesRosterSlots.subjectId, targetSubjectIds));
+    }
+
+    // 4. Clean up questionIngestionJobs references
+    if (scope.subtopicId) {
+      await tx
+        .update(questionIngestionJobs)
+        .set({ subtopicId: null })
+        .where(eq(questionIngestionJobs.subtopicId, scope.subtopicId));
+    }
+    if (scope.chapterId) {
+      await tx
+        .update(questionIngestionJobs)
+        .set({ chapterId: null, subtopicId: null })
+        .where(eq(questionIngestionJobs.chapterId, scope.chapterId));
+    }
+    if (targetSubjectIds.length > 0) {
+      await tx
+        .update(questionIngestionJobs)
+        .set({ subjectId: null, chapterId: null, subtopicId: null })
+        .where(inArray(questionIngestionJobs.subjectId, targetSubjectIds));
+    }
+
+    // 5. Delete questions in scope
+    if (targetQuestionIds.length > 0) {
+      await tx.delete(questions).where(inArray(questions.id, targetQuestionIds));
+    }
+
+    // 6. Delete the target node(s)
+    if (scope.subtopicId) {
+      await tx.delete(subtopics).where(eq(subtopics.id, scope.subtopicId));
+    } else if (scope.chapterId) {
+      await tx.delete(chapters).where(eq(chapters.id, scope.chapterId));
+    } else if (scope.subjectId) {
+      await tx.delete(subjects).where(eq(subjects.id, scope.subjectId));
+    } else if (scope.examIdForTreeOnly) {
+      await tx.delete(subjects).where(eq(subjects.examId, scope.examIdForTreeOnly));
+    } else if (scope.examIdFullDelete) {
+      await tx.delete(testAttempts).where(eq(testAttempts.examId, scope.examIdFullDelete));
+      await tx.delete(examSeries).where(eq(examSeries.examId, scope.examIdFullDelete));
+      await tx.delete(questionIngestionJobs).where(eq(questionIngestionJobs.examId, scope.examIdFullDelete));
+      await tx.delete(subjects).where(eq(subjects.examId, scope.examIdFullDelete));
+      await tx.delete(exams).where(eq(exams.id, scope.examIdFullDelete));
+    }
+
+    return { deletedQuestions: targetQuestionIds.length };
+  });
 }
 
 type LoadedExam = NonNullable<ReturnType<LoadedSyllabusMap["get"]>>;
@@ -492,7 +644,7 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
 
   /**
    * 3b. DELETE /admin/syllabus/exams/:slug
-   * Deletes an exam if no live questions exist on it.
+   * Cascade-deletes an exam along with its syllabus, questions, and test series.
    */
   fastify.delete("/exams/:slug", async (request, reply) => {
     const params = ExamParamsSchema.safeParse(request.params);
@@ -505,19 +657,33 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
       .limit(1);
     if (!examRow) return reply.status(404).send({ error: "Exam not found" });
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(questions)
-      .where(eq(questions.examId, examRow.id));
+    const { deletedQuestions } = await cascadeDeleteSyllabusScope({
+      examIdFullDelete: examRow.id,
+    });
+    return { deleted: true, deletedQuestions };
+  });
 
-    if (count > 0) {
-      return reply.status(409).send({
-        error: `Cannot delete "${examRow.title.en}" because it has ${count} live questions. Mark it Inactive instead.`,
-      });
-    }
+  /**
+   * 3c. DELETE /admin/syllabus/exams/:slug/tree
+   * Cascade-deletes the entire syllabus (all subjects, chapters, subtopics, and linked questions)
+   * of an exam while keeping the exam category itself intact.
+   */
+  fastify.delete("/exams/:slug/tree", async (request, reply) => {
+    const params = ExamParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid exam slug" });
 
-    await db.delete(exams).where(eq(exams.id, examRow.id));
-    return { deleted: true };
+    const [examRow] = await db
+      .select()
+      .from(exams)
+      .where(eq(exams.slug, params.data.slug))
+      .limit(1);
+    if (!examRow) return reply.status(404).send({ error: "Exam not found" });
+
+    const { deletedQuestions } = await cascadeDeleteSyllabusScope({
+      examIdForTreeOnly: examRow.id,
+    });
+    const tree = await reloadTreeByExamId(examRow.id);
+    return { deleted: true, deletedQuestions, tree };
   });
 
   /**
@@ -800,24 +966,11 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
       .limit(1);
     if (!subj) return reply.status(404).send({ error: "Subject not found" });
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(questions)
-      .where(eq(questions.subjectId, params.data.id));
-    if (count > 0) {
-      return reply.status(409).send({
-        error: `Cannot delete this Subject because ${count} live question(s) are linked to it.`,
-      });
-    }
-    const usedBy = await seriesUsing(seriesRosterSlots.subjectId, params.data.id);
-    if (usedBy) {
-      return reply.status(409).send({
-        error: `Cannot delete this Subject: the test series ${usedBy} count questions from it. Remove it from their subjects first.`,
-      });
-    }
-    await db.delete(subjects).where(eq(subjects.id, params.data.id));
+    const { deletedQuestions } = await cascadeDeleteSyllabusScope({
+      subjectId: params.data.id,
+    });
     const tree = await reloadTreeByExamId(subj.examId);
-    return { deleted: true, tree };
+    return { deleted: true, deletedQuestions, tree };
   });
 
   fastify.patch("/chapters/:id", async (request, reply) => {
@@ -858,29 +1011,17 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
       .limit(1);
     if (!chap) return reply.status(404).send({ error: "Chapter not found" });
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(questions)
-      .where(eq(questions.chapterId, params.data.id));
-    if (count > 0) {
-      return reply.status(409).send({
-        error: `Cannot delete this Chapter because ${count} live question(s) are linked to it.`,
-      });
-    }
-    const usedBy = await seriesUsing(seriesRosterSlots.chapterId, params.data.id);
-    if (usedBy) {
-      return reply.status(409).send({
-        error: `Cannot delete this Chapter: the test series ${usedBy} count questions from it. Remove it from their subjects first.`,
-      });
-    }
-    await db.delete(chapters).where(eq(chapters.id, params.data.id));
     const [subj] = await db
       .select({ examId: subjects.examId })
       .from(subjects)
       .where(eq(subjects.id, chap.subjectId))
       .limit(1);
+
+    const { deletedQuestions } = await cascadeDeleteSyllabusScope({
+      chapterId: params.data.id,
+    });
     const tree = subj ? await reloadTreeByExamId(subj.examId) : null;
-    return { deleted: true, tree };
+    return { deleted: true, deletedQuestions, tree };
   });
 
   fastify.patch("/subtopics/:id", async (request, reply) => {
@@ -921,28 +1062,16 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
       .limit(1);
     if (!sub) return reply.status(404).send({ error: "Subtopic not found" });
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(questions)
-      .where(eq(questions.subtopicId, params.data.id));
-    if (count > 0) {
-      return reply.status(409).send({
-        error: `Cannot delete this Subtopic because ${count} live question(s) are linked to it.`,
-      });
-    }
-    const usedBy = await seriesUsing(seriesRosterSlots.subtopicId, params.data.id);
-    if (usedBy) {
-      return reply.status(409).send({
-        error: `Cannot delete this Subtopic: the test series ${usedBy} count questions from it. Remove it from their subjects first.`,
-      });
-    }
-    await db.delete(subtopics).where(eq(subtopics.id, params.data.id));
     const [subj] = await db
       .select({ examId: subjects.examId })
       .from(subjects)
       .where(eq(subjects.id, sub.subjectId))
       .limit(1);
+
+    const { deletedQuestions } = await cascadeDeleteSyllabusScope({
+      subtopicId: params.data.id,
+    });
     const tree = subj ? await reloadTreeByExamId(subj.examId) : null;
-    return { deleted: true, tree };
+    return { deleted: true, deletedQuestions, tree };
   });
 };
