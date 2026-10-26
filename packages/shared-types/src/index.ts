@@ -270,6 +270,13 @@ export function levenshtein(a: string, b: string): number {
 
 // ─── Exam config & syllabus (admin-managed in PostgreSQL) ────────────────────
 
+export const ExamSubjectWeightageSchema = z.object({
+  subjectEn: z.string().trim().min(1, "Subject English name is required").max(200),
+  subjectBn: z.string().trim().max(200).optional().default(""),
+  weightageQuestions: z.coerce.number().int().min(1).max(300),
+});
+export type ExamSubjectWeightage = z.infer<typeof ExamSubjectWeightageSchema>;
+
 export const ExamConfigInputSchema = z.object({
   slug: ExamSlugSchema.optional(),
   titleEn: z.string().trim().min(2, "English title is required").max(200),
@@ -282,6 +289,8 @@ export const ExamConfigInputSchema = z.object({
   negativeMarksPerWrong: z.coerce.number().min(0).max(5),
   estimatedCutoffMarks: z.coerce.number().min(0).max(1000),
   isActive: z.boolean().default(true),
+  /** Optional per-subject question counts set by Admin during Exam creation/edit */
+  subjectWeightages: z.array(ExamSubjectWeightageSchema).max(30).optional(),
 });
 export type ExamConfigInput = z.infer<typeof ExamConfigInputSchema>;
 
@@ -379,6 +388,8 @@ export interface SyllabusChapterDto extends SyllabusNodeDto {
   subtopics: SyllabusSubtopicDto[];
 }
 export interface SyllabusSubjectDto extends SyllabusNodeDto {
+  /** Number of questions configured for this subject by the Admin (default 25) */
+  weightageQuestions?: number;
   chapters: SyllabusChapterDto[];
 }
 export interface SyllabusTreeDto {
@@ -1067,6 +1078,16 @@ export const WBPSC_EXAM_PRESETS: Array<ExamConfigInput & { slug: string }> = [
     negativeMarksPerWrong: 0.33,
     estimatedCutoffMarks: 120,
     isActive: true,
+    subjectWeightages: [
+      { subjectEn: "General English", subjectBn: "জেনারেল ইংলিশ (General English)", weightageQuestions: 25 },
+      { subjectEn: "General Science & Environment", subjectBn: "সাধারণ বিজ্ঞান ও পরিবেশবিদ্যা", weightageQuestions: 25 },
+      { subjectEn: "Current Affairs & General Awareness (Static GK)", subjectBn: "কারেন্ট অ্যাফেয়ার্স ও সাধারণ জ্ঞান (Static GK)", weightageQuestions: 25 },
+      { subjectEn: "History of India & Indian National Movement", subjectBn: "ভারতের ইতিহাস ও ভারতের জাতীয় আন্দোলন", weightageQuestions: 50 },
+      { subjectEn: "Geography of India & West Bengal", subjectBn: "ভারত ও পশ্চিমবঙ্গের ভূগোল", weightageQuestions: 25 },
+      { subjectEn: "Indian Polity & Constitution", subjectBn: "ভারতের সংবিধান ও রাষ্ট্রব্যবস্থা", weightageQuestions: 13 },
+      { subjectEn: "Indian Economy & Planning", subjectBn: "ভারতের অর্থনীতি ও পরিকল্পনা", weightageQuestions: 12 },
+      { subjectEn: "General Intelligence & Logical Reasoning", subjectBn: "সাধারণ বুদ্ধিমত্তা ও রিজনিং (GI & Reasoning)", weightageQuestions: 25 },
+    ],
   },
   {
     slug: "wbpsc-clerkship-part1",
@@ -1082,6 +1103,14 @@ export const WBPSC_EXAM_PRESETS: Array<ExamConfigInput & { slug: string }> = [
     negativeMarksPerWrong: 0.25,
     estimatedCutoffMarks: 65,
     isActive: true,
+    subjectWeightages: [
+      { subjectEn: "Current Affairs & General Awareness (Static GK)", subjectBn: "কারেন্ট অ্যাফেয়ার্স ও সাধারণ জ্ঞান (Static GK)", weightageQuestions: 15 },
+      { subjectEn: "History of India & Indian National Movement", subjectBn: "ভারতের ইতিহাস ও ভারতের জাতীয় আন্দোলন", weightageQuestions: 10 },
+      { subjectEn: "Geography of India & West Bengal", subjectBn: "ভারত ও পশ্চিমবঙ্গের ভূগোল", weightageQuestions: 8 },
+      { subjectEn: "Indian Polity & Constitution", subjectBn: "ভারতের সংবিধান ও রাষ্ট্রব্যবস্থা", weightageQuestions: 7 },
+      { subjectEn: "Arithmetic & Quantitative Aptitude", subjectBn: "পাটিগণিত ও পরিমাণগত দক্ষতা (Madhyamik Standard)", weightageQuestions: 30 },
+      { subjectEn: "General English", subjectBn: "জেনারেল ইংলিশ (General English)", weightageQuestions: 30 },
+    ],
   },
   {
     slug: "wbpsc-food-si",
@@ -1095,6 +1124,13 @@ export const WBPSC_EXAM_PRESETS: Array<ExamConfigInput & { slug: string }> = [
     negativeMarksPerWrong: 0.25,
     estimatedCutoffMarks: 75,
     isActive: true,
+    subjectWeightages: [
+      { subjectEn: "Current Affairs & General Awareness (Static GK)", subjectBn: "কারেন্ট অ্যাফেয়ার্স ও সাধারণ জ্ঞান (Static GK)", weightageQuestions: 15 },
+      { subjectEn: "History of India & Indian National Movement", subjectBn: "ভারতের ইতিহাস ও ভারতের জাতীয় আন্দোলন", weightageQuestions: 10 },
+      { subjectEn: "Geography of India & West Bengal", subjectBn: "ভারত ও পশ্চিমবঙ্গের ভূগোল", weightageQuestions: 10 },
+      { subjectEn: "General Science & Environment", subjectBn: "সাধারণ বিজ্ঞান ও পরিবেশবিদ্যা", weightageQuestions: 15 },
+      { subjectEn: "Arithmetic & Quantitative Aptitude", subjectBn: "পাটিগণিত ও পরিমাণগত দক্ষতা (Madhyamik Standard)", weightageQuestions: 50 },
+    ],
   },
   {
     slug: "wbpsc-miscellaneous",
@@ -1108,6 +1144,14 @@ export const WBPSC_EXAM_PRESETS: Array<ExamConfigInput & { slug: string }> = [
     negativeMarksPerWrong: 0.5,
     estimatedCutoffMarks: 110,
     isActive: true,
+    subjectWeightages: [
+      { subjectEn: "Current Affairs & General Awareness (Static GK)", subjectBn: "কারেন্ট অ্যাফেয়ার্স ও সাধারণ জ্ঞান (Static GK)", weightageQuestions: 25 },
+      { subjectEn: "History of India & Indian National Movement", subjectBn: "ভারতের ইতিহাস ও ভারতের জাতীয় আন্দোলন", weightageQuestions: 15 },
+      { subjectEn: "Geography of India & West Bengal", subjectBn: "ভারত ও পশ্চিমবঙ্গের ভূগোল", weightageQuestions: 10 },
+      { subjectEn: "Indian Polity & Constitution", subjectBn: "ভারতের সংবিধান ও রাষ্ট্রব্যবস্থা", weightageQuestions: 10 },
+      { subjectEn: "General Science & Environment", subjectBn: "সাধারণ বিজ্ঞান ও পরিবেশবিদ্যা", weightageQuestions: 15 },
+      { subjectEn: "Arithmetic & Quantitative Aptitude", subjectBn: "পাটিগণিত ও পরিমাণগত দক্ষতা (Madhyamik Standard)", weightageQuestions: 25 },
+    ],
   },
   {
     slug: "wbp-constable-si",
@@ -1121,8 +1165,54 @@ export const WBPSC_EXAM_PRESETS: Array<ExamConfigInput & { slug: string }> = [
     negativeMarksPerWrong: 0.25,
     estimatedCutoffMarks: 55,
     isActive: true,
+    subjectWeightages: [
+      { subjectEn: "Current Affairs & General Awareness (Static GK)", subjectBn: "কারেন্ট অ্যাফেয়ার্স ও সাধারণ জ্ঞান (Static GK)", weightageQuestions: 40 },
+      { subjectEn: "Arithmetic & Quantitative Aptitude", subjectBn: "পাটিগণিত ও পরিমাণগত দক্ষতা (Madhyamik Standard)", weightageQuestions: 30 },
+      { subjectEn: "General Intelligence & Logical Reasoning", subjectBn: "সাধারণ বুদ্ধিমত্তা ও রিজনিং (GI & Reasoning)", weightageQuestions: 30 },
+    ],
   },
 ];
+
+// ─── 1-Click AI Full Question Set Generation (Subject-Wise) ──────────────────
+
+export const SubjectGenerationAllocationSchema = z.object({
+  subjectId: z.string().uuid(),
+  count: z.coerce.number().int().min(1).max(200),
+});
+export type SubjectGenerationAllocation = z.infer<typeof SubjectGenerationAllocationSchema>;
+
+export const GenerateFullQuestionSetInputSchema = z.object({
+  examSlug: z.string().trim().min(1),
+  subjects: z.array(SubjectGenerationAllocationSchema).min(1).max(30),
+  difficulty: z.enum(["easy", "moderate", "hard", "mixed"]).default("mixed"),
+  /** When true, immediately approves & inserts generated questions into the live `questions` table */
+  insertDirectlyToBank: z.boolean().default(true),
+  /** Optional Test Series ID to also assign the generated questions into (and sync subject blueprint if needed) */
+  seriesId: z.string().uuid().nullable().optional(),
+  /** When true and seriesId is given, updates the series' blueprint subject counts to accommodate the generated set */
+  syncSeriesBlueprint: z.boolean().default(true),
+});
+export type GenerateFullQuestionSetInput = z.infer<typeof GenerateFullQuestionSetInputSchema>;
+
+export interface GenerateFullQuestionSetSubjectSummary {
+  subjectId: string;
+  subjectNameEn: string;
+  requested: number;
+  generated: number;
+  insertedLive: number;
+  assignedToSeries: number;
+}
+
+export interface GenerateFullQuestionSetResult {
+  batchId: string;
+  modelUsed: string;
+  totalRequested: number;
+  totalGenerated: number;
+  totalInsertedLive: number;
+  totalAssignedToSeries: number;
+  totalPendingReview: number;
+  subjectSummaries: GenerateFullQuestionSetSubjectSummary[];
+}
 
 
 
@@ -1525,6 +1615,66 @@ export interface StudentSeriesDto {
   marksPerCorrect: number;
   negativeMarksPerWrong: number;
   estimatedCutoffMarks: number;
+}
+
+// ─── Admin: Export & Import Whole Question Set for a Test Series ─────────────
+
+export interface SeriesExportQuestionDto {
+  questionNumber: number;
+  questionId: string;
+  subjectId: string;
+  subjectName: BilingualText;
+  chapterId: string;
+  chapterName: BilingualText;
+  subtopicId: string;
+  subtopicName: BilingualText;
+  stem: BilingualText;
+  options: QuestionOptions;
+  correctOption: OptionKey;
+  explanation: BilingualText;
+  difficulty: DifficultyLevel;
+  source: QuestionSource;
+  previousYearTag: string | null;
+  marksPositive: number;
+  marksNegative: number;
+}
+
+export interface SeriesExportDto {
+  series: SeriesDto;
+  exam: {
+    id: string;
+    slug: string;
+    title: BilingualText;
+    description: BilingualText;
+  };
+  exportedAt: string;
+  questions: SeriesExportQuestionDto[];
+}
+
+export const SeriesImportSetBodySchema = z.object({
+  format: z.enum(["csv", "json", "media"]),
+  fileName: z.string().max(240).optional(),
+  /** Raw text content when format is "csv" or "json" */
+  content: z.string().max(10_000_000).optional(),
+  /** MIME type & base64 data when format is "media" (PDF or Image question paper) */
+  mimeType: z.string().max(120).optional(),
+  base64Data: z.string().max(25_000_000).optional(),
+  source: QuestionSourceSchema.default("educator"),
+  pyqYear: z.coerce.number().int().min(1990).max(2100).nullable().optional(),
+  /** Automatically update/expand the draft series' subject counts to fit the imported question set */
+  autoUpdateBlueprint: z.boolean().default(true),
+});
+export type SeriesImportSetBody = z.infer<typeof SeriesImportSetBodySchema>;
+
+export interface SeriesImportSetResult {
+  totalParsed: number;
+  insertedToBank: number;
+  reusedFromBank: number;
+  assignedToSeries: number;
+  categoriesCreated: number;
+  blueprintUpdated: boolean;
+  errors: Array<{ rowNumber: number; message: string }>;
+  roster: RosterDto;
 }
 
 // ============================================================================

@@ -681,6 +681,21 @@ export default function BulkImportPanel({
             });
             await refresh();
           }}
+          onFullSetGenerated={async (res) => {
+            setBatchId(res.batchId);
+            setStatusFilter(res.totalInsertedLive > 0 ? "inserted" : "pending_review");
+            setOffset(0);
+            await trees.loadTree(exam.slug, true);
+            await Promise.all([refresh(), onQuestionsChanged()]);
+            setNotice({
+              kind: "success",
+              text: `AI generated full set of ${res.totalGenerated} question(s) across ${res.subjectSummaries.length} subjects (${
+                res.totalInsertedLive > 0
+                  ? `${res.totalInsertedLive} live in Question Bank`
+                  : "staged in Review Queue"
+              })!`,
+            });
+          }}
         />
       )}
 

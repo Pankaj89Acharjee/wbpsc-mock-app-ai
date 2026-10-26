@@ -68,14 +68,14 @@ async function startSession(reply: FastifyReply, user: UserRow) {
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, user.id))
     .returning();
-  const token = setSessionCookie(reply, fresh);
-  return { user: toUserDto(fresh), token };
+  setSessionCookie(reply, fresh);
+  return { user: toUserDto(fresh) };
 }
 
 /**
  * Single-admin policy at startup: ADMIN_EMAIL is the only admin.
- * Uses ADMIN_PASSWORD (or defaults to "wbpsc-admin-2026" in dev) so the admin
- * can always sign in with email + password before Google OAuth is configured.
+ * If ADMIN_PASSWORD is set, the admin account is created/updated with it so you
+ * can sign in before Google OAuth is configured.
  */
 export async function ensureAdminAccount(log: { info: (msg: string) => void }) {
   const email = adminEmail();
@@ -85,10 +85,7 @@ export async function ensureAdminAccount(log: { info: (msg: string) => void }) {
     .where(and(eq(users.role, "admin"), email ? ne(users.email, email) : undefined));
   if (!email) return;
 
-  const password =
-    process.env.ADMIN_PASSWORD?.trim() ||
-    (process.env.NODE_ENV !== "production" ? "wbpsc-admin-2026" : "");
-
+  const password = process.env.ADMIN_PASSWORD;
   const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
   if (existing) {
     const passwordStale = password && !(await verifyPassword(password, existing.passwordHash));
@@ -121,8 +118,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
   /** 1. GET /auth/config — public settings the login screen needs */
   fastify.get("/config", async () => ({
     googleClientId: process.env.GOOGLE_CLIENT_ID || null,
-    adminEmail: adminEmail(),
-    devQuickAdminEnabled: process.env.NODE_ENV !== "production",
   }));
 
   /** 2. POST /auth/register — email + password sign-up (aspirant) */
@@ -133,12 +128,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
     }
     const { email, password, fullName } = parsed.data;
     if (email === adminEmail()) {
-      const [existingAdmin] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-      if (existingAdmin && (await verifyPassword(password, existingAdmin.passwordHash))) {
-        return startSession(reply, existingAdmin);
-      }
       return reply.status(403).send({
-        error: "This is the admin email — switch to Sign In and use your ADMIN_PASSWORD from .env",
+        error: "This is the admin email — sign in instead (use ADMIN_PASSWORD or Google)",
       });
     }
 
@@ -173,20 +164,6 @@ export const authRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
       return reply.status(403).send({ error: "This account has been deactivated" });
     }
     return startSession(reply, user);
-  });
-
-  /** 3b. POST /auth/dev-admin — 1-click Admin sign-in in Dev / AI Studio preview */
-  fastify.post("/dev-admin", async (_request, reply) => {
-    if (process.env.NODE_ENV === "production") {
-      return reply.status(403).send({ error: "Disabled in production" });
-    }
-    const email = adminEmail();
-    await ensureAdminAccount({ info: () => undefined });
-    const [adminUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (!adminUser) {
-      return reply.status(404).send({ error: "Admin account not found" });
-    }
-    return startSession(reply, adminUser);
   });
 
   /** 4. POST /auth/google — Google Identity Services credential (ID token) */

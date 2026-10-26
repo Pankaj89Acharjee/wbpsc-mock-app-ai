@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ChevronRight, Sparkles, XCircle } from "lucide-react";
+import { ChevronRight, Layers, Sparkles, XCircle } from "lucide-react";
 import {
   AI_QUESTION_COUNT_OPTIONS,
   SERIES_KIND_LABELS,
   type ExamDto,
+  type GenerateFullQuestionSetResult,
   type GenerateQuestionsInput,
   type GenerateQuestionsResult,
   type GenerationMode,
@@ -11,17 +12,15 @@ import {
   type VacancyDto,
 } from "../../packages/shared-types/src/index";
 import { adminApi, findNode, type SyllabusTrees } from "./adminApi";
+import { FullSetAiGeneratorPanel } from "./SeriesToolsModals";
 import SyllabusPicker, { type SyllabusValue } from "./SyllabusPicker";
 import { btn, inputCls } from "./ui";
 
 // ============================================================================
-// AI question generator with explicit Subject → Chapter → Subtopic choice.
-//
-// Target "Question Bank": reusable questions, no test series involved.
-// Target "Test series": the server refuses to draft more than the series'
-// open vacancies for that node (selected + pending AI drafts count), and the
-// panel shows those vacancies before anything is generated.
-// Either way the output goes to the review queue — never straight to a test.
+// AI question generator:
+//   Mode A: "Full Question Set (By Subject Counts)" — 1-click generation across
+//           chosen subjects (e.g. 100 Qs for PSC Clerkship: GS 40, Maths 30, English 30)
+//   Mode B: "Single Topic / Subtopic" — explicit Subject → Chapter → Subtopic
 // ============================================================================
 
 type Difficulty = GenerateQuestionsInput["difficulty"];
@@ -33,6 +32,7 @@ export default function AiGeneratePanel({
   initialPath,
   initialCount,
   onGenerated,
+  onFullSetGenerated,
   onClose,
 }: {
   exam: ExamDto;
@@ -43,8 +43,12 @@ export default function AiGeneratePanel({
   /** Pre-selected amount, e.g. the shortfall of a blueprint topic */
   initialCount?: number;
   onGenerated: (r: GenerateQuestionsResult) => void | Promise<void>;
+  onFullSetGenerated?: (r: GenerateFullQuestionSetResult) => void | Promise<void>;
   onClose?: () => void;
 }) {
+  const [generatorTab, setGeneratorTab] = useState<"full_set" | "single_topic">(
+    initialPath?.subtopicSlug ? "single_topic" : "full_set"
+  );
   const [path, setPath] = useState<SyllabusValue>({
     examSlug: exam.slug,
     subjectSlug: initialPath?.subjectSlug ?? "",
@@ -161,16 +165,37 @@ export default function AiGeneratePanel({
 
   return (
     <div className="bg-slate-900 border border-violet-500/40 rounded-xl p-4 sm:p-5 space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-2">
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-violet-300" /> Generate questions with AI
+            <Sparkles className="w-4 h-4 text-violet-300" /> Generate Questions with AI
           </h3>
-          <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-            New bilingual MCQs in WBPSC style for one subtopic. Repeats of bank, pending or
-            rejected questions are removed automatically (exact and reworded copies), and the AI is
-            asked again for fresh ones. Everything lands in the review queue first.
-          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setGeneratorTab("full_set")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
+                generatorTab === "full_set"
+                  ? "bg-violet-500 text-white border-violet-400"
+                  : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              1-Click Full Question Set (By Subject Counts — e.g. {exam.totalQuestions} Qs)
+            </button>
+            <button
+              type="button"
+              onClick={() => setGeneratorTab("single_topic")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
+                generatorTab === "single_topic"
+                  ? "bg-violet-500 text-white border-violet-400"
+                  : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Single Topic / Subtopic Generator (10–50 Qs)
+            </button>
+          </div>
         </div>
         {onClose && (
           <button onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer" aria-label="Close">
@@ -179,10 +204,46 @@ export default function AiGeneratePanel({
         )}
       </div>
 
-      <fieldset disabled={busy} className="space-y-4">
-        {/* Target */}
-        <div className="space-y-2">
-          <span className="block text-xs font-semibold text-white">1. Where will these questions go?</span>
+      {generatorTab === "full_set" ? (
+        <FullSetAiGeneratorPanel
+          exam={exam}
+          tree={tree}
+          series={fixedSeries}
+          onGenerated={async (res) => {
+            if (onFullSetGenerated) {
+              await onFullSetGenerated(res);
+            } else {
+              await onGenerated({
+                batchId: res.batchId,
+                modelUsed: res.modelUsed,
+                vacancy: null,
+                total: res.totalGenerated,
+                pendingReview: res.totalPendingReview,
+                pendingAi: 0,
+                skippedEmpty: 0,
+                errors: [],
+                requested: res.totalRequested,
+                uniqueGenerated: res.totalGenerated,
+                attempts: res.subjectSummaries.length,
+                failed: 0,
+                duplicatesDropped: { exact: 0, near: 0, inBatch: 0 },
+                cacheTier: "gemini",
+              });
+            }
+          }}
+        />
+      ) : (
+        <>
+          <p className="text-xs text-slate-400 max-w-2xl">
+            New bilingual MCQs in WBPSC style for one subtopic. Repeats of bank, pending or
+            rejected questions are removed automatically (exact and reworded copies), and the AI is
+            asked again for fresh ones. Everything lands in the review queue first.
+          </p>
+
+          <fieldset disabled={busy} className="space-y-4">
+            {/* Target */}
+            <div className="space-y-2">
+              <span className="block text-xs font-semibold text-white">1. Where will these questions go?</span>
           {fixedSeries ? (
             <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Generation target">
               {(["roster", "bank"] as const).map((m) => (
@@ -320,6 +381,8 @@ export default function AiGeneratePanel({
         </p>
       )}
       {last && <GenerationSummary result={last} />}
+        </>
+      )}
     </div>
   );
 }

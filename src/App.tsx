@@ -329,17 +329,17 @@ export default function App() {
       const { user: u } =
         authMode === "signup"
           ? await api<{ user: UserDto }>("/auth/register", {
-              method: "POST",
-              body: {
-                email: emailInput.trim(),
-                password: passwordInput,
-                fullName: fullNameInput.trim(),
-              },
-            })
+            method: "POST",
+            body: {
+              email: emailInput.trim(),
+              password: passwordInput,
+              fullName: fullNameInput.trim(),
+            },
+          })
           : await api<{ user: UserDto }>("/auth/login", {
-              method: "POST",
-              body: { email: emailInput.trim(), password: passwordInput },
-            });
+            method: "POST",
+            body: { email: emailInput.trim(), password: passwordInput },
+          });
       signedIn(u);
     } catch (err) {
       setAuthError((err as Error).message || "Authentication failed.");
@@ -536,9 +536,8 @@ export default function App() {
       setActiveTestQuestions([]);
       setStatusBanner({
         type: "success",
-        text: `Submitted. Net score ${s.finalNetScore} / ${s.maxPossibleScore} · accuracy ${s.accuracyPercentage}% · ${
-          s.cutoffCleared ? "cutoff cleared" : "below cutoff"
-        }. Review it in your history below.`,
+        text: `Submitted. Net score ${s.finalNetScore} / ${s.maxPossibleScore} · accuracy ${s.accuracyPercentage}% · ${s.cutoffCleared ? "cutoff cleared" : "below cutoff"
+          }. Review it in your history below.`,
       });
       window.scrollTo({ top: 0, behavior: "smooth" });
       loadMyProgress();
@@ -749,22 +748,20 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setAuthMode("signin")}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    authMode === "signin"
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${authMode === "signin"
                       ? "bg-slate-800 text-white"
                       : "text-slate-400 hover:text-white"
-                  }`}
+                    }`}
                 >
                   Sign In
                 </button>
                 <button
                   type="button"
                   onClick={() => setAuthMode("signup")}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    authMode === "signup"
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${authMode === "signup"
                       ? "bg-slate-800 text-white"
                       : "text-slate-400 hover:text-white"
-                  }`}
+                    }`}
                 >
                   Register
                 </button>
@@ -831,8 +828,8 @@ export default function App() {
                 {authBusy
                   ? "Authenticating..."
                   : authMode === "signin"
-                  ? "Sign In with Email & Password"
-                  : "Create Account with Email & Password"}
+                    ? "Sign In with Email & Password"
+                    : "Create Account with Email & Password"}
               </button>
             </form>
 
@@ -892,54 +889,41 @@ export default function App() {
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-400">
           <button
             onClick={() => setActiveNav("mock-center")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              activeNav === "mock-center" ? "text-emerald-400 font-semibold" : ""
-            }`}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "mock-center" ? "text-emerald-400 font-semibold" : ""
+              }`}
           >
             Mock Tests
           </button>
           <button
             onClick={() => setActiveNav("weakness-tutor")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              activeNav === "weakness-tutor" ? "text-emerald-400 font-semibold" : ""
-            }`}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "weakness-tutor" ? "text-emerald-400 font-semibold" : ""
+              }`}
           >
             Weakness &amp; Tutor
           </button>
           <button
             onClick={() => setActiveNav("descriptive-eval")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              activeNav === "descriptive-eval" ? "text-emerald-400 font-semibold" : ""
-            }`}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "descriptive-eval" ? "text-emerald-400 font-semibold" : ""
+              }`}
           >
             Part-II Evaluator
           </button>
           <button
             onClick={() => setActiveNav("daily-ca")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              activeNav === "daily-ca" ? "text-emerald-400 font-semibold" : ""
-            }`}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "daily-ca" ? "text-emerald-400 font-semibold" : ""
+              }`}
           >
             Daily Current Affairs
           </button>
           {isUserAdmin && (
             <button
               onClick={() => setActiveNav("admin-console")}
-              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeNav === "admin-console" ? "text-amber-400 font-semibold" : ""
-              }`}
+              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "admin-console" ? "text-amber-400 font-semibold" : ""
+                }`}
             >
               Admin Console
             </button>
           )}
-          <button
-            onClick={() => setActiveNav("testing-guide")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              activeNav === "testing-guide" ? "text-emerald-400 font-semibold" : ""
-            }`}
-          >
-            Testing Guide
-          </button>
         </nav>
 
         {/* Zone 3: 1 primary action */}
@@ -987,29 +971,26 @@ export default function App() {
               <option value="weakness-tutor">Weakness &amp; Tutor</option>
               <option value="descriptive-eval">Part-II Evaluator</option>
               <option value="daily-ca">Daily Current Affairs</option>
-              {isUserAdmin && <option value="admin-console">Admin Console</option>}
-              <option value="testing-guide">Testing Guide</option>
+              {isUserAdmin && <option value="admin-console">Admin Console</option>}             
             </select>
 
             {/* Interactive Language Segmented Filter */}
             <div className="flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg">
               <button
                 onClick={() => changeLang("bn")}
-                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  lang === "bn"
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${lang === "bn"
                     ? "bg-emerald-500 text-slate-950 font-semibold"
                     : "text-slate-400 hover:text-white"
-                }`}
+                  }`}
               >
                 বাংলা (BN)
               </button>
               <button
                 onClick={() => changeLang("en")}
-                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  lang === "en"
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${lang === "en"
                     ? "bg-emerald-500 text-slate-950 font-semibold"
                     : "text-slate-400 hover:text-white"
-                }`}
+                  }`}
               >
                 English (EN)
               </button>
@@ -1023,13 +1004,12 @@ export default function App() {
       {statusBanner && (
         <div className="max-w-7xl mx-auto px-6 pt-4">
           <div
-            className={`p-3.5 rounded-lg border text-xs flex items-center justify-between ${
-              statusBanner.type === "success"
+            className={`p-3.5 rounded-lg border text-xs flex items-center justify-between ${statusBanner.type === "success"
                 ? "bg-emerald-950/50 border-emerald-800 text-emerald-200"
                 : statusBanner.type === "error"
-                ? "bg-rose-950/50 border-rose-800 text-rose-200"
-                : "bg-slate-900 border-slate-800 text-slate-200"
-            }`}
+                  ? "bg-rose-950/50 border-rose-800 text-rose-200"
+                  : "bg-slate-900 border-slate-800 text-slate-200"
+              }`}
           >
             <span>{statusBanner.text}</span>
             <button
@@ -1073,11 +1053,10 @@ export default function App() {
                       <div
                         role="timer"
                         aria-live={remainingSec <= 600 ? "polite" : "off"}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-mono tabular-nums font-semibold transition-colors ${
-                          remainingSec <= 600
+                        className={`px-3 py-1.5 rounded-lg text-sm font-mono tabular-nums font-semibold transition-colors ${remainingSec <= 600
                             ? "bg-rose-600 text-white animate-pulse"
                             : "bg-slate-950 border border-slate-800 text-sky-300"
-                        }`}
+                          }`}
                       >
                         Time Remaining: {formatClock(remainingSec)}
                       </div>
@@ -1101,13 +1080,12 @@ export default function App() {
                       <button
                         key={q.id}
                         onClick={() => setCurrentQuestionIdx(idx)}
-                        className={`w-9 h-9 rounded-lg text-xs font-mono tabular-nums font-semibold transition-colors cursor-pointer ${
-                          isCurrent
+                        className={`w-9 h-9 rounded-lg text-xs font-mono tabular-nums font-semibold transition-colors cursor-pointer ${isCurrent
                             ? "bg-white text-slate-950"
                             : isAnswered
-                            ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-300"
-                            : "bg-slate-950 border border-slate-800 text-slate-400"
-                        }`}
+                              ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-300"
+                              : "bg-slate-950 border border-slate-800 text-slate-400"
+                          }`}
                       >
                         {idx + 1}
                       </button>
@@ -1149,16 +1127,16 @@ export default function App() {
                                 ? q.optionABn
                                 : q.optionAEn
                               : optKey === "B"
-                              ? lang === "bn"
-                                ? q.optionBBn
-                                : q.optionBEn
-                              : optKey === "C"
-                              ? lang === "bn"
-                                ? q.optionCBn
-                                : q.optionCEn
-                              : lang === "bn"
-                              ? q.optionDBn
-                              : q.optionDEn;
+                                ? lang === "bn"
+                                  ? q.optionBBn
+                                  : q.optionBEn
+                                : optKey === "C"
+                                  ? lang === "bn"
+                                    ? q.optionCBn
+                                    : q.optionCEn
+                                  : lang === "bn"
+                                    ? q.optionDBn
+                                    : q.optionDEn;
 
                           const isSel = chosen === optKey;
                           return (
@@ -1170,11 +1148,10 @@ export default function App() {
                                   [q.id]: optKey,
                                 }))
                               }
-                              className={`p-4 rounded-lg border text-left transition-colors flex items-center gap-3 cursor-pointer ${
-                                isSel
+                              className={`p-4 rounded-lg border text-left transition-colors flex items-center gap-3 cursor-pointer ${isSel
                                   ? "bg-emerald-500/15 border-emerald-500 text-white"
                                   : "bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-300"
-                              }`}
+                                }`}
                             >
                               <span className="w-7 h-7 rounded bg-slate-800 flex items-center justify-center text-xs font-mono font-bold text-slate-200 shrink-0">
                                 {optKey}
@@ -1210,7 +1187,7 @@ export default function App() {
                             Previous
                           </button>
                           {currentQuestionIdx <
-                          activeTestQuestions.length - 1 ? (
+                            activeTestQuestions.length - 1 ? (
                             <button
                               onClick={() =>
                                 setCurrentQuestionIdx((i) =>
@@ -1242,13 +1219,19 @@ export default function App() {
             ) : (
               /* Exam Selection & Recent Attempt Results */
               <>
+              {/* Exam status bar */}
+                {examsList.length > 0 && (
+                  <LibraryStats exams={examsList} attempts={myAttempts} lang={lang} />
+                )}
+
+
                 <div className="flex flex-wrap items-end justify-between gap-4">
                   <div>
                     <h1 className="text-2xl font-bold text-white">
                       01. Mock Test Series
                     </h1>
                     <p className="text-sm text-slate-400 mt-1">
-                      Select an examination below to begin a bilingual timed test.                      
+                      Select an examination below to begin a bilingual timed test.
                     </p>
                   </div>
 
@@ -1262,9 +1245,7 @@ export default function App() {
                   )}
                 </div>
 
-                {examsList.length > 0 && (
-                  <LibraryStats exams={examsList} attempts={myAttempts} lang={lang} />
-                )}
+
 
                 {examsList.length === 0 ? (
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center space-y-4">
@@ -1407,8 +1388,8 @@ export default function App() {
                           {isGenerating
                             ? "Generating via Gemini..."
                             : isCached
-                            ? "Open Cached Note (free)"
-                            : "Generate AI Revision Note"}
+                              ? "Open Cached Note (free)"
+                              : "Generate AI Revision Note"}
                         </button>
                       </div>
                     );
@@ -1760,51 +1741,46 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg w-fit">
               <button
                 onClick={() => setAdminTab("users")}
-                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  adminTab === "users"
+                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${adminTab === "users"
                     ? "bg-slate-800 text-white"
                     : "text-slate-400 hover:text-white"
-                }`}
+                  }`}
               >
                 1. Users &amp; RBAC ({allUsers.length})
               </button>
               <button
                 onClick={() => setAdminTab("exams")}
-                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  adminTab === "exams"
+                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${adminTab === "exams"
                     ? "bg-slate-800 text-white"
                     : "text-slate-400 hover:text-white"
-                }`}
+                  }`}
               >
                 2. Exams &amp; Syllabus ({examsList.length})
               </button>
               <button
                 onClick={() => setAdminTab("cache-attempts")}
-                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  adminTab === "cache-attempts"
+                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${adminTab === "cache-attempts"
                     ? "bg-slate-800 text-white"
                     : "text-slate-400 hover:text-white"
-                }`}
+                  }`}
               >
                 3. AI Cache ({cachedNotes.length}) &amp; Attempts ({allAttempts.length})
               </button>
               <button
                 onClick={() => setAdminTab("bulk-import")}
-                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  adminTab === "bulk-import"
+                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${adminTab === "bulk-import"
                     ? "bg-slate-800 text-white"
                     : "text-slate-400 hover:text-white"
-                }`}
+                  }`}
               >
                 4. Question Bank (Add · Bulk · AI)
               </button>
               <button
                 onClick={() => setAdminTab("series")}
-                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  adminTab === "series"
+                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${adminTab === "series"
                     ? "bg-slate-800 text-white"
                     : "text-slate-400 hover:text-white"
-                }`}
+                  }`}
               >
                 5. Exam Series
               </button>
@@ -1895,11 +1871,10 @@ export default function App() {
                                 isActive: !u.isActive,
                               })
                             }
-                            className={`px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer ${
-                              u.isActive
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer ${u.isActive
                                 ? "bg-emerald-500/20 text-emerald-300"
                                 : "bg-rose-500/20 text-rose-300"
-                            }`}
+                              }`}
                           >
                             {u.isActive ? "Active" : "Suspended"}
                           </button>
@@ -1964,74 +1939,6 @@ export default function App() {
                 </div>
               </div>
             )}
-          </div>
-        )}
-
-        {/* ===================================================================
-            TAB 6: HOW TO TEST LOCALLY (8GB RAM PC)
-        =================================================================== */}
-        {activeNav === "testing-guide" && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-              <h2 className="text-lg font-bold text-white">01. How to test the app</h2>
-              <ol className="list-decimal pl-5 text-xs sm:text-sm text-slate-300 space-y-2.5 leading-relaxed">
-                <li>
-                  <strong>Admin access:</strong> sign in with the admin email from{" "}
-                  <code className="text-emerald-400">ADMIN_EMAIL</code> — via Google, or with{" "}
-                  <code className="text-emerald-400">ADMIN_PASSWORD</code> from <code>.env</code>.
-                </li>
-                <li>
-                  <strong>Exams &amp; questions:</strong> Admin Console → Exams &amp; Syllabus to
-                  create exams, then Question Bank to add questions (one by one, CSV, or AI) and
-                  approve them.
-                </li>
-                <li>
-                  <strong>Mock tests:</strong> open <strong>Mock Tests</strong>, switch between{" "}
-                  <strong>বাংলা</strong> and <strong>English</strong>, take a test and submit. It is
-                  graded on the server; review each answer, then open{" "}
-                  <strong>Weakness &amp; Tutor</strong> for AI revision notes.
-                </li>
-                <li>
-                  <strong>Roles &amp; plans:</strong> Admin Console → Users to make someone an{" "}
-                  <code className="text-emerald-300">educator</code> or change their plan.
-                </li>
-              </ol>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-white">
-                  02. How to Test on Your Local PC (i5-9400F, 8GB RAM)
-                </h2>
-                <button
-                  onClick={() =>
-                    copyCommand(
-                      "local-cmd",
-                      "cp .env.example .env && docker compose up -d && npm install && npm run db:push && npm run seed:syllabus && npm run seed"
-                    )
-                  }
-                  className="px-3 py-1 text-xs bg-slate-800 hover:bg-slate-700 rounded text-slate-200 cursor-pointer"
-                >
-                  {copiedId === "local-cmd" ? "Copied!" : "Copy Commands"}
-                </button>
-              </div>
-              <pre className="text-xs font-mono bg-slate-950 p-4 rounded-lg border border-slate-800 text-emerald-300 overflow-x-auto leading-relaxed">
-{`# 1. Postgres (pgvector) + Redis in Docker, then tables + sample data
-cp .env.example .env
-docker compose up -d
-npm install
-npm run db:push
-npm run seed:syllabus && npm run seed
-
-# 2. Start each service in its own terminal
-npm run dev:api-core     # API, port 8080
-npm run dev:api-ai       # AI service, port 8081 (activate apps/api-ai/.venv first)
-npm run dev              # web app, port 3000
-
-# 3. Test Mobile on Vivo X200 FE over Wi-Fi (No Android Emulator!)
-npx expo start --lan`}
-              </pre>
-            </div>
           </div>
         )}
       </main>
