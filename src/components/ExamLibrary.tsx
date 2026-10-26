@@ -15,6 +15,7 @@ import { SERIES_KIND_LABELS } from "../../packages/shared-types/src/index";
 
 type Lang = "en" | "bn";
 
+
 /** Card order and short labels, e.g. "Test Series 5 · Previous Year 15" */
 const KIND_ORDER: SeriesKind[] = ["mock_test", "previous_year", "practice", "custom"];
 const KIND_SHORT: Record<SeriesKind, { en: string; bn: string }> = {
@@ -251,7 +252,7 @@ export function LibraryStats({
     {
       label: lang === "bn" ? "সব টেস্ট" : "Tests available",
       value: sum(totalSeries),
-      hint: lang === "bn" ? "দেওয়ার জন্য প্রস্তুত" : "ready to take",
+      hint: lang === "bn" ? "দেওয়ার জন্য প্রস্তুত" : "Ready to take",
       accent: "text-emerald-300",
     },
     {
