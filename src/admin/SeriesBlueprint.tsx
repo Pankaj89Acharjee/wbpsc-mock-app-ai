@@ -67,12 +67,18 @@ export function SubjectCountsEditor({
     );
   }
   const total = Object.values(value).reduce((n, v) => n + (Number(v) || 0), 0);
-  const overCap = maxQuestions && maxQuestions > 0 && total > maxQuestions;
+  const hasMax = Boolean(maxQuestions && maxQuestions > 0);
+  const needMore = hasMax ? Math.max(0, maxQuestions! - total) : 0;
+  const overCap = Boolean(hasMax && total > maxQuestions!);
   return (
-    <div className="space-y-2">
+    <div className="space-y-2.5">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         {tree.subjects.map((s) => {
           const on = value[s.id] !== undefined;
+          const subjectBankCount = s.chapters.reduce(
+            (sum, c) => sum + c.subtopics.reduce((acc, st) => acc + (st.questionCount ?? 0), 0),
+            0
+          );
           return (
             <div
               key={s.id}
@@ -87,7 +93,10 @@ export function SubjectCountsEditor({
                   onChange={(e) => {
                     const next = { ...value };
                     if (e.target.checked) {
-                      next[s.id] = (s.weightageQuestions ?? 0) > 0 ? String(s.weightageQuestions) : "";
+                      const remaining = hasMax ? Math.max(0, maxQuestions! - total) : 25;
+                      const defaultForSubject =
+                        remaining > 0 ? Math.min(25, remaining) : 10;
+                      next[s.id] = String(defaultForSubject);
                     } else {
                       delete next[s.id];
                     }
@@ -95,9 +104,9 @@ export function SubjectCountsEditor({
                   }}
                 />
                 <span className="truncate">{s.name.en}</span>
-                {(s.weightageQuestions ?? 0) > 0 && !on && (
+                {!bank && subjectBankCount > 0 && (
                   <span className="text-[10px] text-slate-400 shrink-0">
-                    ({s.weightageQuestions} Qs)
+                    ({subjectBankCount} in bank)
                   </span>
                 )}
               </label>
@@ -116,16 +125,42 @@ export function SubjectCountsEditor({
           );
         })}
       </div>
-      <p
-        className={`text-xs font-mono ${overCap ? "text-rose-400 font-bold" : "text-emerald-300"}`}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs font-mono ${
+          overCap
+            ? "bg-rose-500/10 border-rose-500/40 text-rose-300 font-bold"
+            : hasMax && needMore === 0
+              ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 font-semibold"
+              : "bg-amber-500/10 border-amber-500/30 text-amber-200 font-semibold"
+        }`}
         aria-live="polite"
       >
-        Total questions: {total}
-        {maxQuestions && maxQuestions > 0 ? ` / ${maxQuestions} max` : ""}
-        {overCap
-          ? ` — Exceeds exam limit by ${total - maxQuestions!} question(s)! Reduce subject counts to ${maxQuestions} or fewer.`
-          : ""}
-      </p>
+        <span>
+          {hasMax ? (
+            overCap ? (
+              <>
+                {total} Selected — Exceeds exam limit ({maxQuestions}) by {total - maxQuestions!}{" "}
+                question(s)! Reduce subject counts to {maxQuestions} or fewer.
+              </>
+            ) : needMore > 0 ? (
+              <>
+                {total} Selected - Need more {needMore}
+              </>
+            ) : (
+              <>
+                {total} Selected - Need more 0 (All {maxQuestions} questions configured)
+              </>
+            )
+          ) : (
+            <>{total} Selected</>
+          )}
+        </span>
+        {hasMax && (
+          <span className="text-[11px] text-slate-300 font-normal">
+            Exam Total (from Tab 2): <strong>{maxQuestions} Questions</strong>
+          </span>
+        )}
+      </div>
     </div>
   );
 }

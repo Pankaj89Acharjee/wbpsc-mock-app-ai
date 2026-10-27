@@ -367,6 +367,13 @@ function toJobDto(row: IngestionJobRow): IngestionJobDto {
 const statusCount = (status: IngestionStatusType) =>
   sql<number>`(count(*) filter (where ${questionIngestionJobs.status} = ${status}))::int`;
 
+function formatAiConfidence(val: unknown): string {
+  const n = typeof val === "number" ? val : Number(val);
+  if (!Number.isFinite(n) || n <= 0) return "0.90";
+  const normalized = n > 1 ? n / 100 : n;
+  return Math.min(1, Math.max(0.01, normalized)).toFixed(2);
+}
+
 /**
  * Ensures Subject -> Chapter -> Subtopic exists for an exam, returning their slugs.
  * Used when extracting questions from PDF/Image question papers so every question
@@ -391,20 +398,22 @@ export async function ensureCategoryInExam(
   subtopicSlug: string;
   createdNew: boolean;
 }> {
-  const subjSlug = slugify(category.subjectEn) || "general-studies";
-  const chapSlug = slugify(category.chapterEn) || "general-topic";
-  const subSlug = slugify(category.subtopicEn) || `${chapSlug}-basics`;
+  const subjSlug = (slugify(category.subjectEn) || "general-studies").slice(0, 110);
+  const chapSlug = (slugify(category.chapterEn) || "general-topic").slice(0, 130);
+  const subSlug = (slugify(category.subtopicEn) || `${chapSlug}-basics`).slice(0, 150);
 
   let createdNew = false;
 
   // 1. Subject
-  let [subj] = await db
+  const existingSubjs = await db
     .select()
     .from(subjects)
-    .where(and(eq(subjects.examId, examId), eq(subjects.slug, subjSlug)))
-    .limit(1);
+    .where(eq(subjects.examId, examId));
+  let subj = existingSubjs.find(
+    (s) => s.slug === subjSlug || nodeMatches(s, category.subjectEn)
+  );
   if (!subj) {
-    [subj] = await db
+    const [inserted] = await db
       .insert(subjects)
       .values({
         examId,
@@ -413,20 +422,32 @@ export async function ensureCategoryInExam(
           en: category.subjectEn.trim() || "General Studies",
           bn: category.subjectBn.trim() || category.subjectEn.trim() || "সাধারণ অধ্যয়ন",
         },
-        displayOrder: 50,
+        displayOrder: existingSubjs.length + 1,
       })
+      .onConflictDoNothing()
       .returning();
-    createdNew = true;
+    if (inserted) {
+      subj = inserted;
+      createdNew = true;
+    } else {
+      [subj] = await db
+        .select()
+        .from(subjects)
+        .where(and(eq(subjects.examId, examId), eq(subjects.slug, subjSlug)))
+        .limit(1);
+    }
   }
 
   // 2. Chapter
-  let [chap] = await db
+  const existingChaps = await db
     .select()
     .from(chapters)
-    .where(and(eq(chapters.subjectId, subj.id), eq(chapters.slug, chapSlug)))
-    .limit(1);
+    .where(eq(chapters.subjectId, subj.id));
+  let chap = existingChaps.find(
+    (c) => c.slug === chapSlug || nodeMatches(c, category.chapterEn)
+  );
   if (!chap) {
-    [chap] = await db
+    const [inserted] = await db
       .insert(chapters)
       .values({
         subjectId: subj.id,
@@ -435,22 +456,34 @@ export async function ensureCategoryInExam(
           en: category.chapterEn.trim() || "Core Concepts",
           bn: category.chapterBn.trim() || category.chapterEn.trim() || "মূল ধারণা",
         },
-        displayOrder: 50,
+        displayOrder: existingChaps.length + 1,
       })
+      .onConflictDoNothing()
       .returning();
-    createdNew = true;
+    if (inserted) {
+      chap = inserted;
+      createdNew = true;
+    } else {
+      [chap] = await db
+        .select()
+        .from(chapters)
+        .where(and(eq(chapters.subjectId, subj.id), eq(chapters.slug, chapSlug)))
+        .limit(1);
+    }
   }
 
   // 3. Subtopic (unique per chapter + slug)
   const finalSubSlug = subSlug;
-  let [sub] = await db
+  const existingSubs = await db
     .select()
     .from(subtopics)
-    .where(and(eq(subtopics.chapterId, chap.id), eq(subtopics.slug, finalSubSlug)))
-    .limit(1);
+    .where(eq(subtopics.chapterId, chap.id));
+  let sub = existingSubs.find(
+    (t) => t.slug === finalSubSlug || nodeMatches(t, category.subtopicEn)
+  );
 
   if (!sub) {
-    [sub] = await db
+    const [inserted] = await db
       .insert(subtopics)
       .values({
         subjectId: subj.id,
@@ -461,8 +494,18 @@ export async function ensureCategoryInExam(
           bn: category.subtopicBn.trim() || category.subtopicEn.trim() || "সাধারণ প্রশ্ন",
         },
       })
+      .onConflictDoNothing()
       .returning();
-    createdNew = true;
+    if (inserted) {
+      sub = inserted;
+      createdNew = true;
+    } else {
+      [sub] = await db
+        .select()
+        .from(subtopics)
+        .where(and(eq(subtopics.chapterId, chap.id), eq(subtopics.slug, finalSubSlug)))
+        .limit(1);
+    }
   }
 
   return {
@@ -586,6 +629,12 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         return reply.status(502).send({ error: (err as Error).message });
       }
 
+      if (extractedQuestions.length === 0) {
+        return reply.status(400).send({
+          error: "No multiple-choice questions could be extracted from the uploaded PDF/Image.",
+        });
+      }
+
       const modelUsed = "gemini-2.5-flash";
       const batchId = `paper-${Date.now()}`;
       let categoriesCreated = 0;
@@ -642,7 +691,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
           contentHash,
           pyqYear: draft.pyqYear,
           pyqExamName: pyqTag,
-          aiConfidenceScore: q.confidence.toFixed(2),
+          aiConfidenceScore: formatAiConfidence(q.confidence),
         };
         staged.push({ rowNumber: i + 1, job });
       }
@@ -1521,7 +1570,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
             chapterId: matchedTopic.chapterId,
             subtopicId: matchedTopic.subtopicId,
             contentHash,
-            aiConfidenceScore: g.confidence.toFixed(2),
+            aiConfidenceScore: formatAiConfidence(g.confidence),
             targetSeriesId: targetSeries?.id ?? null,
           },
         });
@@ -1732,7 +1781,13 @@ export const ingestionRoutes: FastifyPluginAsync = async (
     if (!parsed.success) {
       return reply.status(400).send({ error: formatIssues(parsed.error.issues) });
     }
-    const where = await jobWhere(parsed.data);
+    const baseWhere = await jobWhere(parsed.data);
+    // Never include already-inserted or rejected rows in bulk selection
+    const where = and(
+      baseWhere,
+      ne(questionIngestionJobs.status, "inserted"),
+      ne(questionIngestionJobs.status, "rejected")
+    );
     const [rows, [{ total }]] = await Promise.all([
       db
         .select({ id: questionIngestionJobs.id })

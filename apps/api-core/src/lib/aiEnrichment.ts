@@ -297,6 +297,143 @@ export interface ExtractedPaperQuestion {
   confidence: number;
 }
 
+function clampConfidence(val: unknown): number {
+  const n = typeof val === "number" ? val : Number(val);
+  if (!Number.isFinite(n) || n <= 0) return 0.9;
+  const normalized = n > 1 ? n / 100 : n;
+  return Math.min(1, Math.max(0.01, Math.round(normalized * 100) / 100));
+}
+
+function normalizeMediaMimeType(mimeType: string, cleanBase64: string): string {
+  const lower = (mimeType || "").trim().toLowerCase();
+  if (
+    lower === "application/pdf" ||
+    lower === "image/png" ||
+    lower === "image/jpeg" ||
+    lower === "image/webp"
+  ) {
+    return lower;
+  }
+  if (lower === "image/jpg") return "image/jpeg";
+  if (cleanBase64.startsWith("JVBERi0")) return "application/pdf";
+  if (cleanBase64.startsWith("iVBORw")) return "image/png";
+  if (cleanBase64.startsWith("/9j/")) return "image/jpeg";
+  if (cleanBase64.startsWith("UklGR")) return "image/webp";
+  return "application/pdf";
+}
+
+function parseOrSalvageExtractedQuestions(rawText: string): Partial<ExtractedPaperQuestion>[] {
+  const trimmed = (rawText || "").trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as { questions?: Partial<ExtractedPaperQuestion>[] } | Partial<ExtractedPaperQuestion>[];
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.questions)) return parsed.questions;
+  } catch {
+    // If Gemini hit output token limits on a very large 100-question PDF, salvage all complete question objects
+    const salvaged: Partial<ExtractedPaperQuestion>[] = [];
+    const arrStart = trimmed.indexOf("[");
+    if (arrStart === -1) return [];
+    let depth = 0;
+    let objStart = -1;
+    let inString = false;
+    let escaped = false;
+    for (let i = arrStart + 1; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === "{") {
+        if (depth === 0) objStart = i;
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0 && objStart !== -1) {
+          const slice = trimmed.slice(objStart, i + 1);
+          try {
+            const obj = JSON.parse(slice) as Partial<ExtractedPaperQuestion>;
+            if (obj && obj.stem) salvaged.push(obj);
+          } catch {
+            // ignore incomplete object
+          }
+          objStart = -1;
+        }
+      }
+    }
+    return salvaged;
+  }
+  return [];
+}
+
+function sanitizeExtractedQuestion(
+  q: Partial<ExtractedPaperQuestion>,
+  idx: number
+): ExtractedPaperQuestion | null {
+  const stemEn = String(q.stem?.en || q.stem?.bn || "").trim();
+  const stemBn = String(q.stem?.bn || q.stem?.en || "").trim();
+  if (!stemEn) return null;
+
+  const ensureOpt = (opt: Partial<BilingualText> | undefined, fallbackLabel: string): BilingualText => {
+    const en = String(opt?.en || opt?.bn || fallbackLabel).trim();
+    const bn = String(opt?.bn || opt?.en || en).trim();
+    return { en, bn };
+  };
+
+  const options: Record<OptionKey, BilingualText> = {
+    A: ensureOpt(q.options?.A, `Option A (#${idx + 1})`),
+    B: ensureOpt(q.options?.B, `Option B (#${idx + 1})`),
+    C: ensureOpt(q.options?.C, `Option C (#${idx + 1})`),
+    D: ensureOpt(q.options?.D, `Option D (#${idx + 1})`),
+  };
+
+  const rawCorrect = String(q.correct_option || "A").trim().toUpperCase();
+  const correct_option: OptionKey =
+    rawCorrect === "A" || rawCorrect === "B" || rawCorrect === "C" || rawCorrect === "D"
+      ? rawCorrect
+      : "A";
+
+  const rawDiff = String(q.difficulty || "moderate").trim().toLowerCase();
+  const difficulty: "easy" | "moderate" | "hard" =
+    rawDiff === "easy" || rawDiff === "moderate" || rawDiff === "hard" ? rawDiff : "moderate";
+
+  const expEn = String(
+    q.explanation?.en || q.explanation?.bn || `Correct answer is Option ${correct_option}.`
+  ).trim();
+  const expBn = String(q.explanation?.bn || q.explanation?.en || expEn).trim();
+
+  const subjectEn = String(q.subject_en || "General Studies").trim();
+  const subjectBn = String(q.subject_bn || subjectEn).trim();
+  const chapterEn = String(q.chapter_en || "Core Topics").trim();
+  const chapterBn = String(q.chapter_bn || chapterEn).trim();
+  const subtopicEn = String(q.subtopic_en || "General Questions").trim();
+  const subtopicBn = String(q.subtopic_bn || subtopicEn).trim();
+
+  return {
+    subject_en: subjectEn,
+    subject_bn: subjectBn,
+    chapter_en: chapterEn,
+    chapter_bn: chapterBn,
+    subtopic_en: subtopicEn,
+    subtopic_bn: subtopicBn,
+    stem: { en: stemEn, bn: stemBn },
+    options,
+    correct_option,
+    explanation: { en: expEn, bn: expBn },
+    difficulty,
+    confidence: clampConfidence(q.confidence),
+  };
+}
+
 export async function extractQuestionsFromMediaWithAi(params: {
   examSlug: string;
   examTitleEn: string;
@@ -310,10 +447,18 @@ export async function extractQuestionsFromMediaWithAi(params: {
 }): Promise<ExtractedPaperQuestion[]> {
   const ai = getGenAIClient();
 
+  const cleanBase64 = (params.fileBase64 || "")
+    .replace(/^data:[^;]+;base64,/, "")
+    .replace(/\s+/g, "");
+  if (!cleanBase64) {
+    throw new Error("Uploaded PDF/Image file data is empty.");
+  }
+  const normalizedMime = normalizeMediaMimeType(params.mimeType, cleanBase64);
+
   const categoryCatalog =
     params.existingCategories.length > 0
       ? params.existingCategories
-          .slice(0, 120)
+          .slice(0, 100)
           .map((c) => `- ${c.subjectEn} > ${c.chapterEn} > ${c.subtopicEn}`)
           .join("\n")
       : "- General Studies > Indian History > Indian National Movement\n- General Studies > Indian Polity > Constitution\n- Arithmetic > Quantitative Aptitude > Ratio & Percentage\n- General English > Grammar & Vocabulary > Usage";
@@ -324,8 +469,8 @@ export async function extractQuestionsFromMediaWithAi(params: {
       parts: [
         {
           inlineData: {
-            data: params.fileBase64,
-            mimeType: params.mimeType,
+            data: cleanBase64,
+            mimeType: normalizedMime,
           },
         },
         {
@@ -333,9 +478,10 @@ export async function extractQuestionsFromMediaWithAi(params: {
 
 For every MCQ found in the document:
 1. Extract the question stem and options A, B, C, D.
-2. Provide BOTH English ("en") and Bengali ("bn" বাংলা) versions for the stem, all 4 options, and a 2-sentence explanation. If the paper is only in English, translate it into formal WBPSC Bengali. If the paper is only in Bengali, translate it into clear English.
+2. Provide BOTH English ("en") and Bengali ("bn" বাংলা) versions for the stem, all 4 options, and a concise 1-sentence explanation. If the paper is only in English, translate it into formal WBPSC Bengali. If the paper is only in Bengali, translate it into clear English.
 3. Determine the factually correct option ("A", "B", "C", or "D").
-4. Categorize the question into the best matching Subject, Chapter, and Subtopic. Prefer matching one of the exam's existing categories below, or provide a clean standard WBPSC Subject > Chapter > Subtopic (in both English and Bengali) if it belongs to a new category:
+4. Set "confidence" as a decimal between 0.0 and 1.0 (e.g. 0.95).
+5. Categorize the question into the best matching Subject, Chapter, and Subtopic. Prefer matching one of the exam's existing categories below, or provide a clean standard WBPSC Subject > Chapter > Subtopic (in both English and Bengali):
 
 Existing Exam Syllabus Categories:
 ${categoryCatalog}`,
@@ -344,6 +490,7 @@ ${categoryCatalog}`,
     },
     config: {
       temperature: 0.2,
+      maxOutputTokens: 65536,
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -397,10 +544,10 @@ ${categoryCatalog}`,
     },
   });
 
-  const parsed = JSON.parse(response.text || "{}") as {
-    questions?: ExtractedPaperQuestion[];
-  };
-  return parsed.questions || [];
+  const rawItems = parseOrSalvageExtractedQuestions(response.text || "");
+  return rawItems
+    .map((item, idx) => sanitizeExtractedQuestion(item, idx))
+    .filter((item): item is ExtractedPaperQuestion => item !== null);
 }
 
 // ============================================================================
@@ -535,7 +682,10 @@ Strict Quality & Bilingual Rules:
 
     for (const q of batch) {
       if (!q.stem?.en?.trim()) continue;
-      results.push(q);
+      results.push({
+        ...q,
+        confidence: clampConfidence(q.confidence),
+      });
       avoid.push(q.stem.en.trim());
       if (results.length >= params.count) break;
     }

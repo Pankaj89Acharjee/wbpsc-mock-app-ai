@@ -423,15 +423,40 @@ export default function BulkImportPanel({
     }
   };
 
-  const toggleSelected = (id: string) =>
+  const [showHistory, setShowHistory] = useState(false);
+
+  const pendingReviewCount = batches.reduce((s, b) => s + (b.pendingReview ?? 0), 0);
+  const pendingAiCount = batches.reduce((s, b) => s + (b.pendingAi ?? 0), 0);
+  const failedCount = batches.reduce((s, b) => s + (b.failed ?? 0), 0);
+  const insertedCount = batches.reduce((s, b) => s + (b.inserted ?? 0), 0);
+  const needsAttentionCount = pendingReviewCount + pendingAiCount + failedCount;
+
+  // Automatically focus the first non-empty attention bucket when items need attention
+  React.useEffect(() => {
+    if (showHistory) return;
+    if (statusFilter === "pending_review" && pendingReviewCount === 0) {
+      if (pendingAiCount > 0) setStatusFilter("pending_ai");
+      else if (failedCount > 0) setStatusFilter("failed");
+    }
+  }, [pendingReviewCount, pendingAiCount, failedCount, showHistory, statusFilter]);
+
+  const isRowSelectable = (j: IngestionJobDto) =>
+    j.status !== "inserted" && j.status !== "rejected";
+
+  const toggleSelected = (id: string) => {
+    const target = jobs.find((j) => j.id === id);
+    if (target && !isRowSelectable(target)) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+  };
 
-  const allOnPageSelected = jobs.length > 0 && jobs.every((j) => selected.has(j.id));
+  const selectableJobsOnPage = jobs.filter(isRowSelectable);
+  const allOnPageSelected =
+    selectableJobsOnPage.length > 0 && selectableJobsOnPage.every((j) => selected.has(j.id));
 
   return (
     <div className="space-y-5">
@@ -641,7 +666,11 @@ export default function BulkImportPanel({
           onExtracted={async (res) => {
             setExtractingPaper(false);
             setBatchId(res.batchId);
-            setStatusFilter(res.insertedLive > 0 ? "inserted" : "pending_review");
+            if (res.pendingReview > 0 || res.failed > 0) {
+              setStatusFilter(res.pendingReview > 0 ? "pending_review" : "failed");
+            } else {
+              setShowHistory(false);
+            }
             setOffset(0);
             // Reload syllabus tree in case new categories were created automatically
             await trees.loadTree(exam.slug, true);
@@ -683,7 +712,11 @@ export default function BulkImportPanel({
           }}
           onFullSetGenerated={async (res) => {
             setBatchId(res.batchId);
-            setStatusFilter(res.totalInsertedLive > 0 ? "inserted" : "pending_review");
+            if (res.totalInsertedLive === 0) {
+              setStatusFilter("pending_review");
+            } else {
+              setShowHistory(false);
+            }
             setOffset(0);
             await trees.loadTree(exam.slug, true);
             await Promise.all([refresh(), onQuestionsChanged()]);
@@ -728,143 +761,255 @@ export default function BulkImportPanel({
         </div>
       )}
 
-      {/* ── Step 2: Review queue ───────────────────────────────────────── */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl">
-        <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-slate-800">
-          <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg">
-            {STATUS_TABS.map(([value, label]) => (
-              <button
-                key={value}
-                onClick={() => {
-                  setStatusFilter(value);
-                  setOffset(0);
-                  setExpandedId(null);
-                }}
-                className={`px-3 py-1.5 text-xs rounded-md cursor-pointer ${
-                  statusFilter === value
-                    ? "bg-slate-800 text-white"
-                    : "text-slate-400 hover:text-white"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+      {/* ── Step 2: Conditionally Rendered Review Queue ("Needs Attention") ── */}
+      {needsAttentionCount === 0 && !showHistory ? (
+        <div className="bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-xs text-emerald-300">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>
+              <strong>All clear!</strong> No staged questions need attention right now (
+              {insertedCount} question(s) from upload/AI batches are already live in the database).
+            </span>
           </div>
-          <button
-            onClick={refresh}
-            disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-300 hover:text-white cursor-pointer"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
-          </button>
-        </div>
-
-        {statusFilter === "pending_ai" && (
-          <p className="px-4 pt-3 text-xs text-amber-300/90">
-            These rows are missing Bengali text or an explanation. Open any row and click{" "}
-            <strong>Auto-Translate to Bengali (AI)</strong> or simply click{" "}
-            <strong>Save changes</strong> — it will translate automatically!
-          </p>
-        )}
-        {statusFilter === "failed" && (
-          <p className="px-4 pt-3 text-xs text-rose-300/90">
-            Rows with a wrong exam / subject / chapter / subtopic can be fixed here — open the row
-            and pick from the dropdowns.
-          </p>
-        )}
-
-        <ReviewFilterBar
-          tree={trees.trees[exam.slug]}
-          value={filters}
-          onChange={(f) => {
-            setFilters(f);
-            setOffset(0);
-          }}
-        />
-
-        <div className="flex flex-wrap items-center gap-2 px-4 py-3 bg-slate-950/60 border-b border-slate-800">
-          <span className="text-xs text-white font-medium">
-            {selected.size > 0 ? `${selected.size} selected` : "Bulk actions"}
-          </span>
-          <button
-            onClick={selectAllMatching}
-            disabled={selectingAll || total === 0}
-            className="px-2.5 py-1 text-xs text-sky-300 hover:text-sky-200 disabled:opacity-50 cursor-pointer"
-          >
-            {selectingAll ? "Selecting…" : `Select all ${total} matching`}
-          </button>
-          {selected.size > 0 && (
+          {batches.length > 0 && (
             <button
-              onClick={() => setSelected(new Set())}
-              className="px-2.5 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
+              type="button"
+              onClick={() => {
+                setShowHistory(true);
+                setStatusFilter("inserted");
+                setOffset(0);
+              }}
+              className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
             >
-              Clear selection
+              View Past Upload History ({insertedCount} Live)
             </button>
           )}
-          <span className="flex-1" />
-          <label className="flex items-center gap-1.5 text-xs text-slate-300" title="Rows generated for a test series">
-            <input type="checkbox" checked={assignToSeries} onChange={(e) => setAssignToSeries(e.target.checked)} />
-            Also add series drafts to their test series
-          </label>
-          <button
-            onClick={() => runApprove([...selected])}
-            disabled={actionBusy || selected.size === 0}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-          >
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            {actionBusy ? "Working…" : `Approve selected${selected.size ? ` (${selected.size})` : ""}`}
-          </button>
-          <button
-            onClick={() => setConfirm({ kind: "reject", ids: [...selected] })}
-            disabled={actionBusy || selected.size === 0}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
-          >
-            <XCircle className="w-3.5 h-3.5" /> Reject selected{selected.size ? ` (${selected.size})` : ""}
-          </button>
         </div>
+      ) : (
+        <div
+          className={`bg-slate-900 rounded-xl border-2 ${
+            needsAttentionCount > 0 ? "border-amber-500/50 shadow-lg shadow-amber-950/20" : "border-slate-800"
+          }`}
+        >
+          {/* Prominent Needs Attention Header Banner */}
+          <div
+            className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b ${
+              needsAttentionCount > 0
+                ? "bg-amber-500/10 border-amber-500/30"
+                : "bg-slate-950 border-slate-800"
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle
+                className={`w-4 h-4 shrink-0 ${
+                  needsAttentionCount > 0 ? "text-amber-400" : "text-slate-400"
+                }`}
+              />
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                    {needsAttentionCount > 0
+                      ? `Needs Attention — ${needsAttentionCount} Question(s) Awaiting Action`
+                      : "Upload & AI History"}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  {needsAttentionCount > 0
+                    ? "Review, auto-translate, or fix the questions below to publish them into the Live Question Bank."
+                    : "Showing historical rows that have already been processed."}
+                </p>
+              </div>
+            </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="text-slate-400 border-b border-slate-800">
-                <th className="p-3 w-8">
-                  <input
-                    type="checkbox"
-                    checked={allOnPageSelected}
-                    onChange={() =>
-                      setSelected(allOnPageSelected ? new Set() : new Set(jobs.map((j) => j.id)))
-                    }
-                  />
-                </th>
-                <th className="p-3 w-12">Row</th>
-                <th className="p-3">Question</th>
-                <th className="p-3 w-12">Ans</th>
-                <th className="p-3">Tags</th>
-                <th className="p-3">Status</th>
-                <th className="p-3">Actions</th>
-                <th className="p-3 w-8"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((job) => {
-                const d = job.draft;
-                const lowConfidence =
-                  job.aiConfidenceScore !== null && job.aiConfidenceScore < 0.7;
-                const expanded = expandedId === job.id;
-                return (
-                  <React.Fragment key={job.id}>
-                    <tr
-                      className={`border-b border-slate-800/70 align-top hover:bg-slate-800/30 ${
-                        lowConfidence ? "bg-amber-500/5" : ""
-                      }`}
-                    >
-                      <td className="p-3">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(job.id)}
-                          onChange={() => toggleSelected(job.id)}
-                        />
-                      </td>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showHistory;
+                  setShowHistory(next);
+                  if (!next && (statusFilter === "inserted" || statusFilter === "rejected" || statusFilter === "all")) {
+                    setStatusFilter(
+                      pendingReviewCount > 0
+                        ? "pending_review"
+                        : pendingAiCount > 0
+                          ? "pending_ai"
+                          : "failed"
+                    );
+                  }
+                }}
+                className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
+              >
+                {showHistory ? "Hide Live / History Tabs" : "Show Live / Rejected History"}
+              </button>
+              <button
+                onClick={refresh}
+                disabled={loading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-300 hover:text-white cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-slate-800">
+            <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-950 border border-slate-800 rounded-lg">
+              {(
+                [
+                  ["pending_review", `Ready for review (${pendingReviewCount})`],
+                  ["pending_ai", `Needs Bengali / explanation (${pendingAiCount})`],
+                  ["failed", `Needs fixing / duplicates (${failedCount})`],
+                  ...(showHistory
+                    ? ([
+                        ["inserted", `Inserted in DB (${insertedCount})`],
+                        ["rejected", "Rejected"],
+                        ["all", "All"],
+                      ] as Array<[StatusFilter, string]>)
+                    : []),
+                ] as Array<[StatusFilter, string]>
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => {
+                    setStatusFilter(value);
+                    setOffset(0);
+                    setExpandedId(null);
+                  }}
+                  className={`px-3 py-1.5 text-xs rounded-md cursor-pointer font-medium ${
+                    statusFilter === value
+                      ? "bg-amber-500/20 border border-amber-400/40 text-white"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {statusFilter === "pending_ai" && (
+            <p className="px-4 pt-3 text-xs text-amber-300/90">
+              These rows are missing Bengali text or an explanation. Open any row and click{" "}
+              <strong>Auto-Translate to Bengali (AI)</strong> or simply click{" "}
+              <strong>Save changes</strong> — it will translate automatically!
+            </p>
+          )}
+          {statusFilter === "failed" && (
+            <p className="px-4 pt-3 text-xs text-rose-300/90">
+              Rows with a wrong exam / subject / chapter / subtopic can be fixed here — open the row
+              and pick from the dropdowns.
+            </p>
+          )}
+
+          <ReviewFilterBar
+            tree={trees.trees[exam.slug]}
+            value={filters}
+            onChange={(f) => {
+              setFilters(f);
+              setOffset(0);
+            }}
+          />
+
+          {statusFilter !== "inserted" && statusFilter !== "rejected" && (
+            <div className="flex flex-wrap items-center gap-2 px-4 py-3 bg-slate-950/60 border-b border-slate-800">
+              <span className="text-xs text-white font-medium">
+                {selected.size > 0 ? `${selected.size} selected` : "Bulk actions"}
+              </span>
+              <button
+                onClick={selectAllMatching}
+                disabled={selectingAll || selectableJobsOnPage.length === 0}
+                className="px-2.5 py-1 text-xs text-sky-300 hover:text-sky-200 disabled:opacity-50 cursor-pointer"
+              >
+                {selectingAll ? "Selecting…" : "Select all actionable matching"}
+              </button>
+              {selected.size > 0 && (
+                <button
+                  onClick={() => setSelected(new Set())}
+                  className="px-2.5 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Clear selection
+                </button>
+              )}
+              <span className="flex-1" />
+              <label className="flex items-center gap-1.5 text-xs text-slate-300" title="Rows generated for a test series">
+                <input type="checkbox" checked={assignToSeries} onChange={(e) => setAssignToSeries(e.target.checked)} />
+                Also add series drafts to their test series
+              </label>
+              <button
+                onClick={() => runApprove([...selected])}
+                disabled={actionBusy || selected.size === 0}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {actionBusy ? "Working…" : `Approve selected${selected.size ? ` (${selected.size})` : ""}`}
+              </button>
+              <button
+                onClick={() => setConfirm({ kind: "reject", ids: [...selected] })}
+                disabled={actionBusy || selected.size === 0}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-rose-500/80 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+              >
+                <XCircle className="w-3.5 h-3.5" /> Reject selected{selected.size ? ` (${selected.size})` : ""}
+              </button>
+            </div>
+          )}
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="text-slate-400 border-b border-slate-800">
+                  <th className="p-3 w-8">
+                    {selectableJobsOnPage.length > 0 && (
+                      <input
+                        type="checkbox"
+                        checked={allOnPageSelected}
+                        onChange={() =>
+                          setSelected(
+                            allOnPageSelected
+                              ? new Set()
+                              : new Set(selectableJobsOnPage.map((j) => j.id))
+                          )
+                        }
+                      />
+                    )}
+                  </th>
+                  <th className="p-3 w-12">Row</th>
+                  <th className="p-3">Question</th>
+                  <th className="p-3 w-12">Ans</th>
+                  <th className="p-3">Tags</th>
+                  <th className="p-3">Status</th>
+                  <th className="p-3">Actions</th>
+                  <th className="p-3 w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map((job) => {
+                  const d = job.draft;
+                  const lowConfidence =
+                    job.aiConfidenceScore !== null && job.aiConfidenceScore < 0.7;
+                  const expanded = expandedId === job.id;
+                  const selectable = isRowSelectable(job);
+                  return (
+                    <React.Fragment key={job.id}>
+                      <tr
+                        className={`border-b border-slate-800/70 align-top hover:bg-slate-800/30 ${
+                          lowConfidence ? "bg-amber-500/5" : ""
+                        }`}
+                      >
+                        <td className="p-3">
+                          {selectable ? (
+                            <input
+                              type="checkbox"
+                              checked={selected.has(job.id)}
+                              onChange={() => toggleSelected(job.id)}
+                            />
+                          ) : (
+                            <span
+                              title="Already inserted in DB — selection disabled"
+                              className="inline-block text-emerald-500/60 text-xs select-none"
+                            >
+                              ✓
+                            </span>
+                          )}
+                        </td>
                       <td className="p-3 text-slate-500">{job.rowNumber ?? "—"}</td>
                       <td
                         className="p-3 cursor-pointer"
@@ -1044,6 +1189,7 @@ export default function BulkImportPanel({
           </div>
         )}
       </div>
+      )}
 
       {confirm?.kind === "reject" && (
         <ConfirmDialog

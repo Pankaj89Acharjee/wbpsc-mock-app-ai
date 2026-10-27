@@ -446,13 +446,13 @@ export default function ExamSyllabusPanel({
                 </div>
 
                 <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
-                  <span className="block text-[11px] text-slate-400">Series Questions Set</span>
+                  <span className="block text-[11px] text-slate-400">Available in Question Bank</span>
                   <span className="text-sm font-bold font-mono text-sky-300">
-                    {selectedOverview?.assignedQuestions ?? 0} /{" "}
-                    {selectedOverview?.targetQuestions || selected.totalQuestions} Qs
+                    {selected.questionCount} Questions
                   </span>
                   <span className="block text-[11px] text-slate-400 mt-0.5">
-                    {selected.questionCount} Qs in Exam Bank
+                    {selectedOverview?.assignedQuestions ?? 0} /{" "}
+                    {selectedOverview?.targetQuestions || selected.totalQuestions} Qs in Series
                   </span>
                 </div>
 
@@ -1907,13 +1907,8 @@ function EditableSyllabusTree({
                 </button>
 
                 <span className="text-[11px] text-slate-400 shrink-0">
-                  {(s.weightageQuestions ?? 0) > 0 && (
-                    <span className="inline-block mr-2 px-2 py-0.5 rounded bg-violet-500/15 border border-violet-500/30 text-violet-300 font-semibold">
-                      Exam Pattern: {s.weightageQuestions} Qs/test
-                    </span>
-                  )}
                   {s.chapters.length} chapters · {topicCount} topics ·{" "}
-                  <strong className="text-slate-300">{questionCount} Q in bank</strong>
+                  <strong className="text-emerald-300">{questionCount} Qs in bank</strong>
                 </span>
 
                 <div className="flex items-center gap-1 shrink-0">
@@ -2257,23 +2252,6 @@ function InlineEditBar({
         placeholder="বাংলা নাম (optional — auto-translated if blank)"
         className="flex-1 min-w-[180px] px-2.5 py-1 bg-slate-950 border border-slate-800 rounded text-white font-bengali"
       />
-      {editing.kind === "subject" && (
-        <label className="flex items-center gap-1.5 text-slate-300">
-          <span>Qs per Test:</span>
-          <input
-            type="number"
-            min={0}
-            max={500}
-            value={editing.weightageQuestions ?? 0}
-            onChange={(e) =>
-              setEditing((prev) =>
-                prev ? { ...prev, weightageQuestions: Math.max(0, Number(e.target.value) || 0) } : null
-              )
-            }
-            className="w-20 px-2 py-1 bg-slate-950 border border-slate-800 rounded text-white text-right font-mono"
-          />
-        </label>
-      )}
       <button
         type="button"
         onClick={onSave}
@@ -2319,8 +2297,15 @@ function ExamForm({
           titleBn: exam.titleBn,
           descriptionEn: exam.descriptionEn,
           descriptionBn: exam.descriptionBn,
-          totalQuestions: exam.totalQuestions,
-          durationMinutes: exam.durationMinutes,
+          totalQuestions:
+            exam.slug === "wbpsc-clerkship" &&
+            (exam.totalQuestions === 300 || exam.totalQuestions === 20)
+              ? 100
+              : exam.totalQuestions,
+          durationMinutes:
+            exam.slug === "wbpsc-clerkship" && exam.durationMinutes === 20
+              ? 90
+              : exam.durationMinutes,
           marksPerCorrect: exam.marksPerCorrect,
           negativeMarksPerWrong: exam.negativeMarksPerWrong,
           estimatedCutoffMarks: exam.estimatedCutoffMarks,
@@ -2329,26 +2314,28 @@ function ExamForm({
       : EMPTY_EXAM
   );
   const [presetSlug, setPresetSlug] = useState<string>("");
-  const [subjectCounts, setSubjectCounts] = useState<Record<string, string>>(() => {
-    const map: Record<string, string> = {};
+  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(() => {
+    const s = new Set<string>();
     if (tree && tree.subjects.length > 0) {
-      for (const s of tree.subjects) {
-        if ((s.weightageQuestions ?? 0) > 0) {
-          map[s.name.en] = String(s.weightageQuestions);
-        }
+      for (const subj of tree.subjects) {
+        s.add(subj.name.en);
+      }
+    } else if (!exam) {
+      for (const p of WBPSC_SUBJECT_PRESETS.slice(0, 6)) {
+        s.add(p.en);
       }
     }
-    return map;
+    return s;
   });
   const [customSubjects, setCustomSubjects] = useState<Array<{ en: string; bn: string }>>([]);
   const [hiddenSubjects, setHiddenSubjects] = useState<Set<string>>(() => new Set());
   const [newSubjEn, setNewSubjEn] = useState("");
   const [newSubjBn, setNewSubjBn] = useState("");
-  const [newSubjCount, setNewSubjCount] = useState("25");
   const [editingSubjKey, setEditingSubjKey] = useState<string | null>(null);
   const [editSubjEn, setEditSubjEn] = useState("");
   const [editSubjBn, setEditSubjBn] = useState("");
   const [saving, setSaving] = useState(false);
+  const [subjectBusy, setSubjectBusy] = useState(false);
 
   const set = <K extends keyof ExamConfigInput>(k: K, v: ExamConfigInput[K]) =>
     setF((prev) => ({ ...prev, [k]: v }));
@@ -2368,77 +2355,103 @@ function ExamForm({
       isActive: true,
     });
     if (preset.subjectWeightages) {
-      const next: Record<string, string> = {};
-      for (const sw of preset.subjectWeightages) {
-        next[sw.subjectEn] = String(sw.weightageQuestions);
-      }
-      setSubjectCounts(next);
+      setSelectedSubjects(new Set(preset.subjectWeightages.map((sw) => sw.subjectEn)));
     }
   };
 
-  // All subjects to display in the per-subject question count configurator
+  // Subjects to display in the Subject manager inside ExamForm
   const subjectOptions = useMemo(() => {
-    const items: Array<{ id?: string; en: string; bn: string }> = [];
+    const items: Array<{ id?: string; en: string; bn: string; questionCount: number }> = [];
     const seen = new Set<string>();
 
-    for (const p of WBPSC_SUBJECT_PRESETS) {
-      if (hiddenSubjects.has(p.en.toLowerCase())) continue;
-      const dbMatch = tree?.subjects.find((s) => s.name.en.toLowerCase() === p.en.toLowerCase());
-      seen.add(p.en.toLowerCase());
-      if (dbMatch) seen.add(dbMatch.name.en.toLowerCase());
-      items.push({
-        id: dbMatch?.id,
-        en: dbMatch?.name.en ?? p.en,
-        bn: dbMatch?.name.bn || p.bn,
-      });
-    }
+    // 1. Existing DB subjects for this exam first
     for (const s of tree?.subjects ?? []) {
       const k = s.name.en.toLowerCase();
       if (!seen.has(k) && !hiddenSubjects.has(k)) {
         seen.add(k);
-        items.push({ id: s.id, en: s.name.en, bn: s.name.bn });
+        const qCount = s.chapters.reduce(
+          (sum, c) => sum + c.subtopics.reduce((cSum, t) => cSum + t.questionCount, 0),
+          0
+        );
+        items.push({ id: s.id, en: s.name.en, bn: s.name.bn, questionCount: qCount });
       }
     }
+
+    // 2. Custom newly added subjects
     for (const c of customSubjects) {
       const k = c.en.toLowerCase();
       if (!seen.has(k) && !hiddenSubjects.has(k)) {
         seen.add(k);
-        items.push({ en: c.en, bn: c.bn });
+        items.push({ en: c.en, bn: c.bn, questionCount: 0 });
       }
     }
-    for (const k of Object.keys(subjectCounts)) {
-      if (!seen.has(k.toLowerCase()) && !hiddenSubjects.has(k.toLowerCase())) {
-        seen.add(k.toLowerCase());
-        items.push({ en: k, bn: "" });
+
+    // 3. When creating a new exam (or if exam has no subjects yet), offer presets
+    if (mode === "create" || (tree?.subjects.length ?? 0) === 0) {
+      for (const p of WBPSC_SUBJECT_PRESETS) {
+        const k = p.en.toLowerCase();
+        if (!seen.has(k) && !hiddenSubjects.has(k)) {
+          seen.add(k);
+          items.push({ en: p.en, bn: p.bn, questionCount: 0 });
+        }
       }
     }
+
     return items;
-  }, [tree?.subjects, customSubjects, hiddenSubjects, subjectCounts]);
+  }, [tree?.subjects, customSubjects, hiddenSubjects, mode]);
 
-  const configuredSubjectSum = useMemo(
-    () =>
-      Object.values(subjectCounts).reduce((acc, v) => {
-        const n = Number(v);
-        return acc + (Number.isFinite(n) && n > 0 ? n : 0);
-      }, 0),
-    [subjectCounts]
-  );
+  const totalBankQuestions = useMemo(() => {
+    const fromTree =
+      tree?.subjects.reduce(
+        (sum, s) =>
+          sum + s.chapters.reduce((cSum, c) => cSum + c.subtopics.reduce((tSum, t) => tSum + t.questionCount, 0), 0),
+        0
+      ) ?? 0;
+    return Math.max(exam?.questionCount ?? 0, fromTree);
+  }, [exam?.questionCount, tree?.subjects]);
 
-  const toggleSubjectCount = (en: string) => {
-    setSubjectCounts((prev) => {
-      const next = { ...prev };
-      if (next[en] !== undefined) {
-        delete next[en];
-      } else {
-        next[en] = "25";
-      }
+  const toggleSubjectIncluded = (en: string) => {
+    setSelectedSubjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(en)) next.delete(en);
+      else next.add(en);
       return next;
     });
   };
 
-  const handleAddSubjectOption = () => {
+  const handleAddSubjectOption = async () => {
     const trimmed = newSubjEn.trim();
     if (!trimmed) return;
+
+    // If editing an existing exam, immediately persist the new subject to the syllabus tree
+    if (mode === "edit" && exam && onTreeUpdated) {
+      setSubjectBusy(true);
+      try {
+        const res = await adminApi<{ tree: SyllabusTreeDto }>(
+          `/syllabus/exams/${exam.slug}/nodes`,
+          {
+            method: "POST",
+            body: {
+              subjectEn: trimmed,
+              subjectBn: newSubjBn.trim(),
+              chapterEn: `${trimmed} — Core Concepts`,
+              chapterBn: "",
+              subtopicEn: `${trimmed} — General Practice`,
+              subtopicBn: "",
+            },
+          }
+        );
+        await onTreeUpdated(res.tree, `Created subject "${trimmed}" in ${exam.titleEn}.`);
+        setSelectedSubjects((prev) => new Set([...prev, trimmed]));
+        setNewSubjEn("");
+        setNewSubjBn("");
+        setSubjectBusy(false);
+        return;
+      } catch {
+        setSubjectBusy(false);
+      }
+    }
+
     setHiddenSubjects((prev) => {
       const next = new Set(prev);
       next.delete(trimmed.toLowerCase());
@@ -2448,10 +2461,7 @@ function ExamForm({
       ...prev.filter((c) => c.en.toLowerCase() !== trimmed.toLowerCase()),
       { en: trimmed, bn: newSubjBn.trim() },
     ]);
-    setSubjectCounts((prev) => ({
-      ...prev,
-      [trimmed]: String(Number(newSubjCount) || 25),
-    }));
+    setSelectedSubjects((prev) => new Set([...prev, trimmed]));
     setNewSubjEn("");
     setNewSubjBn("");
   };
@@ -2482,12 +2492,11 @@ function ExamForm({
       ),
       { en: nextEn, bn: nextBn },
     ]);
-    setSubjectCounts((prev) => {
-      const next = { ...prev };
-      if (next[subj.en] !== undefined) {
-        const countVal = next[subj.en];
-        delete next[subj.en];
-        next[nextEn] = countVal;
+    setSelectedSubjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(subj.en)) {
+        next.delete(subj.en);
+        next.add(nextEn);
       }
       return next;
     });
@@ -2510,9 +2519,9 @@ function ExamForm({
     }
     setHiddenSubjects((prev) => new Set([...prev, subj.en.toLowerCase()]));
     setCustomSubjects((prev) => prev.filter((c) => c.en.toLowerCase() !== subj.en.toLowerCase()));
-    setSubjectCounts((prev) => {
-      const next = { ...prev };
-      delete next[subj.en];
+    setSelectedSubjects((prev) => {
+      const next = new Set(prev);
+      next.delete(subj.en);
       return next;
     });
   };
@@ -2537,25 +2546,22 @@ function ExamForm({
       onSubmit={async (e) => {
         e.preventDefault();
         setSaving(true);
-        const subjectWeightages = Object.entries(subjectCounts)
-          .map(([subjectEn, countStr]) => {
-            const opt = subjectOptions.find((o) => o.en.toLowerCase() === subjectEn.toLowerCase());
+        // Only seed new subjects that don't exist yet; never override f.totalQuestions!
+        const newSubjectsToCreate = [...selectedSubjects]
+          .filter((subjEn) => !tree?.subjects.some((s) => s.name.en.toLowerCase() === subjEn.toLowerCase()))
+          .map((subjEn) => {
+            const opt = subjectOptions.find((o) => o.en.toLowerCase() === subjEn.toLowerCase());
             return {
-              subjectEn,
+              subjectEn: subjEn,
               subjectBn: opt?.bn ?? "",
-              weightageQuestions: Number(countStr) || 0,
+              weightageQuestions: 25,
             };
-          })
-          .filter((sw) => sw.weightageQuestions > 0);
+          });
 
         const payload: ExamConfigInput = {
           ...(mode === "create" && presetSlug ? { ...f, slug: presetSlug } : f),
-          ...(subjectWeightages.length > 0
-            ? {
-                totalQuestions: configuredSubjectSum || f.totalQuestions,
-                subjectWeightages,
-              }
-            : {}),
+          totalQuestions: f.totalQuestions,
+          ...(newSubjectsToCreate.length > 0 ? { subjectWeightages: newSubjectsToCreate } : {}),
         };
         await onSave(payload);
         setSaving(false);
@@ -2650,28 +2656,25 @@ function ExamForm({
         {num("estimatedCutoffMarks", "Expected Cutoff", "0.01")}
       </div>
 
-      {/* Subject-wise Question Distribution Configurator */}
+      {/* Subjects Management (Create, Modify, Delete Subjects — No per-subject Qs inputs here) */}
       <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <span className="block text-xs font-bold text-white">
-              Subjects &amp; Number of Questions per Subject (Exam Pattern)
+              Subjects in this Exam ({subjectOptions.length})
             </span>
             <span className="block text-[11px] text-slate-400">
-              Set how many questions each subject has in this exam (e.g. Clerkship: GS 40, Arithmetic 30,
-              English 30 = 100 Qs). You can also add, rename, or delete subjects below.
+              Create, rename, or delete subjects for this exam below. (Subject-wise question counts are set when creating a Test Series.)
             </span>
           </div>
-          {configuredSubjectSum > 0 && (
-            <span className="px-2.5 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-xs font-mono text-emerald-300">
-              Subject Total: {configuredSubjectSum} Qs
-            </span>
-          )}
+          <span className="px-2.5 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-xs font-mono text-emerald-300">
+            Available in Question Bank: {totalBankQuestions} Qs
+          </span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
           {subjectOptions.map((subj) => {
-            const checked = subjectCounts[subj.en] !== undefined;
+            const checked = Boolean(subj.id) || selectedSubjects.has(subj.en);
             const isEditing = editingSubjKey === subj.en;
 
             if (isEditing) {
@@ -2715,19 +2718,21 @@ function ExamForm({
             return (
               <div
                 key={subj.en}
-                className={`flex items-center justify-between gap-2 p-2 rounded-lg border text-xs ${
+                className={`flex items-center justify-between gap-2 p-2.5 rounded-lg border text-xs ${
                   checked
-                    ? "bg-amber-500/10 border-amber-500/40 text-white"
-                    : "bg-slate-900/70 border-slate-800 text-slate-400"
+                    ? "bg-slate-900 border-amber-500/35 text-white"
+                    : "bg-slate-900/50 border-slate-800 text-slate-400"
                 }`}
               >
-                <label className="flex items-start gap-2 flex-1 min-w-0 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleSubjectCount(subj.en)}
-                    className="mt-0.5"
-                  />
+                <div className="flex items-start gap-2 flex-1 min-w-0">
+                  {!subj.id && (
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleSubjectIncluded(subj.en)}
+                      className="mt-0.5 cursor-pointer"
+                    />
+                  )}
                   <div className="min-w-0">
                     <span className="block font-medium truncate">{subj.en}</span>
                     {subj.bn && (
@@ -2736,22 +2741,11 @@ function ExamForm({
                       </span>
                     )}
                   </div>
-                </label>
+                </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  {checked && (
-                    <input
-                      type="number"
-                      min={1}
-                      max={200}
-                      value={subjectCounts[subj.en]}
-                      onChange={(e) => {
-                        const val = e.target.value.replace(/[^\d]/g, "");
-                        setSubjectCounts((prev) => ({ ...prev, [subj.en]: val }));
-                      }}
-                      placeholder="Qs"
-                      className="w-14 px-1.5 py-1 text-xs text-right font-mono bg-slate-950 border border-slate-700 rounded text-white"
-                    />
-                  )}
+                  <span className="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-300">
+                    {subj.questionCount} Qs
+                  </span>
                   <button
                     type="button"
                     onClick={() => {
@@ -2783,7 +2777,7 @@ function ExamForm({
           <input
             value={newSubjEn}
             onChange={(e) => setNewSubjEn(e.target.value)}
-            placeholder="Add another subject (e.g. Computer Literacy)…"
+            placeholder="Add new subject (e.g. Computer Literacy)…"
             className="flex-1 min-w-[200px] max-w-xs px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white"
           />
           <input
@@ -2792,22 +2786,13 @@ function ExamForm({
             placeholder="বাংলা নাম (optional)"
             className="flex-1 min-w-[160px] max-w-xs px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white font-bengali"
           />
-          <input
-            type="number"
-            min={1}
-            max={200}
-            value={newSubjCount}
-            onChange={(e) => setNewSubjCount(e.target.value)}
-            placeholder="Qs"
-            className="w-20 px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white font-mono text-right"
-          />
           <button
             type="button"
             onClick={handleAddSubjectOption}
-            disabled={!newSubjEn.trim()}
+            disabled={!newSubjEn.trim() || subjectBusy}
             className="px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
           >
-            + Add Subject
+            {subjectBusy ? "Adding…" : "+ Add Subject"}
           </button>
         </div>
       </div>
