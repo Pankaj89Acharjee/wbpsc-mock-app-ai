@@ -277,14 +277,45 @@ export async function toSeriesDtos(dbx: Dbx, rows: SeriesRow[]): Promise<SeriesD
       ])
     : [[], []];
 
+  // Auto-repair any legacy series where assigned questions exceeded its blueprint total (e.g. 135/100)
+  for (const r of rows) {
+    const total = buildRosterState(
+      slots.filter((x) => x.seriesId === r.id),
+      []
+    ).rosterTotal;
+    const selectedCount = selectedRows
+      .filter((x) => x.seriesId === r.id)
+      .reduce((sum, x) => sum + x.n, 0);
+    if (total > 0 && selectedCount > total) {
+      await enforceSeriesQuestionCap(dbx as Tx, r.id);
+    }
+  }
+
+  // Reload selectedRows if any series had overflow trimmed
+  const cleanSelectedRows = rows.some((r) => {
+    const total = buildRosterState(slots.filter((x) => x.seriesId === r.id), []).rosterTotal;
+    const sel = selectedRows.filter((x) => x.seriesId === r.id).reduce((sum, x) => sum + x.n, 0);
+    return total > 0 && sel > total;
+  })
+    ? await dbx
+        .select({
+          seriesId: seriesQuestions.seriesId,
+          subjectId: seriesQuestions.subjectId,
+          n: sql<number>`count(*)::int`,
+        })
+        .from(seriesQuestions)
+        .where(inArray(seriesQuestions.seriesId, ids))
+        .groupBy(seriesQuestions.seriesId, seriesQuestions.subjectId)
+    : selectedRows;
+
   return rows.map((r) => {
     const blueprint = subjectSlots.filter((x) => x.seriesId === r.id);
     const total = buildRosterState(
       slots.filter((x) => x.seriesId === r.id),
       []
     ).rosterTotal;
-    const mine = selectedRows.filter((x) => x.seriesId === r.id);
-    const selectedCount = mine.reduce((sum, x) => sum + x.n, 0);
+    const mine = cleanSelectedRows.filter((x) => x.seriesId === r.id);
+    const selectedCount = Math.min(total > 0 ? total : Infinity, mine.reduce((sum, x) => sum + x.n, 0));
     const att = attempts.find((x) => x.seriesId === r.id);
     return {
       id: r.id,
@@ -503,6 +534,14 @@ export async function assignQuestions(
       fail("Already in this series");
       continue;
     }
+    if (state.rosterTotal <= 0) {
+      fail("This test series has 0 configured question seats — configure its subject counts first");
+      continue;
+    }
+    if (paths.length >= state.rosterTotal) {
+      fail(`Test series has reached its maximum question limit (${paths.length}/${state.rosterTotal})`);
+      continue;
+    }
 
     const path: NodePath | null =
       override ??
@@ -565,6 +604,58 @@ export async function removeAssignment(tx: Tx, series: SeriesRow, questionId: st
     .where(and(eq(seriesQuestions.seriesId, series.id), eq(seriesQuestions.questionId, questionId)))
     .returning({ id: seriesQuestions.id });
   return removed.length > 0;
+}
+
+/**
+ * Ensures `series_questions` never exceeds the series blueprint (`rosterTotal` and each slot's `targetCount`).
+ * If extra questions were previously inserted beyond a slot's `targetCount` or outside the blueprint (e.g. 135/100),
+ * removes only the excess assignments from `series_questions` (leaving the questions untouched in `questions` bank).
+ */
+export async function enforceSeriesQuestionCap(tx: Dbx, seriesId: string): Promise<number> {
+  const [slots, assignedRows] = await Promise.all([
+    loadSlots(tx, [seriesId]),
+    tx
+      .select({
+        id: seriesQuestions.id,
+        subjectId: seriesQuestions.subjectId,
+        chapterId: seriesQuestions.chapterId,
+        subtopicId: seriesQuestions.subtopicId,
+      })
+      .from(seriesQuestions)
+      .where(eq(seriesQuestions.seriesId, seriesId))
+      .orderBy(asc(seriesQuestions.position), asc(seriesQuestions.createdAt)),
+  ]);
+
+  if (slots.length === 0 || assignedRows.length === 0) return 0;
+
+  const keptPaths: NodePath[] = [];
+  const overflowAssignmentIds: string[] = [];
+
+  for (const row of assignedRows) {
+    const path: NodePath = {
+      subjectId: row.subjectId,
+      chapterId: row.chapterId,
+      subtopicId: row.subtopicId,
+    };
+    const state = buildRosterState(slots, keptPaths);
+    if (keptPaths.length >= state.rosterTotal) {
+      overflowAssignmentIds.push(row.id);
+      continue;
+    }
+    const v = vacancyFor(state, path, "assign");
+    if (!v.eligible || v.allowed <= 0) {
+      overflowAssignmentIds.push(row.id);
+      continue;
+    }
+    keptPaths.push(path);
+  }
+
+  if (overflowAssignmentIds.length > 0) {
+    await tx
+      .delete(seriesQuestions)
+      .where(inArray(seriesQuestions.id, overflowAssignmentIds));
+  }
+  return overflowAssignmentIds.length;
 }
 
 export async function touchSeries(tx: Tx, seriesId: string) {

@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="1200" height="560">
+  <rect width="1200" height="560" rx="20" fill="#020617" />
+  
+  <!-- Header Bar -->
+  <rect x="40" y="32" width="1120" height="72" rx="14" fill="#0f172a" stroke="#1e293b" stroke-width="1.5" />
+  <text x="68" y="64" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="600">
+    OFFICIAL WBPSC TIMED MOCK · +1.00 / −0.25 · ATTEMPT #3
+  </text>
+  <text x="68" y="88" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="800">
+    WBPSC Clerkship Examination (Part-I) — Mock Test 1
+  </text>
+
+  <!-- Timer & Action Buttons in Header -->
+  <rect x="610" y="48" width="175" height="40" rx="8" fill="#020617" stroke="#334155" stroke-width="1" />
+  <text x="628" y="73" fill="#38bdf8" font-family="monospace" font-size="14" font-weight="700">
+    Remaining: 54m 18s
+  </text>
+
+  <rect x="798" y="48" width="175" height="40" rx="8" fill="#451a03" stroke="#f59e0b" stroke-width="1.5" />
+  <text x="816" y="73" fill="#fde68a" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">
+    ⏸ Pause / Postpone
+  </text>
+
+  <rect x="985" y="48" width="155" height="40" rx="8" fill="#10b981" />
+  <text x="1010" y="73" fill="#022c22" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="800">
+    Submit &amp; Grade
+  </text>
+
+  <!-- Left Panel: Bilingual Question Runner -->
+  <rect x="40" y="124" width="740" height="400" rx="16" fill="#0f172a" stroke="#1e293b" stroke-width="1.5" />
+  <text x="68" y="160" fill="#10b981" font-family="monospace" font-size="13" font-weight="700">
+    QUESTION 14 OF 100 · INDIAN POLITY · FUNDAMENTAL RIGHTS · [WBCS Prelims 2022]
+  </text>
+
+  <text x="68" y="200" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700">
+    Which Article of the Constitution of India did Dr. B.R. Ambedkar describe as the
+  </text>
+  <text x="68" y="224" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700">
+    "Heart and Soul of the Constitution"?
+  </text>
+  <text x="68" y="254" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="15">
+    ভারতীয় সংবিধানের কোন ধারাটিকে ডঃ বি. আর. আম্বেদকর ‘সংবিধানের হৃদয় ও আত্মা’ বলে অভিহিত করেছেন?
+  </text>
+
+  <!-- 4 Options -->
+  <rect x="68" y="280" width="330" height="54" rx="10" fill="#020617" stroke="#334155" stroke-width="1" />
+  <text x="88" y="312" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="14">
+    [A] Article 14 (ধারা ১৪)
+  </text>
+
+  <rect x="418" y="280" width="330" height="54" rx="10" fill="#020617" stroke="#334155" stroke-width="1" />
+  <text x="438" y="312" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="14">
+    [B] Article 19 (ধারা ১৯)
+  </text>
+
+  <rect x="68" y="348" width="330" height="54" rx="10" fill="#064e3b" stroke="#10b981" stroke-width="2" />
+  <text x="88" y="380" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">
+    [C] Article 32 (ধারা ৩২) ✓
+  </text>
+
+  <rect x="418" y="348" width="330" height="54" rx="10" fill="#020617" stroke="#334155" stroke-width="1" />
+  <text x="438" y="380" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="14">
+    [D] Article 356 (ধারা ৩৫৬)
+  </text>
+
+  <!-- Question Footer -->
+  <rect x="68" y="438" width="160" height="38" rx="8" fill="#451a03" stroke="#f59e0b" stroke-width="1" />
+  <text x="88" y="462" fill="#fde68a" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="700">
+    ★ Marked for Review
+  </text>
+
+  <rect x="608" y="438" width="140" height="38" rx="8" fill="#10b981" />
+  <text x="634" y="462" fill="#022c22" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="800">
+    Next Question →
+  </text>
+
+  <!-- Right Panel: Paused State & Attempt Counter Card -->
+  <rect x="800" y="124" width="360" height="400" rx="16" fill="#0f172a" stroke="#1e293b" stroke-width="1.5" />
+  <text x="826" y="162" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">
+    Smart State &amp; Attempt Tracking
+  </text>
+
+  <!-- Paused Card Preview -->
+  <rect x="824" y="182" width="312" height="145" rx="12" fill="#1c1917" stroke="#f59e0b" stroke-width="1.5" />
+  <text x="842" y="210" fill="#fbbf24" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="800">
+    ⏸ PAUSED / POSTPONED TEST STATE
+  </text>
+  <text x="842" y="236" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">
+    Saved in PostgreSQL Database:
+  </text>
+  <text x="842" y="258" fill="#cbd5e1" font-family="monospace" font-size="12">
+    • Answered: 42 / 100 Questions
+  </text>
+  <text x="842" y="278" fill="#cbd5e1" font-family="monospace" font-size="12">
+    • Elapsed Timer: 35m 42s preserved
+  </text>
+  <text x="842" y="298" fill="#6ee7b7" font-family="monospace" font-size="12" font-weight="700">
+    ▶ Resume later on Mobile or Web!
+  </text>
+
+  <!-- Attempt Counter Card Preview -->
+  <rect x="824" y="346" width="312" height="150" rx="12" fill="#1e1b4b" stroke="#8b5cf6" stroke-width="1.5" />
+  <text x="842" y="374" fill="#c4b5fd" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="800">
+    🏆 REPEAT ATTEMPT TRACKER
+  </text>
+  <text x="842" y="402" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">
+    Attempted: 3 times
+  </text>
+  <text x="842" y="428" fill="#6ee7b7" font-family="monospace" font-size="13" font-weight="700">
+    Best Score: 78.50 / 100
+  </text>
+  <text x="842" y="450" fill="#cbd5e1" font-family="monospace" font-size="13">
+    Last Attempt Score: 74.25 / 100
+  </text>
+  <text x="842" y="476" fill="#a78bfa" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="600">
+    Full Attempt-by-Attempt Comparison
+  </text>
+</svg>

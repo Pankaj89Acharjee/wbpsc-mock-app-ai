@@ -5,6 +5,7 @@ import type {
   BilingualText,
   CachedNoteRefDto,
   MasteryDto,
+  PausedAttemptDto,
   QuestionOptions,
   StudentExamDto,
   StudentSeriesDto,
@@ -38,6 +39,8 @@ import {
   Upload,
   Lock,
   Play,
+  PauseCircle,
+  Bookmark,
   Edit3,
 } from "lucide-react";
 
@@ -157,6 +160,7 @@ export default function App() {
   // Student Data
   const [examsList, setExamsList] = useState<StudentExamDto[]>([]);
   const [myAttempts, setMyAttempts] = useState<AttemptSummaryDto[]>([]);
+  const [myPausedAttempts, setMyPausedAttempts] = useState<PausedAttemptDto[]>([]);
   const [myMastery, setMyMastery] = useState<MasteryDto[]>([]);
   const [cachedNotes, setCachedNotes] = useState<CachedNoteRefDto[]>([]);
 
@@ -172,6 +176,8 @@ export default function App() {
   const [activeExam, setActiveExam] = useState<StudentExamDto | null>(null);
   /** Test series being sat (null = random mock / remedial test) */
   const [activeSeriesId, setActiveSeriesId] = useState<string | null>(null);
+  /** Paused attempt ID if this test was resumed from a postponed state */
+  const [activePausedAttemptId, setActivePausedAttemptId] = useState<string | null>(null);
   /** Published test series per exam, loaded when a student opens an exam */
   const [seriesByExam, setSeriesByExam] = useState<Record<string, StudentSeriesDto[]>>({});
   const [openExamId, setOpenExamId] = useState<string | null>(null);
@@ -181,9 +187,11 @@ export default function App() {
   const [selectedAnswers, setSelectedAnswers] = useState<
     Record<string, "A" | "B" | "C" | "D">
   >({});
+  const [markedForReview, setMarkedForReview] = useState<Record<string, boolean>>({});
   const [questionTimers, setQuestionTimers] = useState<Record<string, number>>({});
   const [elapsedTotalSec, setElapsedTotalSec] = useState<number>(0);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [pausing, setPausing] = useState<boolean>(false);
   /** Highlighted in the history right after submitting */
   const [lastAttemptId, setLastAttemptId] = useState<string | null>(null);
 
@@ -262,6 +270,9 @@ export default function App() {
     api<{ attempts: AttemptSummaryDto[] }>("/me/attempts")
       .then((r) => setMyAttempts(r.attempts))
       .catch((err) => showError(err, "Could not load your attempts"));
+    api<{ pausedAttempts: PausedAttemptDto[] }>("/me/paused-attempts")
+      .then((r) => setMyPausedAttempts(r.pausedAttempts))
+      .catch(() => setMyPausedAttempts([]));
     api<{ mastery: MasteryDto[] }>("/me/mastery")
       .then((r) => setMyMastery(r.mastery))
       .catch((err) => showError(err, "Could not load your weakness radar"));
@@ -425,14 +436,85 @@ export default function App() {
     }
     setActiveExam(exam);
     setActiveSeriesId(seriesId);
+    setActivePausedAttemptId(null);
     setActiveTestQuestions(questions.map(toMockQuestion));
     setIsRemedialMode(remedial);
     setCurrentQuestionIdx(0);
     setSelectedAnswers({});
+    setMarkedForReview({});
     setQuestionTimers({});
     setElapsedTotalSec(0);
     autoSubmittedRef.current = false;
     setLastAttemptId(null);
+  };
+
+  /** Resumes a paused/postponed test from exact saved state (timer, answers, marked questions, index). */
+  const resumePausedTest = (paused: PausedAttemptDto) => {
+    const baseExam = examsList.find((e) => e.id === paused.examId);
+    const examForRunner: StudentExamDto = {
+      id: paused.examId,
+      slug: paused.examSlug,
+      titleEn: paused.examTitleEn,
+      titleBn: paused.examTitleBn,
+      descriptionEn: baseExam?.descriptionEn ?? "",
+      descriptionBn: baseExam?.descriptionBn ?? "",
+      totalQuestions: paused.totalQuestions,
+      durationMinutes: paused.durationMinutes,
+      marksPerCorrect: paused.marksPerCorrect,
+      negativeMarksPerWrong: paused.negativeMarksPerWrong,
+      estimatedCutoffMarks: paused.estimatedCutoffMarks,
+      isActive: true,
+      questionCount: baseExam?.questionCount ?? paused.totalQuestions,
+      subjectCount: baseExam?.subjectCount ?? 1,
+      seriesCounts: baseExam?.seriesCounts ?? {},
+    };
+
+    const restoredAnswers: Record<string, "A" | "B" | "C" | "D"> = {};
+    const restoredMarked: Record<string, boolean> = {};
+    const restoredTimers: Record<string, number> = {};
+
+    for (const q of paused.questions) {
+      if (q.selectedOption) restoredAnswers[q.id] = q.selectedOption;
+      if (q.state === "marked_for_review" || q.state === "answered_and_marked") {
+        restoredMarked[q.id] = true;
+      }
+      if (q.timeSpentSeconds > 0) restoredTimers[q.id] = q.timeSpentSeconds;
+    }
+
+    setActiveExam(examForRunner);
+    setActiveSeriesId(paused.seriesId);
+    setActivePausedAttemptId(paused.attemptId);
+    setActiveTestQuestions(paused.questions.map(toMockQuestion));
+    setIsRemedialMode(paused.isRemedial);
+    setCurrentQuestionIdx(
+      Math.min(Math.max(0, paused.currentQuestionIdx), Math.max(0, paused.questions.length - 1))
+    );
+    setSelectedAnswers(restoredAnswers);
+    setMarkedForReview(restoredMarked);
+    setQuestionTimers(restoredTimers);
+    setElapsedTotalSec(paused.totalTimeSpentSeconds);
+    autoSubmittedRef.current = false;
+    setLastAttemptId(null);
+    setStatusBanner({
+      type: "info",
+      text: `Resumed "${paused.examTitleEn}" (${paused.answeredCount}/${paused.totalQuestions} answered · ${formatClock(paused.totalTimeSpentSeconds)} elapsed).`,
+    });
+  };
+
+  const discardPausedTest = async (attemptId: string) => {
+    try {
+      await api(`/me/paused-attempts/${attemptId}`, { method: "DELETE" });
+      loadMyProgress();
+      loadExams();
+      if (openExamId) {
+        api<{ series: StudentSeriesDto[] }>(`/exams/${openExamId}/series`)
+          .then((r) => setSeriesByExam((prev) => ({ ...prev, [openExamId]: r.series })))
+          .catch(() => undefined);
+      }
+      setStatusBanner({ type: "info", text: "Postponed test discarded." });
+    } catch (err) {
+      showError(err, "Could not discard paused test");
+    }
   };
 
   const startMockTest = async (exam: StudentExamDto) => {
@@ -506,24 +588,94 @@ export default function App() {
     handleSubmitMockTest();
   });
 
+  const handlePauseMockTest = async () => {
+    if (!activeExam || pausing || submitting) return;
+    setPausing(true);
+    try {
+      const r = await api<{
+        attemptId: string;
+        answeredCount: number;
+        totalQuestions: number;
+        totalTimeSpentSeconds: number;
+      }>("/exams/pause", {
+        method: "POST",
+        body: {
+          examId: activeExam.id,
+          seriesId: activeSeriesId,
+          attemptId: activePausedAttemptId,
+          isRemedial: isRemedialMode,
+          preferredLanguage: lang,
+          totalTimeSpentSeconds: elapsedTotalSec,
+          answers: activeTestQuestions.map((q) => {
+            const chosen = selectedAnswers[q.id];
+            const isMarked = Boolean(markedForReview[q.id]);
+            return {
+              questionId: q.id,
+              selectedOption: chosen ?? null,
+              status: chosen
+                ? isMarked
+                  ? "answered_and_marked"
+                  : "answered"
+                : isMarked
+                  ? "marked_for_review"
+                  : "unanswered",
+              timeSpentSeconds: Math.min(7200, questionTimers[q.id] || 0),
+            };
+          }),
+        },
+      });
+      const pausedTitle = activeExam.titleEn;
+      const pausedExamId = activeExam.id;
+      setActiveExam(null);
+      setActiveSeriesId(null);
+      setActivePausedAttemptId(null);
+      setActiveTestQuestions([]);
+      setStatusBanner({
+        type: "info",
+        text: `Test paused & saved (${r.answeredCount}/${r.totalQuestions} answered · ${formatClock(r.totalTimeSpentSeconds)} elapsed). You can resume "${pausedTitle}" anytime from Mock Tests.`,
+      });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      loadMyProgress();
+      loadExams();
+      if (pausedExamId) {
+        api<{ series: StudentSeriesDto[] }>(`/exams/${pausedExamId}/series`)
+          .then((res) => setSeriesByExam((prev) => ({ ...prev, [pausedExamId]: res.series })))
+          .catch(() => undefined);
+      }
+    } catch (err) {
+      showError(err, "Could not pause the test — please try again.");
+    } finally {
+      setPausing(false);
+    }
+  };
+
   const handleSubmitMockTest = async () => {
     if (!activeExam || submitting) return;
     setSubmitting(true);
     try {
+      const submittedExamId = activeExam.id;
       const r = await api<SubmitResponse>("/exams/submit", {
         method: "POST",
         body: {
           examId: activeExam.id,
           seriesId: activeSeriesId ?? undefined,
+          attemptId: activePausedAttemptId ?? undefined,
           preferredLanguage: lang,
           totalTimeSpentSeconds: elapsedTotalSec,
           startedAt: new Date(Date.now() - elapsedTotalSec * 1000).toISOString(),
           answers: activeTestQuestions.map((q) => {
             const chosen = selectedAnswers[q.id];
+            const isMarked = Boolean(markedForReview[q.id]);
             return {
               questionId: q.id,
               selectedOption: chosen ?? null,
-              status: chosen ? "answered" : "unanswered",
+              status: chosen
+                ? isMarked
+                  ? "answered_and_marked"
+                  : "answered"
+                : isMarked
+                  ? "marked_for_review"
+                  : "unanswered",
               timeSpentSeconds: Math.min(7200, questionTimers[q.id] || 0),
             };
           }),
@@ -533,6 +685,7 @@ export default function App() {
       setLastAttemptId(r.attemptId);
       setActiveExam(null);
       setActiveSeriesId(null);
+      setActivePausedAttemptId(null);
       setActiveTestQuestions([]);
       setStatusBanner({
         type: "success",
@@ -541,6 +694,12 @@ export default function App() {
       });
       window.scrollTo({ top: 0, behavior: "smooth" });
       loadMyProgress();
+      loadExams();
+      if (submittedExamId) {
+        api<{ series: StudentSeriesDto[] }>(`/exams/${submittedExamId}/series`)
+          .then((res) => setSeriesByExam((prev) => ({ ...prev, [submittedExamId]: res.series })))
+          .catch(() => undefined);
+      }
     } catch (err) {
       showError(err, "Submission failed — your answers are still here, try again.");
     } finally {
@@ -1062,8 +1221,21 @@ export default function App() {
                       </div>
                     )}
                     <button
+                      onClick={handlePauseMockTest}
+                      disabled={pausing || submitting}
+                      title="Pause / Postpone this test and continue later from where you left off"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 disabled:opacity-50 text-amber-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <PauseCircle className="w-3.5 h-3.5 text-amber-300" />
+                      {pausing
+                        ? "Saving Progress…"
+                        : lang === "bn"
+                          ? "পরীক্ষা স্থগিত করুন (Pause)"
+                          : "Pause / Postpone Test"}
+                    </button>
+                    <button
                       onClick={handleSubmitMockTest}
-                      disabled={submitting}
+                      disabled={submitting || pausing}
                       className="px-4 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       {submitting ? "Grading…" : "Submit & Grade Test"}
@@ -1072,25 +1244,47 @@ export default function App() {
                 </div>
 
                 {/* Question Palette */}
-                <div className="flex flex-wrap gap-2">
-                  {activeTestQuestions.map((q, idx) => {
-                    const isAnswered = Boolean(selectedAnswers[q.id]);
-                    const isCurrent = idx === currentQuestionIdx;
-                    return (
-                      <button
-                        key={q.id}
-                        onClick={() => setCurrentQuestionIdx(idx)}
-                        className={`w-9 h-9 rounded-lg text-xs font-mono tabular-nums font-semibold transition-colors cursor-pointer ${isCurrent
-                            ? "bg-white text-slate-950"
-                            : isAnswered
-                              ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-300"
-                              : "bg-slate-950 border border-slate-800 text-slate-400"
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-400">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500/40 border border-emerald-500" />
+                      Answered ({Object.keys(selectedAnswers).length})
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-amber-500/40 border border-amber-400" />
+                      Marked for Review ({Object.values(markedForReview).filter(Boolean).length})
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-slate-950 border border-slate-700" />
+                      Unanswered ({activeTestQuestions.length - Object.keys(selectedAnswers).length})
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {activeTestQuestions.map((q, idx) => {
+                      const isAnswered = Boolean(selectedAnswers[q.id]);
+                      const isMarked = Boolean(markedForReview[q.id]);
+                      const isCurrent = idx === currentQuestionIdx;
+                      return (
+                        <button
+                          key={q.id}
+                          onClick={() => setCurrentQuestionIdx(idx)}
+                          className={`w-9 h-9 rounded-lg text-xs font-mono tabular-nums font-semibold transition-colors cursor-pointer ${
+                            isCurrent
+                              ? "bg-white text-slate-950"
+                              : isMarked && isAnswered
+                                ? "bg-violet-500/25 border border-violet-400 text-violet-200"
+                                : isMarked
+                                  ? "bg-amber-500/20 border border-amber-400/70 text-amber-200"
+                                  : isAnswered
+                                    ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-300"
+                                    : "bg-slate-950 border border-slate-800 text-slate-400"
                           }`}
-                      >
-                        {idx + 1}
-                      </button>
-                    );
-                  })}
+                        >
+                          {idx + 1}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {/* Current Question Card */}
@@ -1162,19 +1356,44 @@ export default function App() {
                         })}
                       </div>
 
-                      <div className="flex items-center justify-between pt-4 border-t border-slate-800">
-                        <button
-                          onClick={() =>
-                            setSelectedAnswers((prev) => {
-                              const copy = { ...prev };
-                              delete copy[q.id];
-                              return copy;
-                            })
-                          }
-                          className="px-3 py-1.5 text-xs text-slate-400 hover:text-white cursor-pointer"
-                        >
-                          Clear Response
-                        </button>
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-800">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() =>
+                              setSelectedAnswers((prev) => {
+                                const copy = { ...prev };
+                                delete copy[q.id];
+                                return copy;
+                              })
+                            }
+                            className="px-3 py-1.5 text-xs text-slate-400 hover:text-white cursor-pointer"
+                          >
+                            Clear Response
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMarkedForReview((prev) => ({
+                                ...prev,
+                                [q.id]: !prev[q.id],
+                              }))
+                            }
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border cursor-pointer transition-colors ${
+                              markedForReview[q.id]
+                                ? "bg-amber-500/20 border-amber-400 text-amber-200"
+                                : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
+                            }`}
+                          >
+                            <Bookmark className="w-3.5 h-3.5" />
+                            {markedForReview[q.id]
+                              ? lang === "bn"
+                                ? "পর্যালোচনার জন্য চিহ্নিত"
+                                : "Marked for Review"
+                              : lang === "bn"
+                                ? "পর্যালোচনার জন্য রাখুন"
+                                : "Mark for Review"}
+                          </button>
+                        </div>
 
                         <div className="flex items-center gap-3">
                           <button
@@ -1204,7 +1423,7 @@ export default function App() {
                           ) : (
                             <button
                               onClick={handleSubmitMockTest}
-                              disabled={submitting}
+                              disabled={submitting || pausing}
                               className="px-4 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
                             >
                               {submitting ? "Grading…" : "Finish & Submit"}
@@ -1247,6 +1466,64 @@ export default function App() {
 
 
 
+                {/* Paused / Postponed Ongoing Tests Banner */}
+                {myPausedAttempts.length > 0 && (
+                  <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-5 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <h2 className="text-sm font-bold text-amber-300 flex items-center gap-2">
+                          <PauseCircle className="w-4 h-4 text-amber-400" />
+                          {lang === "bn"
+                            ? `স্থগিত / চলমান পরীক্ষা (${myPausedAttempts.length})`
+                            : `Paused / Postponed Ongoing Tests (${myPausedAttempts.length})`}
+                        </h2>
+                        <p className="text-xs text-slate-300 mt-0.5">
+                          {lang === "bn"
+                            ? "আপনি যেখানে থামিয়েছিলেন ঠিক সেখান থেকেই আপনার স্থগিত পরীক্ষাটি পুনরায় শুরু করুন।"
+                            : "Continue your postponed exam from the exact question, timer, and saved answers where you left off."}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {myPausedAttempts.map((pa) => (
+                        <div
+                          key={pa.attemptId}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-slate-950/85 p-3.5"
+                        >
+                          <div className="min-w-0 space-y-1">
+                            <p className="text-sm font-bold text-white truncate">
+                              {lang === "bn" ? pa.examTitleBn : pa.examTitleEn}
+                            </p>
+                            <p className="text-xs font-mono text-amber-300">
+                              {pa.answeredCount}/{pa.totalQuestions} Answered ·{" "}
+                              {formatClock(pa.totalTimeSpentSeconds)} elapsed ·{" "}
+                              {pa.durationMinutes} min total
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => resumePausedTest(pa)}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg cursor-pointer"
+                            >
+                              <Play className="w-3.5 h-3.5" />
+                              {lang === "bn" ? "চালিয়ে যান (Resume)" : "Resume Exam"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => discardPausedTest(pa.attemptId)}
+                              title="Discard this paused attempt"
+                              className="p-2 text-xs text-slate-400 hover:text-rose-300 bg-slate-900 border border-slate-800 rounded-lg cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {examsList.length === 0 ? (
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center space-y-4">
                     <p className="text-sm text-slate-300">
@@ -1269,6 +1546,23 @@ export default function App() {
                         lang={lang}
                         onBack={() => setOpenExamId(null)}
                         onStartSeries={(x) => startSeriesTest(openExam, x)}
+                        onResumeSeries={(x) => {
+                          const match = myPausedAttempts.find(
+                            (pa) => pa.seriesId === x.id || pa.attemptId === x.myPausedAttemptId
+                          );
+                          if (match) {
+                            resumePausedTest(match);
+                          } else {
+                            api<{ pausedAttempts: PausedAttemptDto[] }>("/me/paused-attempts")
+                              .then((res) => {
+                                setMyPausedAttempts(res.pausedAttempts);
+                                const found = res.pausedAttempts.find((pa) => pa.seriesId === x.id);
+                                if (found) resumePausedTest(found);
+                                else startSeriesTest(openExam, x);
+                              })
+                              .catch(() => startSeriesTest(openExam, x));
+                          }
+                        }}
                         onStartRandom={() => startMockTest(openExam)}
                       >
                         <div className="space-y-3 border-t border-slate-800 pt-6">

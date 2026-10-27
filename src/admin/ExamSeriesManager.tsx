@@ -849,12 +849,14 @@ function SeriesForm({
     (sum, c) => sum + (Number(c) || 0),
     0
   );
+  const maxExamQuestions = defaults.totalQuestions > 0 ? defaults.totalQuestions : 0;
+  const exceedsMaxQuestions = maxExamQuestions > 0 && totalConfigured > maxExamQuestions;
 
   const isSubmitDisabled = () => {
     if (busy || v.nameEn.trim().length < 2) return true;
     if (initial) return false;
     if (creationPath === "subject_pattern") {
-      return noSubjects || countsIncomplete;
+      return noSubjects || countsIncomplete || exceedsMaxQuestions;
     }
     // creationPath === "full_paper_import"
     return importKind === "csv" ? !importText.trim() : !importBase64;
@@ -1072,15 +1074,27 @@ function SeriesForm({
                     <p className="text-xs font-bold text-white">
                       Step 1: Set Number of Questions from Each Subject *
                     </p>
-                    <span className="px-2.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30 text-xs font-mono text-violet-200">
-                      Total Configured: {totalConfigured} Questions
+                    <span
+                      className={`px-2.5 py-0.5 rounded border text-xs font-mono ${
+                        exceedsMaxQuestions
+                          ? "bg-rose-500/20 border-rose-500/40 text-rose-200 font-bold"
+                          : "bg-violet-500/20 border-violet-500/30 text-violet-200"
+                      }`}
+                    >
+                      Total Configured: {totalConfigured}
+                      {maxExamQuestions > 0 ? ` / ${maxExamQuestions}` : ""} Questions
                     </span>
                   </div>
                   <p className="text-xs text-slate-400">
-                    Pre-filled from {defaults.titleEn} settings. Tick subjects and enter how many
+                    Pre-filled from {defaults.titleEn} settings (max {defaults.totalQuestions} questions). Tick subjects and enter how many
                     questions each subject will have in this test series.
                   </p>
-                  <SubjectCountsEditor tree={tree} value={subjectCounts} onChange={setSubjectCounts} />
+                  <SubjectCountsEditor
+                    tree={tree}
+                    value={subjectCounts}
+                    onChange={setSubjectCounts}
+                    maxQuestions={defaults.totalQuestions}
+                  />
                 </div>
 
                 <div className="space-y-2 pt-3 border-t border-slate-800">

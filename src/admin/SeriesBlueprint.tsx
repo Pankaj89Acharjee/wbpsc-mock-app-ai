@@ -48,12 +48,15 @@ export function SubjectCountsEditor({
   value,
   onChange,
   bank,
+  maxQuestions,
 }: {
   tree: SyllabusTreeDto | undefined;
   value: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
   /** Bank supply per node; shows "N in bank" next to each subject */
   bank?: Record<string, BankSupplyDto>;
+  /** Maximum total questions allowed for this exam / test series */
+  maxQuestions?: number;
 }) {
   if (!tree) return <p className="text-xs text-slate-400">Loading subjects…</p>;
   if (tree.subjects.length === 0) {
@@ -64,6 +67,7 @@ export function SubjectCountsEditor({
     );
   }
   const total = Object.values(value).reduce((n, v) => n + (Number(v) || 0), 0);
+  const overCap = maxQuestions && maxQuestions > 0 && total > maxQuestions;
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -112,8 +116,15 @@ export function SubjectCountsEditor({
           );
         })}
       </div>
-      <p className="text-xs font-mono text-emerald-300" aria-live="polite">
+      <p
+        className={`text-xs font-mono ${overCap ? "text-rose-400 font-bold" : "text-emerald-300"}`}
+        aria-live="polite"
+      >
         Total questions: {total}
+        {maxQuestions && maxQuestions > 0 ? ` / ${maxQuestions} max` : ""}
+        {overCap
+          ? ` — Exceeds exam limit by ${total - maxQuestions!} question(s)! Reduce subject counts to ${maxQuestions} or fewer.`
+          : ""}
       </p>
     </div>
   );
@@ -236,7 +247,15 @@ export default function SeriesBlueprint({
   };
 
   const total = chosen.reduce((n, s) => n + num(keyOf(s.id)), 0);
-  const allProblems = chosen.flatMap((s) => subjectCheck(s).problems);
+  const examMax = exam.totalQuestions > 0 ? exam.totalQuestions : 0;
+  const allProblems = [
+    ...chosen.flatMap((s) => subjectCheck(s).problems),
+    ...(examMax > 0 && total > examMax
+      ? [
+          `Total configured questions (${total}) exceeds ${exam.titleEn}'s maximum intake of ${examMax} questions.`,
+        ]
+      : []),
+  ];
   const missingCount = chosen.some((s) => !num(keyOf(s.id)));
   const dirty = JSON.stringify(targets) !== JSON.stringify(saved);
 
@@ -298,6 +317,7 @@ export default function SeriesBlueprint({
         <SubjectCountsEditor
           tree={tree}
           bank={bank}
+          maxQuestions={exam.totalQuestions}
           value={subjectCountMap}
           onChange={(v) =>
             setTargets((prev) => {
@@ -452,7 +472,12 @@ export default function SeriesBlueprint({
         </ul>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-xs font-mono text-emerald-300">Total: {total} questions</span>
+        <span
+          className={`text-xs font-mono ${examMax > 0 && total > examMax ? "text-rose-400 font-bold" : "text-emerald-300"}`}
+        >
+          Total: {total}
+          {examMax > 0 ? ` / ${examMax}` : ""} questions
+        </span>
         <button
           onClick={save}
           disabled={!dirty || saving || allProblems.length > 0 || missingCount}

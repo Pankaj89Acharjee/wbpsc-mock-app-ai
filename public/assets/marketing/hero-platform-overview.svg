@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" width="1200" height="620">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#020617" />
+      <stop offset="50%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="emeraldAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#34d399" />
+    </linearGradient>
+    <linearGradient id="violetAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#a78bfa" />
+    </linearGradient>
+    <linearGradient id="amberAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#fbbf24" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="620" rx="24" fill="url(#bgGrad)" />
+  <circle cx="1060" cy="110" r="220" fill="#10b981" opacity="0.08" />
+  <circle cx="140" cy="520" r="200" fill="#8b5cf6" opacity="0.08" />
+
+  <!-- Top Badge -->
+  <rect x="60" y="42" width="440" height="34" rx="17" fill="#065f46" stroke="#10b981" stroke-width="1.5" />
+  <text x="82" y="64" fill="#a7f3d0" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="0.8">
+    BENGALI + ENGLISH AI MOCK TEST &amp; TUTOR PLATFORM
+  </text>
+
+  <!-- Main Headline -->
+  <text x="60" y="122" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="800">
+    WBPSC AI Mock Tutor &amp; Weakness Engine
+  </text>
+  <text x="60" y="156" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="500">
+    Complete Exam Preparation for WBCS, PSC Clerkship (Part I &amp; II), Food SI, Miscellaneous &amp; ICDS
+  </text>
+
+  <!-- 4 Pillar Cards -->
+  <!-- Card 1: Mock Test Engine -->
+  <rect x="60" y="195" width="255" height="260" rx="16" fill="url(#cardGrad)" stroke="#334155" stroke-width="1.5" />
+  <rect x="80" y="215" width="52" height="8" rx="4" fill="url(#emeraldAccent)" />
+  <text x="80" y="252" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">
+    1. Live Timed Mock Tests
+  </text>
+  <text x="80" y="280" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Instant বাংলা / English toggle
+  </text>
+  <text x="80" y="304" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Pause / Postpone &amp; Resume
+  </text>
+  <text x="80" y="328" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Exact −0.25 / −0.33 Grading
+  </text>
+  <text x="80" y="352" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Attempt Counter &amp; Best Score
+  </text>
+  <rect x="80" y="385" width="215" height="46" rx="10" fill="#064e3b" stroke="#10b981" stroke-width="1" />
+  <text x="96" y="413" fill="#6ee7b7" font-family="monospace" font-size="13" font-weight="700">
+    100 Qs · 90 Min · +1 / −0.25
+  </text>
+
+  <!-- Card 2: Weakness Radar & Tutor -->
+  <rect x="335" y="195" width="255" height="260" rx="16" fill="url(#cardGrad)" stroke="#334155" stroke-width="1.5" />
+  <rect x="355" y="215" width="52" height="8" rx="4" fill="url(#amberAccent)" />
+  <text x="355" y="252" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">
+    2. Weakness &amp; AI Tutor
+  </text>
+  <text x="355" y="280" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Subtopic Accuracy &amp; Speed Radar
+  </text>
+  <text x="355" y="304" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • 1-Click Remedial Mock (20 Qs)
+  </text>
+  <text x="355" y="328" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • 3-Tier Cached AI Study Notes
+  </text>
+  <text x="355" y="352" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Bengali Mnemonics &amp; Tricks
+  </text>
+  <rect x="355" y="385" width="215" height="46" rx="10" fill="#451a03" stroke="#f59e0b" stroke-width="1" />
+  <text x="371" y="413" fill="#fde68a" font-family="monospace" font-size="13" font-weight="700">
+    Top 3 Weak Subtopics Targeted
+  </text>
+
+  <!-- Card 3: Part-II & Current Affairs -->
+  <rect x="610" y="195" width="255" height="260" rx="16" fill="url(#cardGrad)" stroke="#334155" stroke-width="1.5" />
+  <rect x="630" y="215" width="52" height="8" rx="4" fill="url(#violetAccent)" />
+  <text x="630" y="252" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">
+    3. Part-II &amp; Daily CA
+  </text>
+  <text x="630" y="280" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Descriptive Report &amp; Precis
+  </text>
+  <text x="630" y="304" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Handwritten Photo OCR Grading
+  </text>
+  <text x="630" y="328" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Model Answers &amp; Word Count
+  </text>
+  <text x="630" y="352" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Daily Bilingual Current Affairs
+  </text>
+  <rect x="630" y="385" width="215" height="46" rx="10" fill="#2e1065" stroke="#8b5cf6" stroke-width="1" />
+  <text x="646" y="413" fill="#ddd6fe" font-family="monospace" font-size="13" font-weight="700">
+    Prelims + Mains + Descriptive
+  </text>
+
+  <!-- Card 4: Educator & Admin Studio -->
+  <rect x="885" y="195" width="255" height="260" rx="16" fill="url(#cardGrad)" stroke="#334155" stroke-width="1.5" />
+  <rect x="905" y="215" width="52" height="8" rx="4" fill="#38bdf8" />
+  <text x="905" y="252" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">
+    4. Educator Admin Studio
+  </text>
+  <text x="905" y="280" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • 1-Click AI Syllabus &amp; 100-Q Set
+  </text>
+  <text x="905" y="304" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • PDF / Image / Excel Bulk Import
+  </text>
+  <text x="905" y="328" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • Auto English → বাংলা Translation
+  </text>
+  <text x="905" y="352" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="13">
+    • A4 Print PDF &amp; Excel Export
+  </text>
+  <rect x="905" y="385" width="215" height="46" rx="10" fill="#0c4a6e" stroke="#38bdf8" stroke-width="1" />
+  <text x="921" y="413" fill="#bae6fd" font-family="monospace" font-size="13" font-weight="700">
+    Zero Duplicate Guarantee
+  </text>
+
+  <!-- Bottom Metrics Strip -->
+  <rect x="60" y="485" width="1080" height="90" rx="16" fill="#0f172a" stroke="#1e293b" stroke-width="1.5" />
+  <text x="100" y="523" fill="#10b981" font-family="monospace" font-size="24" font-weight="800">100% Bilingual</text>
+  <text x="100" y="550" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="13">English &amp; বাংলা (যুক্তাক্ষর Ready)</text>
+
+  <text x="380" y="523" fill="#fbbf24" font-family="monospace" font-size="24" font-weight="800">0 AI Tokens for MCQ Grading</text>
+  <text x="380" y="550" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="13">Instant Deterministic PostgreSQL Evaluation</text>
+
+  <text x="790" y="523" fill="#a78bfa" font-family="monospace" font-size="24" font-weight="800">3-Layer Deduplication</text>
+  <text x="790" y="550" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="13">SHA-256 + pg_trgm + Vector Similarity</text>
+</svg>
