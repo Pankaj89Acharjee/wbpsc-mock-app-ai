@@ -2,7 +2,17 @@
 
 ![Architecture & Deduplication Overview](./public/assets/marketing/analytics-deduplication-flow.svg)
 
-Welcome to the technical documentation for **WBPSC AI Mock Tutor**. This guide is written in **clear, plain English** so that even a beginner developer, student, or non-specialist can understand **what every service does, why each technology was chosen, and how all the moving parts work together behind the scenes**.
+This is a simple technical documentation for **WBPSC AI Mock Tutor**. **The App has the following features -**.
+
+- Developed a bilingual (English and Bengali) exam preparation platform with cross-platform clients utilizing React 19 for the web and React Native for mobile.   
+
+- Built a dual-service backend featuring a Core API (Node.js, Fastify) for deterministic SQL exam grading and an AI Microservice (Python, FastAPI, Google GenAI) for generating study notes and evaluating essays.   
+
+- Engineered a Retrieval-Augmented Generation (RAG) pipeline utilizing PostgreSQL `pgvector` for targeted study notes, optimized by a 3-tier caching system (`Redis`, `PostgreSQL`, `Gemini API`).   
+
+- Implemented a 3-layer `anti-duplication` system using prompt-time avoidance, order-independent `SHA-256` content hashing, and PostgreSQL `pg_trgm` *fuzzy matching* to prevent repeated questions.   
+
+- Designed real-time exam state management for pausing and resuming tests, alongside administrative blueprint engines with strict question intake cap enforcement.  
 
 ---
 
