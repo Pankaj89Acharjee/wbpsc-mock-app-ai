@@ -17,7 +17,9 @@ import {
 import {
   OptionKeySchema,
   QuestionAttemptStatusSchema,
+  SUBSCRIPTION_TIER_LABELS,
   SupportedLanguageSchema,
+  canAccessSeriesTier,
   type StudentExamDto,
   type StudentSeriesDto,
 } from "../../../../packages/shared-types/src/index";
@@ -334,6 +336,9 @@ export const examRoutes: FastifyPluginAsync = async (
         marksPerCorrect: Number(s.marksPerCorrect),
         negativeMarksPerWrong: Number(s.negativeMarksPerWrong),
         estimatedCutoffMarks: Number(s.estimatedCutoffMarks),
+        accessType: (s.accessType as "free" | "paid") || "free",
+        requiredTier: s.requiredTier || "free",
+        priceInr: Number(s.priceInr ?? 0),
         myAttemptCount: mineSubmitted.length,
         myBestScore: bestScore,
         myLastScore: lastScore,
@@ -362,6 +367,25 @@ export const examRoutes: FastifyPluginAsync = async (
     // Admins may preview drafts; students only see published series
     if (!series || (!isAdmin && series.status !== "published")) {
       return reply.status(404).send({ error: "Test series not found" });
+    }
+
+    const accessType = (series.accessType as "free" | "paid") || "free";
+    const requiredTier = series.requiredTier || "pro_prelims";
+    if (
+      !canAccessSeriesTier(
+        request.user!.subscriptionTier,
+        accessType,
+        requiredTier,
+        request.user!.role
+      )
+    ) {
+      const tierLabel = SUBSCRIPTION_TIER_LABELS[requiredTier] ?? requiredTier;
+      return reply.status(402).send({
+        error: `This is a Paid Test Series (${tierLabel}). Please purchase or upgrade your subscription to unlock this test.`,
+        code: "SUBSCRIPTION_REQUIRED",
+        requiredTier,
+        priceInr: Number(series.priceInr ?? 0),
+      });
     }
 
     const seriesQs = await db

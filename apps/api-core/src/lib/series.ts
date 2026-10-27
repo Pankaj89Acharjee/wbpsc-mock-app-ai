@@ -327,6 +327,9 @@ export async function toSeriesDtos(dbx: Dbx, rows: SeriesRow[]): Promise<SeriesD
       status: r.status,
       displayOrder: r.displayOrder,
       ...seriesMarking(r),
+      accessType: (r.accessType as "free" | "paid") || "free",
+      requiredTier: r.requiredTier || "free",
+      priceInr: Number(r.priceInr ?? 0),
       totalQuestions: total,
       subjects: blueprint.map((x) => ({
         subjectId: x.subjectId,

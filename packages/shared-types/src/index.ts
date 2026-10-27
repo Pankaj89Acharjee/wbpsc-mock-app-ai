@@ -177,7 +177,133 @@ export type WeaknessReport = z.infer<typeof WeaknessReportSchema>;
 // ============================================================================
 
 export type UserRole = "aspirant" | "educator" | "admin";
-export type SubscriptionTier = "free" | "pro_prelims" | "wbcs_executive_pass";
+
+export const SubscriptionTierSchema = z.enum([
+  "free",
+  "pro_prelims",
+  "pro_mains",
+  "part2_descriptive",
+  "wbcs_executive_pass",
+]);
+export type SubscriptionTier = z.infer<typeof SubscriptionTierSchema>;
+
+export const SeriesAccessTypeSchema = z.enum(["free", "paid"]);
+export type SeriesAccessType = z.infer<typeof SeriesAccessTypeSchema>;
+
+export interface SubscriptionTierPlanInfo {
+  tier: SubscriptionTier;
+  labelEn: string;
+  labelBn: string;
+  shortLabel: string;
+  priceInr: number;
+  billingCycle: string;
+  descriptionEn: string;
+  descriptionBn: string;
+  features: string[];
+}
+
+export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
+  {
+    tier: "free",
+    labelEn: "Free Starter Tier",
+    labelBn: "ফ্রি স্টার্টার প্ল্যান",
+    shortLabel: "Free",
+    priceInr: 0,
+    billingCycle: "lifetime",
+    descriptionEn: "Access all Free Mock Tests, basic weakness tracking, and daily current affairs.",
+    descriptionBn: "সকল ফ্রি মক টেস্ট, দুর্বলতা বিশ্লেষণ ও ডেইলি কারেন্ট অ্যাফেয়ার্স।",
+    features: ["All Free Test Series", "SQL Weakness Radar", "Daily Current Affairs"],
+  },
+  {
+    tier: "pro_prelims",
+    labelEn: "Pro Prelims Pass (Clerkship / Food SI / WBCS Prelims)",
+    labelBn: "প্রো প্রিলিমিনারি পাস (ক্লার্কশিপ / ফুড এসআই / WBCS প্রিলিমস)",
+    shortLabel: "Pro Prelims",
+    priceInr: 299,
+    billingCycle: "yearly",
+    descriptionEn: "Unlocks all Paid Prelims Test Series (Clerkship Part-I, Food SI, WBCS Prelims) + AI Study Notes.",
+    descriptionBn: "সকল পেইড প্রিলিমিনারি টেস্ট সিরিজ এবং এআই স্টাডি নোট আনলক করুন।",
+    features: ["All Free + Prelims Paid Series", "Bilingual AI Tutor Notes", "Unlimited Re-Attempts & Pause"],
+  },
+  {
+    tier: "pro_mains",
+    labelEn: "Pro Mains Tier (WBCS Mains & Miscellaneous Mains)",
+    labelBn: "প্রো মেইনস টিয়ার (WBCS মেইনস ও মিসলেনিয়াস মেইনস)",
+    shortLabel: "Mains Tier",
+    priceInr: 499,
+    billingCycle: "yearly",
+    descriptionEn: "Unlocks Prelims + Advanced Mains Mock Test Series with high-difficulty analytical MCQs.",
+    descriptionBn: "প্রিলিমস এবং অ্যাডভান্সড মেইনস মক টেস্ট সিরিজ আনলক করুন।",
+    features: ["All Prelims + Mains Paid Series", "Advanced Mains Paper Sets", "Deep Subtopic Mastery Analytics"],
+  },
+  {
+    tier: "part2_descriptive",
+    labelEn: "Part-II Descriptive Tier (Clerkship & Mains Descriptive)",
+    labelBn: "পার্ট-II ডেসক্রিপটিভ টিয়ার (ক্লার্কশিপ ও মেইনস লিখিত)",
+    shortLabel: "Part-II Tier",
+    priceInr: 399,
+    billingCycle: "yearly",
+    descriptionEn: "Unlocks Paid Part-II Descriptive Evaluator, Precis/Report/Translation sets & Prelims Mock Series.",
+    descriptionBn: "ক্লার্কশিপ পার্ট-II লিখিত মূল্যায়ন ও প্রিলিমস মক টেস্ট আনলক করুন।",
+    features: ["Part-II AI Descriptive Evaluator", "Bilingual Translation & Precis Grading", "Prelims Paid Test Series"],
+  },
+  {
+    tier: "wbcs_executive_pass",
+    labelEn: "WBCS Executive All-Access Pass (Prelims + Mains + Part-II)",
+    labelBn: "WBCS এক্সিকিউটিভ অল-অ্যাক্সেস পাস (প্রিলিমস + মেইনস + পার্ট-II)",
+    shortLabel: "WBCS Executive Pass",
+    priceInr: 799,
+    billingCycle: "yearly",
+    descriptionEn: "Complete unrestricted access to every Paid Mock Test Series, Mains Tier, and Part-II Evaluator.",
+    descriptionBn: "সকল পেইড মক টেস্ট সিরিজ, মেইনস টিয়ার এবং পার্ট-II ইভ্যালুয়েটরের সম্পূর্ণ অ্যাক্সেস।",
+    features: [
+      "Unlocks 100% of Paid Test Series",
+      "Prelims + Mains + Part-II Descriptive",
+      "Priority AI Tutor & Remedial Tests",
+    ],
+  },
+];
+
+export const SUBSCRIPTION_TIER_LABELS: Record<SubscriptionTier, string> = {
+  free: "Free Tier",
+  pro_prelims: "Pro Prelims",
+  pro_mains: "Mains Tier",
+  part2_descriptive: "Part-II Tier",
+  wbcs_executive_pass: "WBCS Executive Pass",
+};
+
+/**
+ * Checks whether a student with `userTier` can take a test series configured with
+ * `accessType` ("free" | "paid") and `requiredTier`.
+ * Admins and educators always have full access.
+ */
+export function canAccessSeriesTier(
+  userTier: SubscriptionTier | undefined | null,
+  accessType: SeriesAccessType | undefined | null,
+  requiredTier?: SubscriptionTier | null,
+  role?: UserRole | null
+): boolean {
+  if (role === "admin" || role === "educator") return true;
+  if (!accessType || accessType === "free") return true;
+  const tier = userTier ?? "free";
+  if (tier === "free") return false;
+  if (tier === "wbcs_executive_pass") return true;
+  const req = requiredTier && requiredTier !== "free" ? requiredTier : "pro_prelims";
+  if (req === "pro_prelims") {
+    return (
+      tier === "pro_prelims" ||
+      tier === "pro_mains" ||
+      tier === "part2_descriptive"
+    );
+  }
+  if (req === "pro_mains") {
+    return tier === "pro_mains";
+  }
+  if (req === "part2_descriptive") {
+    return tier === "part2_descriptive" || tier === "pro_mains";
+  }
+  return false;
+}
 
 export interface UserDto {
   id: string;
@@ -190,6 +316,10 @@ export interface UserDto {
   isActive: boolean;
   hasPassword: boolean;
   hasGoogle: boolean;
+  paymentDueInr?: number;
+  totalPaidInr?: number;
+  billingNotes?: string | null;
+  subscriptionExpiresAt?: string | null;
   createdAt: string;
 }
 
@@ -1342,6 +1472,10 @@ export const SeriesInputSchema = z.object({
   marksPerCorrect: z.coerce.number().positive().max(10),
   negativeMarksPerWrong: z.coerce.number().min(0).max(5),
   estimatedCutoffMarks: z.coerce.number().min(0).max(1000).default(0),
+  // Free vs Paid access control
+  accessType: SeriesAccessTypeSchema.default("free"),
+  requiredTier: SubscriptionTierSchema.default("free"),
+  priceInr: z.coerce.number().min(0).max(50_000).default(0),
   /**
    * On create: the subjects in this series and their question counts
    * (e.g. GS 40 · English 30 · Maths 30). Topic breakdown is set afterwards
@@ -1419,6 +1553,12 @@ export interface SeriesDto {
   marksPerCorrect: number;
   negativeMarksPerWrong: number;
   estimatedCutoffMarks: number;
+  /** Whether this test series is Free or Paid */
+  accessType: SeriesAccessType;
+  /** Minimum subscription tier required when accessType === "paid" */
+  requiredTier: SubscriptionTier;
+  /** Indicative standalone price / plan value in INR */
+  priceInr: number;
   /** Σ subject counts of the blueprint = length of the test */
   totalQuestions: number;
   /** Subject counts of the blueprint, e.g. [{ GS, 40 }, { English, 30 }] */
@@ -1637,6 +1777,10 @@ export interface StudentSeriesDto {
   marksPerCorrect: number;
   negativeMarksPerWrong: number;
   estimatedCutoffMarks: number;
+  /** Free vs Paid test series */
+  accessType?: SeriesAccessType;
+  requiredTier?: SubscriptionTier;
+  priceInr?: number;
   /** Number of submitted attempts by the signed-in student on this series */
   myAttemptCount?: number;
   /** Highest net score by the signed-in student on this series */
@@ -1786,17 +1930,50 @@ export interface AttemptSummaryDto {
   correctCount: number;
   incorrectCount: number;
   unansweredCount: number;
+  rawPositiveScore?: number;
+  negativePenalty?: number;
   finalNetScore: number;
   maxPossibleScore: number;
   accuracyPercentage: number;
   totalTimeSpentSeconds: number;
   cutoffCleared: boolean;
   submittedAt: string | null;
+  startedAt?: string | null;
+  attemptStatus?: "in_progress" | "submitted" | "abandoned";
   /** Set when a test series (not a random/remedial mock) was taken */
-  series?: { id: string; name: BilingualText } | null;
+  series?: {
+    id: string;
+    name: BilingualText;
+    accessType?: SeriesAccessType;
+    requiredTier?: SubscriptionTier;
+  } | null;
   /** Present in admin listings */
+  userId?: string;
   userEmail?: string;
   userName?: string;
+  userSubscriptionTier?: SubscriptionTier;
+  userTargetExamSlug?: string;
+}
+
+export interface StudentSubscriptionDto {
+  id: string;
+  userId: string;
+  userName?: string;
+  userEmail?: string;
+  userTargetExamSlug?: string;
+  planTier: SubscriptionTier;
+  planName: string;
+  billingCycle: string;
+  planPriceInr: number;
+  amountPaidInr: number;
+  amountDueInr: number;
+  paymentStatus: "paid" | "partial_due" | "pending_due" | "waived" | "refunded";
+  paymentMode: string;
+  transactionRef: string | null;
+  notes: string | null;
+  startsAt: string;
+  expiresAt: string | null;
+  createdAt: string;
 }
 
 export interface AttemptReviewItemDto {

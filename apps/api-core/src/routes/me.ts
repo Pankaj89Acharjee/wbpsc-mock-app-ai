@@ -7,24 +7,39 @@ import {
   examSeries,
   exams,
   questions,
+  studentSubscriptions,
   subjects,
   subtopics,
   testAttempts,
+  users,
   userSubtopicMastery,
 } from "../db/schema";
-import type {
-  AttemptReviewDto,
-  BilingualText,
-  AttemptSummaryDto,
-  MasteryDto,
-  PausedAttemptDto,
+import {
+  SUBSCRIPTION_TIER_PLANS,
+  SubscriptionTierSchema,
+  type AttemptReviewDto,
+  type BilingualText,
+  type AttemptSummaryDto,
+  type MasteryDto,
+  type PausedAttemptDto,
+  type SeriesAccessType,
+  type StudentSubscriptionDto,
+  type SubscriptionTier,
 } from "../../../../packages/shared-types/src/index";
 import { requireUser } from "../lib/auth";
+import { formatIssues } from "../lib/validation";
+import { toUserDto } from "./auth";
 
 type AttemptRow = typeof testAttempts.$inferSelect;
 type ExamRow = typeof exams.$inferSelect;
 /** The test series an attempt was for; it sets the cutoff */
-type SeriesRef = { id: string; name: BilingualText; cutoff: string | number } | null;
+export type SeriesRef = {
+  id: string;
+  name: BilingualText;
+  cutoff: string | number;
+  accessType?: SeriesAccessType;
+  requiredTier?: SubscriptionTier;
+} | null;
 
 export function toAttemptSummary(a: AttemptRow, exam: ExamRow, series: SeriesRef = null): AttemptSummaryDto {
   const finalNetScore = Number(a.finalNetScore);
@@ -41,13 +56,22 @@ export function toAttemptSummary(a: AttemptRow, exam: ExamRow, series: SeriesRef
     correctCount: a.correctCount,
     incorrectCount: a.incorrectCount,
     unansweredCount: a.unansweredCount,
+    rawPositiveScore: Number(a.rawPositiveScore ?? 0),
+    negativePenalty: Number(a.negativePenalty ?? 0),
     finalNetScore,
     maxPossibleScore: Number(a.maxPossibleScore),
     accuracyPercentage: Number(a.accuracyPercentage),
     totalTimeSpentSeconds: a.totalTimeSpentSeconds,
     cutoffCleared: finalNetScore >= cutoff,
     submittedAt: a.submittedAt?.toISOString() ?? null,
-    series: series && { id: series.id, name: series.name },
+    startedAt: a.startedAt?.toISOString() ?? null,
+    attemptStatus: a.status,
+    series: series && {
+      id: series.id,
+      name: series.name,
+      accessType: series.accessType ?? "free",
+      requiredTier: series.requiredTier ?? "free",
+    },
   };
 }
 
@@ -67,6 +91,8 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
         seriesId: examSeries.id,
         seriesName: examSeries.name,
         seriesCutoff: examSeries.estimatedCutoffMarks,
+        seriesAccessType: examSeries.accessType,
+        seriesRequiredTier: examSeries.requiredTier,
       })
       .from(testAttempts)
       .innerJoin(exams, eq(testAttempts.examId, exams.id))
@@ -82,7 +108,13 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
           r.attempt,
           r.exam,
           r.seriesId && r.seriesName && r.seriesCutoff != null
-            ? { id: r.seriesId, name: r.seriesName, cutoff: r.seriesCutoff }
+            ? {
+                id: r.seriesId,
+                name: r.seriesName,
+                cutoff: r.seriesCutoff,
+                accessType: (r.seriesAccessType as SeriesAccessType) || "free",
+                requiredTier: r.seriesRequiredTier || "free",
+              }
             : null
         )
       ),
@@ -259,5 +291,162 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
         )
       );
     return { deleted: true };
+  });
+
+  /** 6. GET /me/subscriptions — student's own subscription & test payment history */
+  fastify.get("/subscriptions", async (request) => {
+    const rows = await db
+      .select()
+      .from(studentSubscriptions)
+      .where(eq(studentSubscriptions.userId, request.user!.id))
+      .orderBy(desc(studentSubscriptions.createdAt))
+      .limit(50);
+
+    const subscriptions: StudentSubscriptionDto[] = rows.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      planTier: r.planTier,
+      planName: r.planName,
+      billingCycle: r.billingCycle,
+      planPriceInr: Number(r.planPriceInr),
+      amountPaidInr: Number(r.amountPaidInr),
+      amountDueInr: Number(r.amountDueInr),
+      paymentStatus: r.paymentStatus,
+      paymentMode: r.paymentMode,
+      transactionRef: r.transactionRef ?? null,
+      notes: r.notes ?? null,
+      startsAt: r.startsAt.toISOString(),
+      expiresAt: r.expiresAt ? r.expiresAt.toISOString() : null,
+      createdAt: r.createdAt.toISOString(),
+    }));
+    return { subscriptions };
+  });
+
+  /**
+   * 7. POST /me/subscriptions/purchase
+   * Allows a logged-in aspirant to buy/upgrade a subscription plan or pay pending dues
+   * using a simulated Test Payment (before live Razorpay integration).
+   * Updates `users` and records a row in `student_subscriptions` visible to Admin immediately.
+   */
+  const PurchaseSubscriptionBodySchema = z.object({
+    planTier: SubscriptionTierSchema,
+    testPaidAmountInr: z.coerce.number().min(0).max(50_000),
+    billingCycle: z.enum(["monthly", "quarterly", "yearly"]).default("yearly"),
+    payExistingDueOnly: z.boolean().default(false),
+    notes: z.string().trim().max(500).optional(),
+  });
+
+  fastify.post("/subscriptions/purchase", async (request, reply) => {
+    const parsed = PurchaseSubscriptionBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: formatIssues(parsed.error.issues) });
+    }
+    const body = parsed.data;
+    const currentUser = request.user!;
+    const planMeta =
+      SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === body.planTier) ??
+      SUBSCRIPTION_TIER_PLANS[1];
+
+    const result = await db.transaction(async (tx) => {
+      const [u] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, currentUser.id))
+        .limit(1);
+      if (!u) throw new Error("User not found");
+
+      const existingDue = Number(u.paymentDueInr ?? 0);
+      const existingTotalPaid = Number(u.totalPaidInr ?? 0);
+      const planPrice = body.payExistingDueOnly ? existingDue : planMeta.priceInr;
+      const paidNow = Number(body.testPaidAmountInr.toFixed(2));
+
+      // Compute updated due:
+      // If paying existing due only: reduce existingDue by paidNow.
+      // If purchasing a plan: any shortfall on the plan (planPrice - paidNow) is added to existingDue (or reduced if overpaid).
+      const newDue = body.payExistingDueOnly
+        ? Math.max(0, Number((existingDue - paidNow).toFixed(2)))
+        : Math.max(0, Number((existingDue + (planPrice - paidNow)).toFixed(2)));
+
+      const newTotalPaid = Number((existingTotalPaid + paidNow).toFixed(2));
+      const paymentStatus: StudentSubscriptionDto["paymentStatus"] =
+        newDue <= 0 ? "paid" : paidNow > 0 ? "partial_due" : "pending_due";
+
+      const expiresAt = new Date();
+      if (body.billingCycle === "monthly") {
+        expiresAt.setMonth(expiresAt.getMonth() + 1);
+      } else if (body.billingCycle === "quarterly") {
+        expiresAt.setMonth(expiresAt.getMonth() + 3);
+      } else {
+        expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+      }
+
+      const txRef = `TEST-PAY-${Date.now().toString(36).toUpperCase()}`;
+
+      const [sub] = await tx
+        .insert(studentSubscriptions)
+        .values({
+          userId: u.id,
+          planTier: body.planTier,
+          planName: body.payExistingDueOnly
+            ? `Due Clearance (${planMeta.shortLabel})`
+            : planMeta.labelEn,
+          billingCycle: body.billingCycle,
+          planPriceInr: String(planPrice),
+          amountPaidInr: String(paidNow),
+          amountDueInr: String(newDue),
+          paymentStatus,
+          paymentMode: "test_payment",
+          transactionRef: txRef,
+          notes:
+            body.notes ||
+            (body.payExistingDueOnly
+              ? `Aspirant paid ₹${paidNow} towards pending dues`
+              : `Test subscription purchase by aspirant (${planMeta.shortLabel})`),
+          startsAt: new Date(),
+          expiresAt,
+          createdBy: u.id,
+        })
+        .returning();
+
+      const [updatedUser] = await tx
+        .update(users)
+        .set({
+          subscriptionTier: body.planTier,
+          paymentDueInr: String(newDue),
+          totalPaidInr: String(newTotalPaid),
+          subscriptionExpiresAt: expiresAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, u.id))
+        .returning();
+
+      return { updatedUser, sub };
+    });
+
+    const subscriptionDto: StudentSubscriptionDto = {
+      id: result.sub.id,
+      userId: result.sub.userId,
+      userName: result.updatedUser.fullName,
+      userEmail: result.updatedUser.email,
+      userTargetExamSlug: result.updatedUser.targetExamSlug,
+      planTier: result.sub.planTier,
+      planName: result.sub.planName,
+      billingCycle: result.sub.billingCycle,
+      planPriceInr: Number(result.sub.planPriceInr),
+      amountPaidInr: Number(result.sub.amountPaidInr),
+      amountDueInr: Number(result.sub.amountDueInr),
+      paymentStatus: result.sub.paymentStatus,
+      paymentMode: result.sub.paymentMode,
+      transactionRef: result.sub.transactionRef ?? null,
+      notes: result.sub.notes ?? null,
+      startsAt: result.sub.startsAt.toISOString(),
+      expiresAt: result.sub.expiresAt ? result.sub.expiresAt.toISOString() : null,
+      createdAt: result.sub.createdAt.toISOString(),
+    };
+
+    return {
+      user: toUserDto(result.updatedUser),
+      subscription: subscriptionDto,
+    };
   });
 };
