@@ -55,6 +55,7 @@ import {
   assignQuestions,
   buildBlueprintDto,
   buildRosterDto,
+  enforceSeriesQuestionCap,
   getSeries,
   loadAssignedPaths,
   loadExamTaxonomy,
@@ -235,7 +236,10 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     if (body.data.status === "published") {
       return reply.status(400).send({ error: "Create the series as a draft, select its questions, then publish" });
     }
-    const [exam] = await db.select({ id: exams.id }).from(exams).where(eq(exams.id, params.data.id));
+    const [exam] = await db
+      .select({ id: exams.id, totalQuestions: exams.totalQuestions })
+      .from(exams)
+      .where(eq(exams.id, params.data.id));
     if (!exam) return reply.status(404).send({ error: "Exam not found" });
 
     const taken = new Set(
@@ -255,6 +259,12 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     }
     if (new Set(targets.map((t) => t.subjectId)).size !== targets.length) {
       return reply.status(400).send({ error: "Each subject can be listed only once" });
+    }
+    const requestedTotal = targets.reduce((sum, t) => sum + t.targetCount, 0);
+    if (exam.totalQuestions > 0 && requestedTotal > exam.totalQuestions) {
+      return reply.status(400).send({
+        error: `Total questions across subjects (${requestedTotal}) cannot exceed this exam's limit of ${exam.totalQuestions} questions (${requestedTotal - exam.totalQuestions} extra).`,
+      });
     }
 
     const created = await db.transaction(async (tx) => {
@@ -387,6 +397,17 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
           throw new SeriesError(`Remove or reassign selected questions first — ${conflicts.join("; ")}`, 409);
         }
         const newTotal = buildRosterState(proposed, []).rosterTotal;
+        const [examRow] = await tx
+          .select({ totalQuestions: exams.totalQuestions })
+          .from(exams)
+          .where(eq(exams.id, series.examId))
+          .limit(1);
+        if (examRow && examRow.totalQuestions > 0 && newTotal > examRow.totalQuestions) {
+          throw new SeriesError(
+            `Total questions across subjects (${newTotal}) cannot exceed this exam's limit of ${examRow.totalQuestions} questions (${newTotal - examRow.totalQuestions} extra)`,
+            400
+          );
+        }
         if (series.status === "published" && assigned.length !== newTotal) {
           throw new SeriesError(
             `This series is published with ${assigned.length} questions; move it back to draft before changing the total to ${newTotal}`,
@@ -1049,36 +1070,55 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
 
         await db.transaction(async (tx) => {
           const locked = await lockSeries(tx, series.id);
+          const existingSlots = await tx
+            .select()
+            .from(seriesRosterSlots)
+            .where(eq(seriesRosterSlots.seriesId, locked.id));
+          const { state } = await rosterStateFor(tx, locked.id);
 
-          // If autoUpdateBlueprint is true and series is draft, ensure the blueprint slots accommodate all imported subjects/counts
+          // Cap total questions in the series at:
+          // - the series' existing blueprint total (if > 0), never exceeding examRow.totalQuestions
+          // - otherwise examRow.totalQuestions (e.g. 100)
+          const examMaxCap = examRow.totalQuestions > 0 ? examRow.totalQuestions : 100;
+          const existingSubjectSlots = existingSlots.filter((s) => s.chapterId === null && s.subtopicId === null);
+          let currentBlueprintSum = existingSubjectSlots.reduce((sum, s) => sum + s.targetCount, 0);
+
+          // If autoUpdateBlueprint is true and series is draft, only allocate seats up to examMaxCap
+          // (and NEVER add `currentlyAssigned + addCount` on top of an already-full 100-question blueprint!)
           if (input.autoUpdateBlueprint && locked.status === "draft" && subjectCountNeeded.size > 0) {
-            const existingSlots = await tx
-              .select()
-              .from(seriesRosterSlots)
-              .where(eq(seriesRosterSlots.seriesId, locked.id));
-            const { state } = await rosterStateFor(tx, locked.id);
-
+            const seriesTargetCap = currentBlueprintSum > 0 ? Math.min(currentBlueprintSum, examMaxCap) : examMaxCap;
             for (const [subjId, addCount] of subjectCountNeeded.entries()) {
               const subjSlot = existingSlots.find(
                 (s) => s.subjectId === subjId && s.chapterId === null && s.subtopicId === null
               );
+              const remainingSeriesRoom = Math.max(0, seriesTargetCap - currentBlueprintSum);
               if (!subjSlot) {
-                await tx.insert(seriesRosterSlots).values({
-                  seriesId: locked.id,
-                  examId: locked.examId,
-                  subjectId: subjId,
-                  chapterId: null,
-                  subtopicId: null,
-                  targetCount: addCount,
-                });
-                blueprintUpdated = true;
+                if (remainingSeriesRoom > 0) {
+                  const targetToSet = Math.min(addCount, remainingSeriesRoom);
+                  await tx.insert(seriesRosterSlots).values({
+                    seriesId: locked.id,
+                    examId: locked.examId,
+                    subjectId: subjId,
+                    chapterId: null,
+                    subtopicId: null,
+                    targetCount: targetToSet,
+                  });
+                  currentBlueprintSum += targetToSet;
+                  blueprintUpdated = true;
+                }
               } else {
                 const currentlyAssigned = state.assignedIn.get(subjSlot.id) ?? 0;
-                if (currentlyAssigned + addCount > subjSlot.targetCount) {
+                const desiredTarget = Math.min(
+                  currentlyAssigned + addCount,
+                  subjSlot.targetCount + remainingSeriesRoom
+                );
+                if (desiredTarget > subjSlot.targetCount) {
+                  const delta = desiredTarget - subjSlot.targetCount;
                   await tx
                     .update(seriesRosterSlots)
-                    .set({ targetCount: currentlyAssigned + addCount })
+                    .set({ targetCount: desiredTarget })
                     .where(eq(seriesRosterSlots.id, subjSlot.id));
+                  currentBlueprintSum += delta;
                   blueprintUpdated = true;
                 }
               }
@@ -1095,6 +1135,8 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
             });
           }
 
+          // Guarantee no overflow beyond blueprint total
+          await enforceSeriesQuestionCap(tx, locked.id);
           await touchSeries(tx, locked.id);
         });
 

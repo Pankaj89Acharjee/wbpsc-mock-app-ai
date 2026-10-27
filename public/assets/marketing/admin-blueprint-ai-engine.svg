@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="1200" height="540">
+  <rect width="1200" height="540" rx="20" fill="#020617" />
+
+  <!-- Title -->
+  <text x="50" y="54" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="800">
+    Educator &amp; Admin Console — 2 Isolated Test Creation Workflows + Strict Intake Cap
+  </text>
+  <text x="50" y="82" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="15">
+    Designed for non-technical educators: zero confusion, pre-populated WBPSC patterns, and strict 100/100 capacity enforcement
+  </text>
+
+  <!-- Option 1 Box -->
+  <rect x="50" y="112" width="535" height="290" rx="16" fill="#0f172a" stroke="#8b5cf6" stroke-width="2" />
+  <rect x="74" y="134" width="240" height="28" rx="6" fill="#2e1065" />
+  <text x="86" y="153" fill="#c4b5fd" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="800">
+    OPTION 1 · SUBJECT-WISE BLUEPRINT
+  </text>
+  <text x="74" y="190" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">
+    Configure Questions per Subject
+  </text>
+  <text x="74" y="218" fill="#cbd5e1" font-family="monospace" font-size="13">
+    ☑ General Studies (সাধারণ জ্ঞান) ........ 40 Qs
+  </text>
+  <text x="74" y="244" fill="#cbd5e1" font-family="monospace" font-size="13">
+    ☑ Arithmetic (পাটিগণিত - Madhyamik) .... 30 Qs
+  </text>
+  <text x="74" y="270" fill="#cbd5e1" font-family="monospace" font-size="13">
+    ☑ General English (ইংরেজি) .............. 30 Qs
+  </text>
+
+  <rect x="74" y="294" width="485" height="40" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="1.5" />
+  <text x="92" y="319" fill="#6ee7b7" font-family="monospace" font-size="13" font-weight="700">
+    ✓ Strict Intake Cap Enforced: 100 / 100 Max Questions
+  </text>
+
+  <text x="74" y="364" fill="#ddd6fe" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">
+    Then populate via: [✨ 1-Click AI Full Set] OR [📂 Pick from Question Bank]
+  </text>
+
+  <!-- Option 2 Box -->
+  <rect x="615" y="112" width="535" height="290" rx="16" fill="#0f172a" stroke="#38bdf8" stroke-width="2" />
+  <rect x="639" y="134" width="230" height="28" rx="6" fill="#0c4a6e" />
+  <text x="651" y="153" fill="#bae6fd" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="800">
+    OPTION 2 · FULL PAPER UPLOAD
+  </text>
+  <text x="639" y="190" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">
+    Import Complete Question Paper (100 / 200 Qs)
+  </text>
+  <text x="639" y="220" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="14">
+    • Upload Excel (.csv), JSON, PDF Paper, or Scanned Image
+  </text>
+  <text x="639" y="248" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="14">
+    • Gemini Multimodal OCR extracts stems, options &amp; answers
+  </text>
+  <text x="639" y="276" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="14">
+    • Auto-translates English → বাংলা if Bengali is blank
+  </text>
+  <text x="639" y="304" fill="#cbd5e1" font-family="Inter, Arial, sans-serif" font-size="14">
+    • Auto-maps Subject/Topic &amp; caps series at 100/100 limit
+  </text>
+
+  <rect x="639" y="330" width="485" height="46" rx="8" fill="#082f49" stroke="#38bdf8" stroke-width="1" />
+  <text x="659" y="358" fill="#7dd3fc" font-family="monospace" font-size="13" font-weight="700">
+    📄 Export Anytime: A4 White Print PDF &amp; Excel (.xls / .csv)
+  </text>
+
+  <!-- Bottom Category Statistics Banner Preview -->
+  <rect x="50" y="424" width="1100" height="86" rx="14" fill="#0f172a" stroke="#334155" stroke-width="1.5" />
+  <text x="74" y="454" fill="#fbbf24" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="800">
+    LIVE EXAM CATEGORY STATISTICS BANNER (ADMIN CONSOLE)
+  </text>
+  <text x="74" y="484" fill="#ffffff" font-family="monospace" font-size="14" font-weight="700">
+    Test Series: 6 (5 Published)  |  Questions/Test: 100 MCQs  |  Students Attempted: 142  |  Avg Score: 64.80 / 100
+  </text>
+</svg>

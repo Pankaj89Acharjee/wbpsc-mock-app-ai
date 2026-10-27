@@ -62,6 +62,25 @@ const SubmitExamBodySchema = z.object({
     .min(1, "At least one question entry is required"),
 });
 
+const PauseExamBodySchema = z.object({
+  examId: z.string().uuid(),
+  seriesId: z.string().uuid().nullable().optional(),
+  attemptId: z.string().uuid().nullable().optional(),
+  isRemedial: z.boolean().default(false),
+  preferredLanguage: SupportedLanguageSchema.default("bn"),
+  totalTimeSpentSeconds: z.number().int().nonnegative(),
+  answers: z
+    .array(
+      z.object({
+        questionId: z.string().uuid(),
+        selectedOption: OptionKeySchema.nullable(),
+        status: QuestionAttemptStatusSchema.default("unanswered"),
+        timeSpentSeconds: z.number().int().nonnegative().max(7200),
+      })
+    )
+    .min(1, "At least one question entry is required"),
+});
+
 const RemedialMockBodySchema = z.object({
   examId: z.string().uuid(),
   preferredLanguage: SupportedLanguageSchema.default("bn"),
@@ -123,6 +142,28 @@ export const examRoutes: FastifyPluginAsync = async (
       seriesCounts.set(examId, { ...seriesCounts.get(examId), [kind]: series });
     }
 
+    // Per-exam attempt counts & paused counts for the signed-in student
+    const userId = request.user!.id;
+    const myExamAttemptRows = await db
+      .select({
+        examId: testAttempts.examId,
+        status: testAttempts.status,
+        n: sql<number>`count(*)::int`,
+      })
+      .from(testAttempts)
+      .where(eq(testAttempts.userId, userId))
+      .groupBy(testAttempts.examId, testAttempts.status);
+
+    const submittedByExam = new Map<string, number>();
+    const pausedByExam = new Map<string, number>();
+    for (const r of myExamAttemptRows) {
+      if (r.status === "submitted") {
+        submittedByExam.set(r.examId, (submittedByExam.get(r.examId) ?? 0) + r.n);
+      } else if (r.status === "in_progress") {
+        pausedByExam.set(r.examId, (pausedByExam.get(r.examId) ?? 0) + r.n);
+      }
+    }
+
     return {
       exams: rows.map(({ exam, questionCount, subjectCount }) => ({
         id: exam.id,
@@ -140,6 +181,8 @@ export const examRoutes: FastifyPluginAsync = async (
         questionCount,
         subjectCount,
         seriesCounts: seriesCounts.get(exam.id) ?? {},
+        myAttemptCount: submittedByExam.get(exam.id) ?? 0,
+        myPausedCount: pausedByExam.get(exam.id) ?? 0,
       })),
     };
   });
@@ -244,17 +287,61 @@ export const examRoutes: FastifyPluginAsync = async (
       .where(and(eq(examSeries.examId, params.data.examId), eq(examSeries.status, "published")))
       .orderBy(asc(examSeries.displayOrder), asc(examSeries.createdAt));
 
-    const series: StudentSeriesDto[] = rows.map(({ series: s, questionCount }) => ({
-      id: s.id,
-      name: s.name,
-      description: s.description,
-      kind: s.kind,
-      totalQuestions: questionCount,
-      durationMinutes: s.durationMinutes,
-      marksPerCorrect: Number(s.marksPerCorrect),
-      negativeMarksPerWrong: Number(s.negativeMarksPerWrong),
-      estimatedCutoffMarks: Number(s.estimatedCutoffMarks),
-    }));
+    const userId = request.user!.id;
+    const seriesIds = rows.map((r) => r.series.id);
+
+    // Load student's submitted attempts and paused (in_progress) attempts for these series
+    const mySeriesAttempts = seriesIds.length
+      ? await db
+          .select({
+            id: testAttempts.id,
+            seriesId: testAttempts.seriesId,
+            status: testAttempts.status,
+            finalNetScore: testAttempts.finalNetScore,
+            attemptedCount: testAttempts.attemptedCount,
+            totalTimeSpentSeconds: testAttempts.totalTimeSpentSeconds,
+            submittedAt: testAttempts.submittedAt,
+            startedAt: testAttempts.startedAt,
+          })
+          .from(testAttempts)
+          .where(
+            and(
+              eq(testAttempts.userId, userId),
+              inArray(testAttempts.seriesId, seriesIds)
+            )
+          )
+          .orderBy(desc(testAttempts.submittedAt), desc(testAttempts.startedAt))
+      : [];
+
+    const series: StudentSeriesDto[] = rows.map(({ series: s, questionCount }) => {
+      const mineSubmitted = mySeriesAttempts.filter(
+        (a) => a.seriesId === s.id && a.status === "submitted"
+      );
+      const minePaused = mySeriesAttempts.find(
+        (a) => a.seriesId === s.id && a.status === "in_progress"
+      );
+      const scores = mineSubmitted.map((a) => Number(a.finalNetScore));
+      const bestScore = scores.length > 0 ? Math.max(...scores) : null;
+      const lastScore = scores.length > 0 ? scores[0] : null;
+
+      return {
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        kind: s.kind,
+        totalQuestions: questionCount,
+        durationMinutes: s.durationMinutes,
+        marksPerCorrect: Number(s.marksPerCorrect),
+        negativeMarksPerWrong: Number(s.negativeMarksPerWrong),
+        estimatedCutoffMarks: Number(s.estimatedCutoffMarks),
+        myAttemptCount: mineSubmitted.length,
+        myBestScore: bestScore,
+        myLastScore: lastScore,
+        myPausedAttemptId: minePaused?.id ?? null,
+        myPausedAnsweredCount: minePaused?.attemptedCount ?? 0,
+        myPausedElapsedSeconds: minePaused?.totalTimeSpentSeconds ?? 0,
+      };
+    });
     return { series };
   });
 
@@ -309,6 +396,142 @@ export const examRoutes: FastifyPluginAsync = async (
       preferredLanguage: queryParsed.data.lang,
       questions: seriesQs,
     };
+  });
+
+  /**
+   * 1d. POST /exams/pause
+   * Postpones / pauses an ongoing test and persists the student's current progress
+   * (`status: "in_progress"`) so the student can come back later and resume from the exact
+   * question, timer, and selected options.
+   */
+  fastify.post("/exams/pause", async (request, reply) => {
+    const parsed = PauseExamBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Invalid pause test payload",
+        details: parsed.error.flatten(),
+      });
+    }
+    const payload = parsed.data;
+    const userId = request.user!.id;
+    const questionIds = Array.from(new Set(payload.answers.map((a) => a.questionId)));
+
+    const saved = await db.transaction(async (tx) => {
+      const [examRecord] = await tx
+        .select()
+        .from(exams)
+        .where(eq(exams.id, payload.examId))
+        .limit(1);
+      if (!examRecord) {
+        throw new Error(`EXAM_NOT_FOUND:${payload.examId}`);
+      }
+
+      const qRows = await tx
+        .select({
+          id: questions.id,
+          subtopicId: questions.subtopicId,
+        })
+        .from(questions)
+        .where(inArray(questions.id, questionIds));
+      const qSubtopicMap = new Map(qRows.map((q) => [q.id, q.subtopicId]));
+
+      // Remove any existing in_progress attempt for this user + same attemptId or same seriesId
+      if (payload.attemptId) {
+        await tx
+          .delete(testAttempts)
+          .where(
+            and(
+              eq(testAttempts.id, payload.attemptId),
+              eq(testAttempts.userId, userId),
+              eq(testAttempts.status, "in_progress")
+            )
+          );
+      } else if (payload.seriesId) {
+        await tx
+          .delete(testAttempts)
+          .where(
+            and(
+              eq(testAttempts.userId, userId),
+              eq(testAttempts.seriesId, payload.seriesId),
+              eq(testAttempts.status, "in_progress")
+            )
+          );
+      } else {
+        await tx
+          .delete(testAttempts)
+          .where(
+            and(
+              eq(testAttempts.userId, userId),
+              eq(testAttempts.examId, payload.examId),
+              sql`${testAttempts.seriesId} is null`,
+              eq(testAttempts.status, "in_progress")
+            )
+          );
+      }
+
+      const validAnswers = payload.answers.filter((a) => qSubtopicMap.has(a.questionId));
+      const answeredCount = validAnswers.filter((a) => a.selectedOption !== null).length;
+      const unansweredCount = validAnswers.length - answeredCount;
+
+      const [pausedAttempt] = await tx
+        .insert(testAttempts)
+        .values({
+          ...(payload.attemptId ? { id: payload.attemptId } : {}),
+          userId,
+          examId: payload.examId,
+          seriesId: payload.seriesId ?? null,
+          status: "in_progress",
+          isRemedial: payload.isRemedial,
+          preferredLanguage: payload.preferredLanguage,
+          totalQuestions: validAnswers.length,
+          attemptedCount: answeredCount,
+          correctCount: 0,
+          incorrectCount: 0,
+          unansweredCount,
+          rawPositiveScore: "0",
+          negativePenalty: "0",
+          finalNetScore: "0",
+          maxPossibleScore: "0",
+          accuracyPercentage: "0",
+          totalTimeSpentSeconds: payload.totalTimeSpentSeconds,
+          startedAt: new Date(),
+          submittedAt: null,
+        })
+        .returning({ id: testAttempts.id });
+
+      if (validAnswers.length > 0) {
+        await tx.insert(attemptAnswers).values(
+          validAnswers.map((ans, position) => ({
+            attemptId: pausedAttempt.id,
+            userId,
+            questionId: ans.questionId,
+            subtopicId: qSubtopicMap.get(ans.questionId)!,
+            selectedOption: ans.selectedOption,
+            state:
+              ans.selectedOption !== null
+                ? ans.status === "marked_for_review" || ans.status === "answered_and_marked"
+                  ? ("answered_and_marked" as const)
+                  : ("answered" as const)
+                : ans.status === "marked_for_review"
+                  ? ("marked_for_review" as const)
+                  : ("unanswered" as const),
+            isCorrect: false,
+            marksAwarded: "0",
+            timeSpentSeconds: ans.timeSpentSeconds,
+            position,
+          }))
+        );
+      }
+
+      return {
+        attemptId: pausedAttempt.id,
+        answeredCount,
+        totalQuestions: validAnswers.length,
+        totalTimeSpentSeconds: payload.totalTimeSpentSeconds,
+      };
+    });
+
+    return reply.status(200).send(saved);
   });
 
   /**
@@ -539,6 +762,29 @@ export const examRoutes: FastifyPluginAsync = async (
         attemptedCount > 0
           ? Number(((correctCount / attemptedCount) * 100).toFixed(2))
           : 0;
+
+      // Clean up any existing paused ("in_progress") attempt before inserting the final submitted attempt
+      if (payload.attemptId) {
+        await tx
+          .delete(testAttempts)
+          .where(
+            and(
+              eq(testAttempts.id, payload.attemptId),
+              eq(testAttempts.userId, request.user!.id),
+              eq(testAttempts.status, "in_progress")
+            )
+          );
+      } else if (seriesRecord) {
+        await tx
+          .delete(testAttempts)
+          .where(
+            and(
+              eq(testAttempts.userId, request.user!.id),
+              eq(testAttempts.seriesId, seriesRecord.id),
+              eq(testAttempts.status, "in_progress")
+            )
+          );
+      }
 
       // Step 4: Insert `test_attempts` record
       const [insertedAttempt] = await tx

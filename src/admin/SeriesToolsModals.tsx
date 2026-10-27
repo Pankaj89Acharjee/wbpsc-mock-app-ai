@@ -1334,11 +1334,14 @@ export function FullSetAiGeneratorPanel({
 
     if (series && series.subjects.length > 0) {
       for (const slot of series.subjects) {
-        if (slot.targetCount > 0) {
+        const remaining = Math.max(0, slot.targetCount - slot.selected);
+        if (remaining > 0) {
+          map[slot.subjectId] = String(remaining);
+        } else if (series.selectedCount === 0 && slot.targetCount > 0) {
           map[slot.subjectId] = String(slot.targetCount);
         }
       }
-      if (Object.keys(map).length > 0) return map;
+      if (Object.keys(map).length > 0 || series.selectedCount > 0) return map;
     }
 
     const hasConfiguredWeightages = tree.subjects.some((s) => (s.weightageQuestions ?? 0) > 0);
@@ -1399,6 +1402,16 @@ export function FullSetAiGeneratorPanel({
     [subjectCounts]
   );
 
+  // Maximum questions allowed to generate for this test series / exam
+  const maxAllowedQuestions = useMemo(() => {
+    if (series && series.totalQuestions > 0) {
+      return Math.max(0, series.totalQuestions - series.selectedCount);
+    }
+    return exam.totalQuestions > 0 ? exam.totalQuestions : 200;
+  }, [series, exam.totalQuestions]);
+
+  const exceedsMaxCap = totalSelectedQuestions > maxAllowedQuestions;
+
   const toggleSubject = (subjectId: string, defaultCount = 25) => {
     setSubjectCounts((prev) => {
       const next = { ...prev };
@@ -1425,6 +1438,14 @@ export function FullSetAiGeneratorPanel({
 
     if (subjectsPayload.length === 0) {
       setError("Please select at least one subject and set its question count.");
+      return;
+    }
+    if (exceedsMaxCap) {
+      setError(
+        series
+          ? `Cannot generate ${totalSelectedQuestions} questions: "${series.name.en}" only has ${maxAllowedQuestions} remaining seat(s) (${series.selectedCount}/${series.totalQuestions} already filled).`
+          : `Cannot generate ${totalSelectedQuestions} questions: maximum allowed intake for ${exam.titleEn} is ${maxAllowedQuestions} questions.`
+      );
       return;
     }
 
@@ -1604,22 +1625,30 @@ export function FullSetAiGeneratorPanel({
 
             <div className="flex items-center gap-3">
               <div className="text-right">
-                <span className="block text-[11px] text-slate-400">Total to Generate</span>
-                <span className="text-sm font-mono font-bold text-emerald-300">
-                  {totalSelectedQuestions} Questions
+                <span className="block text-[11px] text-slate-400">
+                  Total to Generate {maxAllowedQuestions > 0 ? `(Max ${maxAllowedQuestions})` : ""}
+                </span>
+                <span
+                  className={`text-sm font-mono font-bold ${
+                    exceedsMaxCap ? "text-rose-400" : "text-emerald-300"
+                  }`}
+                >
+                  {totalSelectedQuestions} / {maxAllowedQuestions} Questions
                 </span>
               </div>
 
               <button
                 type="button"
                 onClick={handleGenerateFullSet}
-                disabled={busy || totalSelectedQuestions === 0}
+                disabled={busy || totalSelectedQuestions === 0 || exceedsMaxCap}
                 className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-white rounded-lg cursor-pointer shadow-lg"
               >
                 <Sparkles className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />
                 {busy
                   ? `Generating ${totalSelectedQuestions} Questions with AI…`
-                  : `Generate Full ${totalSelectedQuestions}-Question Set Now`}
+                  : exceedsMaxCap
+                    ? `Exceeds Max Limit (${totalSelectedQuestions}/${maxAllowedQuestions})`
+                    : `Generate Full ${totalSelectedQuestions}-Question Set Now`}
               </button>
             </div>
           </div>

@@ -17,6 +17,7 @@ import type {
   BilingualText,
   AttemptSummaryDto,
   MasteryDto,
+  PausedAttemptDto,
 } from "../../../../packages/shared-types/src/index";
 import { requireUser } from "../lib/auth";
 
@@ -166,5 +167,97 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
       weaknessPriorityScore: Number(m.weaknessPriorityScore),
     }));
     return { mastery };
+  });
+
+  /** 4. GET /me/paused-attempts — ongoing / postponed tests that can be resumed */
+  fastify.get("/paused-attempts", async (request) => {
+    const rows = await db
+      .select({
+        attempt: testAttempts,
+        exam: exams,
+        series: examSeries,
+      })
+      .from(testAttempts)
+      .innerJoin(exams, eq(testAttempts.examId, exams.id))
+      .leftJoin(examSeries, eq(testAttempts.seriesId, examSeries.id))
+      .where(
+        and(eq(testAttempts.userId, request.user!.id), eq(testAttempts.status, "in_progress"))
+      )
+      .orderBy(desc(testAttempts.startedAt))
+      .limit(20);
+
+    const pausedAttempts: PausedAttemptDto[] = [];
+    for (const r of rows) {
+      const ansRows = await db
+        .select({
+          ans: attemptAnswers,
+          q: questions,
+          subjectName: subjects.name,
+          subtopicName: subtopics.name,
+        })
+        .from(attemptAnswers)
+        .innerJoin(questions, eq(attemptAnswers.questionId, questions.id))
+        .innerJoin(subjects, eq(questions.subjectId, subjects.id))
+        .innerJoin(subtopics, eq(attemptAnswers.subtopicId, subtopics.id))
+        .where(eq(attemptAnswers.attemptId, r.attempt.id))
+        .orderBy(asc(attemptAnswers.position));
+
+      if (ansRows.length === 0) continue;
+
+      const firstUnansweredIdx = ansRows.findIndex((x) => x.ans.selectedOption === null);
+      const currentQuestionIdx = firstUnansweredIdx >= 0 ? firstUnansweredIdx : 0;
+      const s = r.series;
+
+      pausedAttempts.push({
+        attemptId: r.attempt.id,
+        examId: r.exam.id,
+        examSlug: r.exam.slug,
+        examTitleEn: s ? `${r.exam.title.en} — ${s.name.en}` : r.exam.title.en,
+        examTitleBn: s ? `${r.exam.title.bn} — ${s.name.bn}` : r.exam.title.bn,
+        seriesId: s?.id ?? null,
+        seriesName: s?.name ?? null,
+        isRemedial: r.attempt.isRemedial,
+        preferredLanguage: r.attempt.preferredLanguage,
+        durationMinutes: s ? s.durationMinutes : r.exam.durationMinutes,
+        marksPerCorrect: Number(s ? s.marksPerCorrect : r.exam.marksPerCorrect),
+        negativeMarksPerWrong: Number(s ? s.negativeMarksPerWrong : r.exam.negativeMarksPerWrong),
+        estimatedCutoffMarks: Number(s ? s.estimatedCutoffMarks : r.exam.estimatedCutoffMarks),
+        totalQuestions: ansRows.length,
+        answeredCount: ansRows.filter((x) => x.ans.selectedOption !== null).length,
+        totalTimeSpentSeconds: r.attempt.totalTimeSpentSeconds,
+        currentQuestionIdx,
+        pausedAt: r.attempt.startedAt.toISOString(),
+        questions: ansRows.map((x) => ({
+          id: x.q.id,
+          subjectName: x.subjectName,
+          subtopicName: x.subtopicName,
+          stem: x.q.stem,
+          options: x.q.options,
+          previousYearTag: x.q.previousYearTag ?? null,
+          selectedOption: x.ans.selectedOption,
+          state: x.ans.state,
+          timeSpentSeconds: x.ans.timeSpentSeconds,
+        })),
+      });
+    }
+
+    return { pausedAttempts };
+  });
+
+  /** 5. DELETE /me/paused-attempts/:id — discard a paused test */
+  fastify.delete("/paused-attempts/:id", async (request, reply) => {
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid attempt id" });
+
+    await db
+      .delete(testAttempts)
+      .where(
+        and(
+          eq(testAttempts.id, params.data.id),
+          eq(testAttempts.userId, request.user!.id),
+          eq(testAttempts.status, "in_progress")
+        )
+      );
+    return { deleted: true };
   });
 };

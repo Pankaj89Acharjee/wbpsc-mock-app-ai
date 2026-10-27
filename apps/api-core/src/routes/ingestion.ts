@@ -62,6 +62,7 @@ import {
 import {
   SeriesError,
   assignQuestions,
+  enforceSeriesQuestionCap,
   getSeries,
   loadExamTaxonomy,
   lockSeries,
@@ -1262,6 +1263,13 @@ export const ingestionRoutes: FastifyPluginAsync = async (
       }
     }
 
+    const requestedTotal = input.subjects.reduce((sum, s) => sum + s.count, 0);
+    if (examRow.totalQuestions > 0 && requestedTotal > examRow.totalQuestions) {
+      return reply.status(400).send({
+        error: `Requested question count (${requestedTotal}) exceeds the maximum total intake (${examRow.totalQuestions}) for ${examRow.title.en}.`,
+      });
+    }
+
     const batchId = `ai-fullset-${Date.now()}`;
     const modelUsed = "gemini-2.5-flash";
     const subjectSummaries: GenerateFullQuestionSetSubjectSummary[] = [];
@@ -1271,45 +1279,104 @@ export const ingestionRoutes: FastifyPluginAsync = async (
     let totalAssignedToSeries = 0;
     let totalPendingReview = 0;
 
-    // If seriesId is given and syncSeriesBlueprint is true (and series is draft), ensure subject slots can hold the generated set
-    if (targetSeries && input.syncSeriesBlueprint && targetSeries.status === "draft") {
-      await db.transaction(async (tx) => {
+    // Effective subject counts to generate (capped by series vacancies when targeting a series)
+    let effectiveAllocations = [...input.subjects];
+
+    // If seriesId is given, enforce the series' total intake cap and never inflate slots above the blueprint/exam limit
+    if (targetSeries) {
+      const capError = await db.transaction(async (tx) => {
         const locked = await lockSeries(tx, targetSeries!.id);
+        await enforceSeriesQuestionCap(tx, locked.id);
         const existingSlots = await tx
           .select()
           .from(seriesRosterSlots)
           .where(eq(seriesRosterSlots.seriesId, locked.id));
         const { state } = await rosterStateFor(tx, locked.id);
 
+        if (existingSlots.length === 0 && input.syncSeriesBlueprint && locked.status === "draft") {
+          // Series has no blueprint yet — initialize slots capped at examRow.totalQuestions
+          let remainingExamBudget = examRow.totalQuestions > 0 ? examRow.totalQuestions : 500;
+          const cappedSubjects: typeof input.subjects = [];
+          for (const alloc of input.subjects) {
+            const c = Math.min(alloc.count, remainingExamBudget);
+            if (c > 0) {
+              await tx.insert(seriesRosterSlots).values({
+                seriesId: locked.id,
+                examId: locked.examId,
+                subjectId: alloc.subjectId,
+                chapterId: null,
+                subtopicId: null,
+                targetCount: c,
+              });
+              remainingExamBudget -= c;
+              cappedSubjects.push({ subjectId: alloc.subjectId, count: c });
+            }
+          }
+          effectiveAllocations = cappedSubjects;
+          await touchSeries(tx, locked.id);
+          return null;
+        }
+
+        // Series already has blueprint slots — strictly respect its targetCount (never inflate to 135/100!)
+        const totalAssignedInSeries = Array.from(existingSlots)
+          .filter((s) => s.chapterId === null && s.subtopicId === null)
+          .reduce((sum, s) => sum + (state.assignedIn.get(s.id) ?? 0), 0);
+
+        if (state.rosterTotal > 0 && totalAssignedInSeries >= state.rosterTotal) {
+          return `This test series is already full (${totalAssignedInSeries}/${state.rosterTotal} questions assigned). Remove existing questions before generating more.`;
+        }
+
+        const cappedSubjects: typeof input.subjects = [];
+        let remainingSeriesRoom =
+          state.rosterTotal > 0
+            ? Math.max(0, state.rosterTotal - totalAssignedInSeries)
+            : Math.max(0, (examRow.totalQuestions || 200) - totalAssignedInSeries);
+
         for (const alloc of input.subjects) {
+          if (remainingSeriesRoom <= 0) break;
           const subjSlot = existingSlots.find(
             (s) => s.subjectId === alloc.subjectId && s.chapterId === null && s.subtopicId === null
           );
-          if (!subjSlot) {
-            await tx.insert(seriesRosterSlots).values({
-              seriesId: locked.id,
-              examId: locked.examId,
-              subjectId: alloc.subjectId,
-              chapterId: null,
-              subtopicId: null,
-              targetCount: alloc.count,
-            });
-          } else {
+          if (subjSlot) {
             const currentlyAssigned = state.assignedIn.get(subjSlot.id) ?? 0;
-            const needed = Math.max(subjSlot.targetCount, currentlyAssigned + alloc.count);
-            if (needed > subjSlot.targetCount) {
-              await tx
-                .update(seriesRosterSlots)
-                .set({ targetCount: needed })
-                .where(eq(seriesRosterSlots.id, subjSlot.id));
+            const subjRoom = Math.max(0, subjSlot.targetCount - currentlyAssigned);
+            const allowed = Math.min(alloc.count, subjRoom, remainingSeriesRoom);
+            if (allowed > 0) {
+              cappedSubjects.push({ subjectId: alloc.subjectId, count: allowed });
+              remainingSeriesRoom -= allowed;
+            }
+          } else if (input.syncSeriesBlueprint && locked.status === "draft") {
+            const currentTotalTargets = existingSlots
+              .filter((s) => s.chapterId === null && s.subtopicId === null)
+              .reduce((sum, s) => sum + s.targetCount, 0);
+            const examRoom = Math.max(0, (examRow.totalQuestions || 200) - currentTotalTargets);
+            const allowed = Math.min(alloc.count, examRoom, remainingSeriesRoom);
+            if (allowed > 0) {
+              await tx.insert(seriesRosterSlots).values({
+                seriesId: locked.id,
+                examId: locked.examId,
+                subjectId: alloc.subjectId,
+                chapterId: null,
+                subtopicId: null,
+                targetCount: allowed,
+              });
+              cappedSubjects.push({ subjectId: alloc.subjectId, count: allowed });
+              remainingSeriesRoom -= allowed;
             }
           }
         }
-        await touchSeries(tx, locked.id);
+        effectiveAllocations = cappedSubjects;
+        return cappedSubjects.length === 0
+          ? `All selected subjects in this test series have already reached their maximum question intake (${totalAssignedInSeries}/${state.rosterTotal}).`
+          : null;
       });
+
+      if (capError) {
+        return reply.status(409).send({ error: capError });
+      }
     }
 
-    for (const alloc of input.subjects) {
+    for (const alloc of effectiveAllocations) {
       const subj = subjectById.get(alloc.subjectId)!;
       totalRequested += alloc.count;
 

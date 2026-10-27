@@ -1637,6 +1637,52 @@ export interface StudentSeriesDto {
   marksPerCorrect: number;
   negativeMarksPerWrong: number;
   estimatedCutoffMarks: number;
+  /** Number of submitted attempts by the signed-in student on this series */
+  myAttemptCount?: number;
+  /** Highest net score by the signed-in student on this series */
+  myBestScore?: number | null;
+  /** Most recent net score by the signed-in student on this series */
+  myLastScore?: number | null;
+  /** Active paused/postponed attempt ID if the student paused this series */
+  myPausedAttemptId?: string | null;
+  /** Answered question count in the paused attempt */
+  myPausedAnsweredCount?: number;
+  /** Elapsed time (seconds) in the paused attempt */
+  myPausedElapsedSeconds?: number;
+}
+
+export interface PausedAttemptQuestionDto {
+  id: string;
+  subjectName: BilingualText;
+  subtopicName: BilingualText;
+  stem: BilingualText;
+  options: QuestionOptions;
+  previousYearTag: string | null;
+  selectedOption: OptionKey | null;
+  state: QuestionAttemptStatus;
+  timeSpentSeconds: number;
+}
+
+export interface PausedAttemptDto {
+  attemptId: string;
+  examId: string;
+  examSlug: string;
+  examTitleEn: string;
+  examTitleBn: string;
+  seriesId: string | null;
+  seriesName: BilingualText | null;
+  isRemedial: boolean;
+  preferredLanguage: SupportedLanguage;
+  durationMinutes: number;
+  marksPerCorrect: number;
+  negativeMarksPerWrong: number;
+  estimatedCutoffMarks: number;
+  totalQuestions: number;
+  answeredCount: number;
+  totalTimeSpentSeconds: number;
+  currentQuestionIdx: number;
+  pausedAt: string;
+  questions: PausedAttemptQuestionDto[];
 }
 
 // ─── Admin: Export & Import Whole Question Set for a Test Series ─────────────
@@ -1722,6 +1768,10 @@ export interface StudentExamDto {
   subjectCount: number;
   /** Published test series per kind, e.g. { mock_test: 5, previous_year: 15 } */
   seriesCounts: Partial<Record<SeriesKind, number>>;
+  /** Total submitted attempts by the signed-in student in this exam */
+  myAttemptCount?: number;
+  /** Number of currently paused/ongoing tests by the signed-in student in this exam */
+  myPausedCount?: number;
 }
 
 export interface AttemptSummaryDto {
