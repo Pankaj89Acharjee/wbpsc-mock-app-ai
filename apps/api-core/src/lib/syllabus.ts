@@ -1,4 +1,4 @@
-import { asc, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/index";
 import { exams, subjects, chapters, subtopics, questions } from "../db/schema";
 import {
@@ -49,6 +49,7 @@ export async function loadSyllabus(): Promise<Syllabus> {
     db
       .select({ subtopicId: questions.subtopicId, n: sql<number>`count(*)::int` })
       .from(questions)
+      .where(eq(questions.isActive, true))
       .groupBy(questions.subtopicId),
   ]);
 

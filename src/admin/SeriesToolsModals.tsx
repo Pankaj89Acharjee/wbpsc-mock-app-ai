@@ -1050,14 +1050,24 @@ export function SeriesImportSetModal({
     const f = e.target.files?.[0];
     e.target.value = "";
     if (!f) return;
+    const lower = f.name.toLowerCase();
     const validMimes = ["application/pdf", "image/png", "image/jpeg", "image/webp"];
-    if (!validMimes.includes(f.type)) {
+    const validExt = /\.(pdf|png|jpe?g|webp)$/i.test(lower);
+    if (!validMimes.includes(f.type) && !validExt) {
       setError("Please upload a PDF (.pdf) or Image (.png, .jpg, .webp) question paper.");
       return;
     }
+    const inferredMime: typeof mediaMime =
+      f.type === "application/pdf" || lower.endsWith(".pdf")
+        ? "application/pdf"
+        : f.type === "image/png" || lower.endsWith(".png")
+          ? "image/png"
+          : f.type === "image/webp" || lower.endsWith(".webp")
+            ? "image/webp"
+            : "image/jpeg";
     setError(null);
     setFileName(f.name);
-    setMediaMime(f.type as typeof mediaMime);
+    setMediaMime(inferredMime);
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result ?? "");
@@ -1328,6 +1338,22 @@ export function FullSetAiGeneratorPanel({
   // 2) Exam's subject weightageQuestions (set by Admin during Exam creation / editing)
   // 3) Official WBPSC preset for this exam slug
   // 4) Evenly distributed across the exam's subjects totaling exam.totalQuestions
+  const examTotalQuestions =
+    exam.slug === "wbpsc-clerkship" && (exam.totalQuestions === 20 || exam.totalQuestions === 300)
+      ? 100
+      : exam.totalQuestions > 0
+        ? exam.totalQuestions
+        : 100;
+
+  // Maximum questions allowed to generate for this test series / exam
+  const maxAllowedQuestions = useMemo(() => {
+    if (series && series.totalQuestions > 0) {
+      return Math.max(0, series.totalQuestions - series.selectedCount);
+    }
+    return examTotalQuestions;
+  }, [series, examTotalQuestions]);
+
+  // Determine initial per-subject counts keyed by subjectId so the total never exceeds maxAllowedQuestions
   const initialCounts = useMemo(() => {
     const map: Record<string, string> = {};
     if (!tree || tree.subjects.length === 0) return map;
@@ -1344,41 +1370,34 @@ export function FullSetAiGeneratorPanel({
       if (Object.keys(map).length > 0 || series.selectedCount > 0) return map;
     }
 
-    const hasConfiguredWeightages = tree.subjects.some((s) => (s.weightageQuestions ?? 0) > 0);
-    if (hasConfiguredWeightages) {
-      for (const s of tree.subjects) {
-        if ((s.weightageQuestions ?? 0) > 0) {
-          map[s.id] = String(s.weightageQuestions);
-        }
-      }
-      return map;
-    }
-
-    // Check preset matching exam slug
+    // Check preset matching exam slug if its sum fits within examTotalQuestions
     const preset = WBPSC_EXAM_PRESETS.find((p) => p.slug === exam.slug);
     if (preset?.subjectWeightages) {
+      let presetSum = 0;
       for (const sw of preset.subjectWeightages) {
         const match = tree.subjects.find(
           (s) => s.name.en.toLowerCase() === sw.subjectEn.toLowerCase()
         );
         if (match && sw.weightageQuestions > 0) {
           map[match.id] = String(sw.weightageQuestions);
+          presetSum += sw.weightageQuestions;
         }
       }
-      if (Object.keys(map).length > 0) return map;
+      if (Object.keys(map).length > 0 && presetSum <= examTotalQuestions) return map;
+      for (const k of Object.keys(map)) delete map[k];
     }
 
-    // Otherwise split exam.totalQuestions across existing subjects
-    const total = exam.totalQuestions || 100;
-    const perSubj = Math.max(1, Math.floor(total / tree.subjects.length));
+    // Distribute examTotalQuestions cleanly across existing subjects so sum === examTotalQuestions
+    const total = examTotalQuestions;
+    const perSubj = Math.floor(total / tree.subjects.length);
     let remainder = total - perSubj * tree.subjects.length;
     for (const s of tree.subjects) {
-      const extra = remainder > 0 ? 1 : 0;
+      const count = perSubj + (remainder > 0 ? 1 : 0);
       if (remainder > 0) remainder--;
-      map[s.id] = String(perSubj + extra);
+      if (count > 0) map[s.id] = String(count);
     }
     return map;
-  }, [exam.slug, exam.totalQuestions, series, tree]);
+  }, [exam.slug, examTotalQuestions, series, tree]);
 
   const [subjectCounts, setSubjectCounts] = useState<Record<string, string>>(initialCounts);
   const [difficulty, setDifficulty] = useState<"easy" | "moderate" | "hard" | "mixed">("mixed");
@@ -1402,23 +1421,18 @@ export function FullSetAiGeneratorPanel({
     [subjectCounts]
   );
 
-  // Maximum questions allowed to generate for this test series / exam
-  const maxAllowedQuestions = useMemo(() => {
-    if (series && series.totalQuestions > 0) {
-      return Math.max(0, series.totalQuestions - series.selectedCount);
-    }
-    return exam.totalQuestions > 0 ? exam.totalQuestions : 200;
-  }, [series, exam.totalQuestions]);
-
   const exceedsMaxCap = totalSelectedQuestions > maxAllowedQuestions;
+  const needMoreQuestions = Math.max(0, maxAllowedQuestions - totalSelectedQuestions);
 
-  const toggleSubject = (subjectId: string, defaultCount = 25) => {
+  const toggleSubject = (subjectId: string) => {
     setSubjectCounts((prev) => {
       const next = { ...prev };
       if (next[subjectId] !== undefined) {
         delete next[subjectId];
       } else {
-        next[subjectId] = String(defaultCount);
+        const currentTotal = Object.values(next).reduce((s, v) => s + (Number(v) || 0), 0);
+        const rem = Math.max(0, maxAllowedQuestions - currentTotal);
+        next[subjectId] = String(rem > 0 ? Math.min(25, rem) : 10);
       }
       return next;
     });
@@ -1519,7 +1533,7 @@ export function FullSetAiGeneratorPanel({
                   disabled={busy}
                   className="text-violet-300 hover:underline cursor-pointer"
                 >
-                  Reset to Exam Pattern ({exam.totalQuestions} Qs)
+                  Auto-fill Exam Total ({maxAllowedQuestions} Qs)
                 </button>
                 <button
                   type="button"
@@ -1549,12 +1563,7 @@ export function FullSetAiGeneratorPanel({
                         type="checkbox"
                         checked={isSelected}
                         disabled={busy}
-                        onChange={() =>
-                          toggleSubject(
-                            s.id,
-                            (s.weightageQuestions ?? 0) > 0 ? s.weightageQuestions! : 25
-                          )
-                        }
+                        onChange={() => toggleSubject(s.id)}
                         className="mt-0.5"
                       />
                       <div className="min-w-0">
@@ -1626,14 +1635,16 @@ export function FullSetAiGeneratorPanel({
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <span className="block text-[11px] text-slate-400">
-                  Total to Generate {maxAllowedQuestions > 0 ? `(Max ${maxAllowedQuestions})` : ""}
+                  Exam Target {maxAllowedQuestions > 0 ? `(Max ${maxAllowedQuestions})` : ""}
                 </span>
                 <span
                   className={`text-sm font-mono font-bold ${
                     exceedsMaxCap ? "text-rose-400" : "text-emerald-300"
                   }`}
                 >
-                  {totalSelectedQuestions} / {maxAllowedQuestions} Questions
+                  {exceedsMaxCap
+                    ? `${totalSelectedQuestions} Selected - Exceeds ${maxAllowedQuestions} by ${totalSelectedQuestions - maxAllowedQuestions}`
+                    : `${totalSelectedQuestions} Selected - Need more ${needMoreQuestions}`}
                 </span>
               </div>
 

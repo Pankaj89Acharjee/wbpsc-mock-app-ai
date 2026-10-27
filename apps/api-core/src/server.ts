@@ -27,11 +27,21 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
     }
   }
 
+  // Heal WBPSC Clerkship total_questions if it was previously overwritten to 300 or seeded as 20
+  await queryClient`
+    UPDATE exams
+    SET total_questions = 100,
+        duration_minutes = CASE WHEN duration_minutes = 20 THEN 90 ELSE duration_minutes END,
+        estimated_cutoff_marks = CASE WHEN estimated_cutoff_marks = 2.50 THEN 65.00 ELSE estimated_cutoff_marks END
+    WHERE slug = 'wbpsc-clerkship' AND total_questions IN (20, 300)
+  `.catch(() => {});
+
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL || "info",
     },
     trustProxy: true,
+    bodyLimit: 25 * 1024 * 1024,
   });
 
   // Healthcheck endpoint for container / reverse-proxy liveness probes

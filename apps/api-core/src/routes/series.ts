@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
-import { and, asc, desc, eq, ilike, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { db } from "../db/index";
 import {
   chapters,
@@ -95,10 +95,12 @@ const SeriesListQuery = z.object({
 
 const VacancyQuery = z.object({ subtopicId: z.string().uuid() });
 
-/** Sends SeriesError as its HTTP status; rethrows anything else. */
+/** Sends SeriesError as its HTTP status; returns descriptive error on unexpected exceptions. */
 function sendSeriesError(reply: FastifyReply, err: unknown) {
   if (err instanceof SeriesError) return reply.status(err.statusCode).send({ error: err.message });
-  throw err;
+  reply.log.error(err, "Series route error");
+  const message = err instanceof Error && err.message ? err.message : "Unexpected server error";
+  return reply.status(500).send({ error: message });
 }
 
 const bilingual = (en: string, bn: string) => ({ en, bn: bn || en });
@@ -795,10 +797,10 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
           const existingSubjects = await db.select().from(subjects).where(eq(subjects.examId, examRow.id));
           const sIds = existingSubjects.map((s) => s.id);
           const existingChapters = sIds.length
-            ? await db.select().from(chapters).where(sql`${chapters.subjectId} = ANY(${sIds})`)
+            ? await db.select().from(chapters).where(inArray(chapters.subjectId, sIds))
             : [];
           const existingSubtopics = sIds.length
-            ? await db.select().from(subtopics).where(sql`${subtopics.subjectId} = ANY(${sIds})`)
+            ? await db.select().from(subtopics).where(inArray(subtopics.subjectId, sIds))
             : [];
           const chapMap = new Map(existingChapters.map((c) => [c.id, c]));
           const subjMap = new Map(existingSubjects.map((s) => [s.id, s]));
@@ -808,13 +810,21 @@ export const seriesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
             return c && s ? [{ subjectEn: s.name.en, chapterEn: c.name.en, subtopicEn: t.name.en }] : [];
           });
 
-          const extracted = await extractQuestionsFromMediaWithAi({
-            examSlug: examRow.slug,
-            examTitleEn: examRow.title.en,
-            mimeType: input.mimeType,
-            fileBase64: input.base64Data,
-            existingCategories,
-          });
+          let extracted;
+          try {
+            extracted = await extractQuestionsFromMediaWithAi({
+              examSlug: examRow.slug,
+              examTitleEn: examRow.title.en,
+              mimeType: input.mimeType,
+              fileBase64: input.base64Data,
+              existingCategories,
+            });
+          } catch (aiErr) {
+            request.log.error(aiErr, "Failed to extract questions from uploaded PDF/Image in series import");
+            return reply.status(502).send({
+              error: `Failed to extract questions from PDF/Image: ${(aiErr as Error).message}`,
+            });
+          }
 
           extracted.forEach((q, idx) => {
             items.push({

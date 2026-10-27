@@ -544,20 +544,30 @@ export const syllabusRoutes: FastifyPluginAsync = async (fastify: FastifyInstanc
    * All exams with syllabus & question counts.
    */
   fastify.get("/exams", async () => {
-    const [rows, syllabus] = await Promise.all([
+    const [rows, syllabus, bankCounts] = await Promise.all([
       db.select().from(exams).orderBy(asc(exams.createdAt)),
       loadSyllabus(),
+      db
+        .select({ examId: questions.examId, n: sql<number>`count(*)::int` })
+        .from(questions)
+        .where(eq(questions.isActive, true))
+        .groupBy(questions.examId),
     ]);
+    const bankCountByExamId = new Map(bankCounts.map((b) => [b.examId, b.n]));
     return {
       exams: rows.map((row) => {
         const subtopicList =
           syllabus
             .get(row.slug)
             ?.subjects.flatMap((s) => s.chapters.flatMap((c) => c.subtopics)) ?? [];
+        const directBankCount = bankCountByExamId.get(row.id);
         return toExamDto(row, {
           subjectCount: syllabus.get(row.slug)?.subjects.length ?? 0,
           subtopicCount: subtopicList.length,
-          questionCount: subtopicList.reduce((sum, t) => sum + t.questionCount, 0),
+          questionCount:
+            directBankCount !== undefined
+              ? directBankCount
+              : subtopicList.reduce((sum, t) => sum + t.questionCount, 0),
         });
       }),
     };

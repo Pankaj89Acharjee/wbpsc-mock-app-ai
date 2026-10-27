@@ -163,45 +163,52 @@ export default function ExamSeriesManager({
         const created = r.series;
         let statusMsg = `Series “${input.nameEn}” created`;
 
-        if (postCreateAction?.mode === "import" && postCreateAction.importPayload) {
-          const impRes = await adminApi<SeriesImportSetResult>(
-            `/series/${created.id}/import-set`,
-            {
-              method: "POST",
-              body: postCreateAction.importPayload,
-            }
-          );
-          statusMsg = `Created “${input.nameEn}” · Imported ${impRes.insertedToBank} question(s) into DB & assigned ${impRes.assignedToSeries} to this test!`;
-        } else if (
-          postCreateAction?.mode === "ai_full_set" &&
-          exam &&
-          input.subjectTargets &&
-          input.subjectTargets.length > 0
-        ) {
-          const subjectsPayload = input.subjectTargets
-            .map((st) => ({
-              subjectId: st.subjectId,
-              count: st.targetCount,
-            }))
-            .filter((s) => s.count > 0);
-
-          if (subjectsPayload.length > 0) {
-            const aiRes = await adminApi<GenerateFullQuestionSetResult>(
-              "/ingestion/generate-full-set",
+        try {
+          if (postCreateAction?.mode === "import" && postCreateAction.importPayload) {
+            const impRes = await adminApi<SeriesImportSetResult>(
+              `/series/${created.id}/import-set`,
               {
                 method: "POST",
-                body: {
-                  examSlug: exam.slug,
-                  seriesId: created.id,
-                  difficulty: "mixed",
-                  insertDirectlyToBank: true,
-                  syncSeriesBlueprint: true,
-                  subjects: subjectsPayload,
-                },
+                body: postCreateAction.importPayload,
               }
             );
-            statusMsg = `Created “${input.nameEn}” · AI generated ${aiRes.totalGenerated} question(s) across ${subjectsPayload.length} subjects & assigned ${aiRes.totalAssignedToSeries} to this test!`;
+            statusMsg = `Created “${input.nameEn}” · Imported ${impRes.insertedToBank} question(s) into DB & assigned ${impRes.assignedToSeries} to this test!`;
+          } else if (
+            postCreateAction?.mode === "ai_full_set" &&
+            exam &&
+            input.subjectTargets &&
+            input.subjectTargets.length > 0
+          ) {
+            const subjectsPayload = input.subjectTargets
+              .map((st) => ({
+                subjectId: st.subjectId,
+                count: st.targetCount,
+              }))
+              .filter((s) => s.count > 0);
+
+            if (subjectsPayload.length > 0) {
+              const aiRes = await adminApi<GenerateFullQuestionSetResult>(
+                "/ingestion/generate-full-set",
+                {
+                  method: "POST",
+                  body: {
+                    examSlug: exam.slug,
+                    seriesId: created.id,
+                    difficulty: "mixed",
+                    insertDirectlyToBank: true,
+                    syncSeriesBlueprint: true,
+                    subjects: subjectsPayload,
+                  },
+                }
+              );
+              statusMsg = `Created “${input.nameEn}” · AI generated ${aiRes.totalGenerated} question(s) across ${subjectsPayload.length} subjects & assigned ${aiRes.totalAssignedToSeries} to this test!`;
+            }
           }
+        } catch (postErr) {
+          if (postCreateAction?.mode === "import") {
+            await adminApi(`/series/${created.id}`, { method: "DELETE" }).catch(() => {});
+          }
+          throw postErr;
         }
 
         setSeriesId(created.id);
@@ -757,6 +764,14 @@ function SeriesForm({
   ) => void;
   onCancel: () => void;
 }) {
+  const maxExamQuestions =
+    defaults.slug === "wbpsc-clerkship" &&
+    (defaults.totalQuestions === 20 || defaults.totalQuestions === 300)
+      ? 100
+      : defaults.totalQuestions > 0
+        ? defaults.totalQuestions
+        : 100;
+
   const [v, setV] = useState<SeriesInput>(
     initial
       ? seriesToInput(initial)
@@ -768,40 +783,40 @@ function SeriesForm({
           kind: "mock_test",
           status: "draft",
           displayOrder: 1,
-          durationMinutes: defaults.durationMinutes,
+          durationMinutes:
+            defaults.slug === "wbpsc-clerkship" && defaults.durationMinutes === 20
+              ? 90
+              : defaults.durationMinutes,
           marksPerCorrect: defaults.marksPerCorrect,
           negativeMarksPerWrong: defaults.negativeMarksPerWrong,
-          estimatedCutoffMarks: defaults.estimatedCutoffMarks,
+          estimatedCutoffMarks:
+            defaults.slug === "wbpsc-clerkship" && defaults.estimatedCutoffMarks === 2.5
+              ? 65
+              : defaults.estimatedCutoffMarks,
         }
   );
   const set = (patch: Partial<SeriesInput>) => setV((prev) => ({ ...prev, ...patch }));
   const num = (k: keyof SeriesInput) => (e: React.ChangeEvent<HTMLInputElement>) =>
     set({ [k]: e.target.value === "" ? 0 : Number(e.target.value) } as Partial<SeriesInput>);
 
-  // Pre-populate subjectCounts with the exam's configured weightageQuestions when creating a new series
-  const [subjectCounts, setSubjectCounts] = useState<Record<string, string>>(() => {
-    const map: Record<string, string> = {};
-    if (!initial && tree) {
-      for (const s of tree.subjects) {
-        if ((s.weightageQuestions ?? 0) > 0) {
-          map[s.id] = String(s.weightageQuestions);
-        }
-      }
-    }
-    return map;
-  });
+  // Subject counts start empty so Admin selects subjects up to maxExamQuestions (set in Tab 2),
+  // avoiding the 12 subjects × 25 default = 300 overflow.
+  const [subjectCounts, setSubjectCounts] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    if (!initial && tree && Object.keys(subjectCounts).length === 0) {
-      const map: Record<string, string> = {};
-      for (const s of tree.subjects) {
-        if ((s.weightageQuestions ?? 0) > 0) {
-          map[s.id] = String(s.weightageQuestions);
-        }
-      }
-      if (Object.keys(map).length > 0) setSubjectCounts(map);
+  const autoDistributeSubjects = () => {
+    if (!tree || tree.subjects.length === 0) return;
+    const total = maxExamQuestions;
+    const n = tree.subjects.length;
+    const base = Math.floor(total / n);
+    let rem = total - base * n;
+    const map: Record<string, string> = {};
+    for (const s of tree.subjects) {
+      const count = base + (rem > 0 ? 1 : 0);
+      if (rem > 0) rem--;
+      if (count > 0) map[s.id] = String(count);
     }
-  }, [initial, tree]);
+    setSubjectCounts(map);
+  };
 
   // Two strictly isolated creation paths so the admin never gets confused:
   // Path 1 ("subject_pattern"): Manually configure number of questions per subject -> then either Generate by AI or Add from Question Bank
@@ -830,10 +845,16 @@ function SeriesForm({
       setImportFormat(f.name.toLowerCase().endsWith(".json") ? "json" : "csv");
       setImportText(await f.text());
     } else {
-      setImportMime(
-        (f.type as "application/pdf" | "image/png" | "image/jpeg" | "image/webp") ||
-          "application/pdf"
-      );
+      const lower = f.name.toLowerCase();
+      const inferredMime: "application/pdf" | "image/png" | "image/jpeg" | "image/webp" =
+        f.type === "application/pdf" || lower.endsWith(".pdf")
+          ? "application/pdf"
+          : f.type === "image/png" || lower.endsWith(".png")
+            ? "image/png"
+            : f.type === "image/webp" || lower.endsWith(".webp")
+              ? "image/webp"
+              : "image/jpeg";
+      setImportMime(inferredMime);
       const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = String(reader.result ?? "");
@@ -849,7 +870,7 @@ function SeriesForm({
     (sum, c) => sum + (Number(c) || 0),
     0
   );
-  const maxExamQuestions = defaults.totalQuestions > 0 ? defaults.totalQuestions : 0;
+  const needMoreQuestions = Math.max(0, maxExamQuestions - totalConfigured);
   const exceedsMaxQuestions = maxExamQuestions > 0 && totalConfigured > maxExamQuestions;
 
   const isSubmitDisabled = () => {
@@ -1074,26 +1095,49 @@ function SeriesForm({
                     <p className="text-xs font-bold text-white">
                       Step 1: Set Number of Questions from Each Subject *
                     </p>
-                    <span
-                      className={`px-2.5 py-0.5 rounded border text-xs font-mono ${
-                        exceedsMaxQuestions
-                          ? "bg-rose-500/20 border-rose-500/40 text-rose-200 font-bold"
-                          : "bg-violet-500/20 border-violet-500/30 text-violet-200"
-                      }`}
-                    >
-                      Total Configured: {totalConfigured}
-                      {maxExamQuestions > 0 ? ` / ${maxExamQuestions}` : ""} Questions
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={autoDistributeSubjects}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-violet-300 cursor-pointer"
+                      >
+                        Auto-fill {maxExamQuestions} Qs across all subjects
+                      </button>
+                      {Object.keys(subjectCounts).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setSubjectCounts({})}
+                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-[11px] text-slate-400 cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                      <span
+                        className={`px-2.5 py-0.5 rounded border text-xs font-mono ${
+                          exceedsMaxQuestions
+                            ? "bg-rose-500/20 border-rose-500/40 text-rose-200 font-bold"
+                            : needMoreQuestions === 0
+                              ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-200 font-bold"
+                              : "bg-violet-500/20 border-violet-500/30 text-violet-200 font-semibold"
+                        }`}
+                      >
+                        {exceedsMaxQuestions
+                          ? `${totalConfigured} Selected - Exceeds ${maxExamQuestions} Max by ${totalConfigured - maxExamQuestions}`
+                          : `${totalConfigured} Selected - Need more ${needMoreQuestions}`}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-xs text-slate-400">
-                    Pre-filled from {defaults.titleEn} settings (max {defaults.totalQuestions} questions). Tick subjects and enter how many
-                    questions each subject will have in this test series.
+                    Total questions configured for <strong>{defaults.titleEn}</strong> in Tab 2:{" "}
+                    <strong className="text-white">{maxExamQuestions} questions</strong>. Tick
+                    subjects below and enter how many questions each subject will have in this test
+                    series.
                   </p>
                   <SubjectCountsEditor
                     tree={tree}
                     value={subjectCounts}
                     onChange={setSubjectCounts}
-                    maxQuestions={defaults.totalQuestions}
+                    maxQuestions={maxExamQuestions}
                   />
                 </div>
 
