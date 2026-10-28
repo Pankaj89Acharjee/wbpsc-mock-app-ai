@@ -16,6 +16,7 @@ import {
   SERIES_KIND_LABELS,
   SUBSCRIPTION_TIER_LABELS,
   SUBSCRIPTION_TIER_PLANS,
+  getSubscriptionTierLabel,
   type ExamDto,
   type ExamOverviewDto,
   type GenerateFullQuestionSetResult,
@@ -26,6 +27,7 @@ import {
   type SeriesImportSetResult,
   type SeriesInput,
   type SeriesKind,
+  type SubscriptionPlanDto,
   type SubscriptionTier,
   type SyllabusTreeDto,
 } from "../../packages/shared-types/src/index";
@@ -828,6 +830,15 @@ function SeriesForm({
   const num = (k: keyof SeriesInput) => (e: React.ChangeEvent<HTMLInputElement>) =>
     set({ [k]: e.target.value === "" ? 0 : Number(e.target.value) } as Partial<SeriesInput>);
 
+  const [availablePlans, setAvailablePlans] = useState(SUBSCRIPTION_TIER_PLANS);
+  useEffect(() => {
+    adminApi<{ plans: SubscriptionPlanDto[] }>("/subscription-plans")
+      .then((res) => {
+        if (res.plans && res.plans.length > 0) setAvailablePlans(res.plans);
+      })
+      .catch(() => {});
+  }, []);
+
   // Subject counts start empty so Admin selects subjects up to maxExamQuestions (set in Tab 2),
   // avoiding the 12 subjects × 25 default = 300 overflow.
   const [subjectCounts, setSubjectCounts] = useState<Record<string, string>>({});
@@ -1034,7 +1045,7 @@ function SeriesForm({
               }`}
             >
               {v.accessType === "paid"
-                ? `PAID TEST (${SUBSCRIPTION_TIER_LABELS[v.requiredTier || "pro_prelims"]})`
+                ? `PAID TEST (${getSubscriptionTierLabel(v.requiredTier || "pro_prelims", availablePlans)})`
                 : "FREE TEST (Open to All Aspirants)"}
             </span>
           </div>
@@ -1077,10 +1088,13 @@ function SeriesForm({
             <button
               type="button"
               onClick={() => {
+                const paidList = availablePlans.filter((p) => p.tier !== "free");
                 const defaultPaidTier: SubscriptionTier =
-                  v.requiredTier && v.requiredTier !== "free" ? v.requiredTier : "pro_prelims";
+                  v.requiredTier && v.requiredTier !== "free"
+                    ? v.requiredTier
+                    : paidList[0]?.tier || "pro_prelims";
                 const tierPrice =
-                  SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === defaultPaidTier)?.priceInr ?? 299;
+                  availablePlans.find((p) => p.tier === defaultPaidTier)?.priceInr ?? 299;
                 set({
                   accessType: "paid" as SeriesAccessType,
                   requiredTier: defaultPaidTier,
@@ -1108,7 +1122,7 @@ function SeriesForm({
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-1">
-                Requires an active Paid Subscription (Prelims, Mains Tier, Part-II Tier, or WBCS Executive Pass).
+                Requires an active Paid Subscription (Prelims, Mains Tier, Part-II Tier, WBCS Executive Pass, or custom tier).
               </p>
             </button>
           </div>
@@ -1121,7 +1135,7 @@ function SeriesForm({
                   value={v.requiredTier && v.requiredTier !== "free" ? v.requiredTier : "pro_prelims"}
                   onChange={(e) => {
                     const nextTier = e.target.value as SubscriptionTier;
-                    const tierMeta = SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === nextTier);
+                    const tierMeta = availablePlans.find((p) => p.tier === nextTier);
                     set({
                       requiredTier: nextTier,
                       priceInr: tierMeta ? tierMeta.priceInr : v.priceInr,
@@ -1129,11 +1143,13 @@ function SeriesForm({
                   }}
                   className={inputCls}
                 >
-                  {SUBSCRIPTION_TIER_PLANS.filter((p) => p.tier !== "free").map((p) => (
-                    <option key={p.tier} value={p.tier}>
-                      {p.shortLabel} — ₹{p.priceInr}/yr ({p.labelEn})
-                    </option>
-                  ))}
+                  {availablePlans
+                    .filter((p) => p.tier !== "free")
+                    .map((p) => (
+                      <option key={p.tier} value={p.tier}>
+                        {p.shortLabel} — ₹{p.priceInr} ({p.labelEn})
+                      </option>
+                    ))}
                 </select>
               </label>
               <label className="text-xs text-slate-300 space-y-1">

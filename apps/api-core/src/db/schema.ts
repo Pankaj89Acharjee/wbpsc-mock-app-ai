@@ -21,6 +21,7 @@ import type {
   BilingualText,
   QuestionOptions,
   OptionKey,
+  SubscriptionTier,
 } from "../../../../packages/shared-types/src/index";
 
 // ============================================================================
@@ -140,7 +141,8 @@ export const users = pgTable(
       .notNull()
       .default("wbcs-prelims"),
     role: userRoleEnum("role").notNull().default("aspirant"),
-    subscriptionTier: subscriptionTierEnum("subscription_tier")
+    subscriptionTier: varchar("subscription_tier", { length: 80 })
+      .$type<SubscriptionTier>()
       .notNull()
       .default("free"),
     razorpayCustomerId: varchar("razorpay_customer_id", { length: 128 }),
@@ -844,7 +846,8 @@ export const examSeries = pgTable(
       .$type<"free" | "paid">()
       .notNull()
       .default("free"),
-    requiredTier: subscriptionTierEnum("required_tier")
+    requiredTier: varchar("required_tier", { length: 80 })
+      .$type<SubscriptionTier>()
       .notNull()
       .default("free"),
     priceInr: numeric("price_inr", { precision: 8, scale: 2 })
@@ -864,6 +867,43 @@ export const examSeries = pgTable(
   ]
 );
 
+export const subscriptionPlans = pgTable(
+  "subscription_plans",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuid_generate_v4()`),
+    tier: varchar("tier", { length: 80 })
+      .$type<SubscriptionTier>()
+      .notNull(),
+    shortLabel: varchar("short_label", { length: 80 }).notNull(),
+    labelEn: varchar("label_en", { length: 200 }).notNull(),
+    labelBn: varchar("label_bn", { length: 200 }).notNull().default(""),
+    priceInr: numeric("price_inr", { precision: 8, scale: 2 })
+      .notNull()
+      .default("0.00"),
+    billingCycle: varchar("billing_cycle", { length: 32 })
+      .notNull()
+      .default("yearly"),
+    durationDays: integer("duration_days").notNull().default(365),
+    descriptionEn: text("description_en").notNull().default(""),
+    descriptionBn: text("description_bn").notNull().default(""),
+    features: jsonb("features").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    isActive: boolean("is_active").notNull().default(true),
+    displayOrder: integer("display_order").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("subscription_plans_tier_unique_idx").on(table.tier),
+    index("subscription_plans_order_idx").on(table.displayOrder, table.createdAt),
+  ]
+);
+
 export const studentSubscriptions = pgTable(
   "student_subscriptions",
   {
@@ -873,7 +913,8 @@ export const studentSubscriptions = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    planTier: subscriptionTierEnum("plan_tier")
+    planTier: varchar("plan_tier", { length: 80 })
+      .$type<SubscriptionTier>()
       .notNull()
       .default("pro_prelims"),
     planName: varchar("plan_name", { length: 160 }).notNull(),

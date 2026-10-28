@@ -67,9 +67,23 @@ export function toUserDto(u: UserRow): UserDto {
 }
 
 async function startSession(reply: FastifyReply, user: UserRow) {
+  const isExpired =
+    user.role !== "admin" &&
+    user.subscriptionTier !== "free" &&
+    user.subscriptionExpiresAt !== null &&
+    user.subscriptionExpiresAt.getTime() <= Date.now();
   const [fresh] = await db
     .update(users)
-    .set({ lastLoginAt: new Date() })
+    .set({
+      lastLoginAt: new Date(),
+      ...(isExpired
+        ? {
+            subscriptionTier: "free",
+            subscriptionExpiresAt: null,
+            updatedAt: new Date(),
+          }
+        : {}),
+    })
     .where(eq(users.id, user.id))
     .returning();
   setSessionCookie(reply, fresh);

@@ -178,29 +178,64 @@ export type WeaknessReport = z.infer<typeof WeaknessReportSchema>;
 
 export type UserRole = "aspirant" | "educator" | "admin";
 
-export const SubscriptionTierSchema = z.enum([
-  "free",
-  "pro_prelims",
-  "pro_mains",
-  "part2_descriptive",
-  "wbcs_executive_pass",
-]);
-export type SubscriptionTier = z.infer<typeof SubscriptionTierSchema>;
+export const SubscriptionTierSchema = z
+  .string()
+  .trim()
+  .min(1, "Plan tier slug is required")
+  .max(80)
+  .regex(/^[a-z0-9_]+(?:-[a-z0-9_]+)*$/, "Plan tier code must be lowercase letters, numbers, underscores or hyphens");
+
+export type SubscriptionTier =
+  | "free"
+  | "pro_prelims"
+  | "pro_mains"
+  | "part2_descriptive"
+  | "wbcs_executive_pass"
+  | (string & {});
 
 export const SeriesAccessTypeSchema = z.enum(["free", "paid"]);
 export type SeriesAccessType = z.infer<typeof SeriesAccessTypeSchema>;
 
 export interface SubscriptionTierPlanInfo {
+  id?: string;
   tier: SubscriptionTier;
   labelEn: string;
   labelBn: string;
   shortLabel: string;
   priceInr: number;
   billingCycle: string;
+  durationDays?: number;
   descriptionEn: string;
   descriptionBn: string;
   features: string[];
+  isActive?: boolean;
+  displayOrder?: number;
 }
+
+export interface SubscriptionPlanDto extends SubscriptionTierPlanInfo {
+  id: string;
+  durationDays: number;
+  isActive: boolean;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const SubscriptionPlanInputSchema = z.object({
+  tier: SubscriptionTierSchema,
+  shortLabel: z.string().trim().min(2, "Short label is required").max(80),
+  labelEn: z.string().trim().min(2, "English plan title is required").max(200),
+  labelBn: z.string().trim().max(200).default(""),
+  priceInr: z.coerce.number().min(0).max(100_000).default(0),
+  billingCycle: z.enum(["monthly", "quarterly", "yearly", "lifetime"]).default("yearly"),
+  durationDays: z.coerce.number().int().min(0).max(3650).default(365),
+  descriptionEn: z.string().trim().max(1000).default(""),
+  descriptionBn: z.string().trim().max(1000).default(""),
+  features: z.array(z.string().trim().min(1).max(200)).max(15).default([]),
+  isActive: z.boolean().default(true),
+  displayOrder: z.coerce.number().int().min(0).max(1000).default(1),
+});
+export type SubscriptionPlanInput = z.infer<typeof SubscriptionPlanInputSchema>;
 
 export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
   {
@@ -210,9 +245,12 @@ export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
     shortLabel: "Free",
     priceInr: 0,
     billingCycle: "lifetime",
+    durationDays: 0,
     descriptionEn: "Access all Free Mock Tests, basic weakness tracking, and daily current affairs.",
     descriptionBn: "সকল ফ্রি মক টেস্ট, দুর্বলতা বিশ্লেষণ ও ডেইলি কারেন্ট অ্যাফেয়ার্স।",
     features: ["All Free Test Series", "SQL Weakness Radar", "Daily Current Affairs"],
+    isActive: true,
+    displayOrder: 1,
   },
   {
     tier: "pro_prelims",
@@ -221,9 +259,12 @@ export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
     shortLabel: "Pro Prelims",
     priceInr: 299,
     billingCycle: "yearly",
+    durationDays: 365,
     descriptionEn: "Unlocks all Paid Prelims Test Series (Clerkship Part-I, Food SI, WBCS Prelims) + AI Study Notes.",
     descriptionBn: "সকল পেইড প্রিলিমিনারি টেস্ট সিরিজ এবং এআই স্টাডি নোট আনলক করুন।",
     features: ["All Free + Prelims Paid Series", "Bilingual AI Tutor Notes", "Unlimited Re-Attempts & Pause"],
+    isActive: true,
+    displayOrder: 2,
   },
   {
     tier: "pro_mains",
@@ -232,9 +273,12 @@ export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
     shortLabel: "Mains Tier",
     priceInr: 499,
     billingCycle: "yearly",
+    durationDays: 365,
     descriptionEn: "Unlocks Prelims + Advanced Mains Mock Test Series with high-difficulty analytical MCQs.",
     descriptionBn: "প্রিলিমস এবং অ্যাডভান্সড মেইনস মক টেস্ট সিরিজ আনলক করুন।",
     features: ["All Prelims + Mains Paid Series", "Advanced Mains Paper Sets", "Deep Subtopic Mastery Analytics"],
+    isActive: true,
+    displayOrder: 3,
   },
   {
     tier: "part2_descriptive",
@@ -243,9 +287,12 @@ export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
     shortLabel: "Part-II Tier",
     priceInr: 399,
     billingCycle: "yearly",
+    durationDays: 365,
     descriptionEn: "Unlocks Paid Part-II Descriptive Evaluator, Precis/Report/Translation sets & Prelims Mock Series.",
     descriptionBn: "ক্লার্কশিপ পার্ট-II লিখিত মূল্যায়ন ও প্রিলিমস মক টেস্ট আনলক করুন।",
     features: ["Part-II AI Descriptive Evaluator", "Bilingual Translation & Precis Grading", "Prelims Paid Test Series"],
+    isActive: true,
+    displayOrder: 4,
   },
   {
     tier: "wbcs_executive_pass",
@@ -254,6 +301,7 @@ export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
     shortLabel: "WBCS Executive Pass",
     priceInr: 799,
     billingCycle: "yearly",
+    durationDays: 365,
     descriptionEn: "Complete unrestricted access to every Paid Mock Test Series, Mains Tier, and Part-II Evaluator.",
     descriptionBn: "সকল পেইড মক টেস্ট সিরিজ, মেইনস টিয়ার এবং পার্ট-II ইভ্যালুয়েটরের সম্পূর্ণ অ্যাক্সেস।",
     features: [
@@ -261,16 +309,28 @@ export const SUBSCRIPTION_TIER_PLANS: SubscriptionTierPlanInfo[] = [
       "Prelims + Mains + Part-II Descriptive",
       "Priority AI Tutor & Remedial Tests",
     ],
+    isActive: true,
+    displayOrder: 5,
   },
 ];
 
-export const SUBSCRIPTION_TIER_LABELS: Record<SubscriptionTier, string> = {
+export const SUBSCRIPTION_TIER_LABELS: Record<string, string> = {
   free: "Free Tier",
   pro_prelims: "Pro Prelims",
   pro_mains: "Mains Tier",
   part2_descriptive: "Part-II Tier",
   wbcs_executive_pass: "WBCS Executive Pass",
 };
+
+export function getSubscriptionTierLabel(
+  tier: string | undefined | null,
+  plans?: SubscriptionTierPlanInfo[]
+): string {
+  const key = tier || "free";
+  const fromPlans = plans?.find((p) => p.tier === key);
+  if (fromPlans) return fromPlans.shortLabel;
+  return SUBSCRIPTION_TIER_LABELS[key] || key.replace(/[_-]+/g, " ");
+}
 
 /**
  * Checks whether a student with `userTier` can take a test series configured with
@@ -289,6 +349,7 @@ export function canAccessSeriesTier(
   if (tier === "free") return false;
   if (tier === "wbcs_executive_pass") return true;
   const req = requiredTier && requiredTier !== "free" ? requiredTier : "pro_prelims";
+  if (tier === req) return true;
   if (req === "pro_prelims") {
     return (
       tier === "pro_prelims" ||

@@ -107,7 +107,7 @@ const bilingual = (en: string, bn: string) => ({ en, bn: bn || en });
 
 function seriesColumns(input: SeriesInput) {
   const accessType: "free" | "paid" = input.accessType === "paid" ? "paid" : "free";
-  const requiredTier: "free" | "pro_prelims" | "pro_mains" | "part2_descriptive" | "wbcs_executive_pass" =
+  const requiredTier: string =
     accessType === "paid"
       ? input.requiredTier && input.requiredTier !== "free"
         ? input.requiredTier
