@@ -106,6 +106,14 @@ function sendSeriesError(reply: FastifyReply, err: unknown) {
 const bilingual = (en: string, bn: string) => ({ en, bn: bn || en });
 
 function seriesColumns(input: SeriesInput) {
+  const accessType: "free" | "paid" = input.accessType === "paid" ? "paid" : "free";
+  const requiredTier: "free" | "pro_prelims" | "pro_mains" | "part2_descriptive" | "wbcs_executive_pass" =
+    accessType === "paid"
+      ? input.requiredTier && input.requiredTier !== "free"
+        ? input.requiredTier
+        : "pro_prelims"
+      : "free";
+  const priceInr = accessType === "paid" ? String(input.priceInr ?? 0) : "0.00";
   return {
     name: bilingual(input.nameEn, input.nameBn),
     description: { en: input.descriptionEn, bn: input.descriptionBn || input.descriptionEn },
@@ -116,6 +124,9 @@ function seriesColumns(input: SeriesInput) {
     marksPerCorrect: String(input.marksPerCorrect),
     negativeMarksPerWrong: String(input.negativeMarksPerWrong),
     estimatedCutoffMarks: String(input.estimatedCutoffMarks),
+    accessType,
+    requiredTier,
+    priceInr,
   };
 }
 

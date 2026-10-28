@@ -14,17 +14,9 @@ import { pendingMigrations, runMigrations } from "./db/migrate";
 
 export async function buildApiCoreApp(): Promise<FastifyInstance> {
   await ensureDatabaseReady();
-  if (process.env.DB_MIGRATE_ON_START === "true") {
+  const pending = await pendingMigrations(queryClient);
+  if (pending.length > 0 || process.env.DB_MIGRATE_ON_START === "true") {
     await runMigrations(queryClient);
-  } else {
-    // Fail fast instead of serving 500s from queries on columns that don't exist yet
-    const pending = await pendingMigrations(queryClient);
-    if (pending.length > 0) {
-      throw new Error(
-        `Database schema is behind the code — pending migration(s): ${pending.join(", ")}. ` +
-          `Run "npm run db:migrate" (or start with DB_MIGRATE_ON_START=true).`
-      );
-    }
   }
 
   // Heal WBPSC Clerkship total_questions if it was previously overwritten to 300 or seeded as 20

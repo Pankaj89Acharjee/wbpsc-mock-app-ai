@@ -14,15 +14,19 @@ import {
 } from "lucide-react";
 import {
   SERIES_KIND_LABELS,
+  SUBSCRIPTION_TIER_LABELS,
+  SUBSCRIPTION_TIER_PLANS,
   type ExamDto,
   type ExamOverviewDto,
   type GenerateFullQuestionSetResult,
   type PublishStatus,
+  type SeriesAccessType,
   type SeriesDto,
   type SeriesImportSetBody,
   type SeriesImportSetResult,
   type SeriesInput,
   type SeriesKind,
+  type SubscriptionTier,
   type SyllabusTreeDto,
 } from "../../packages/shared-types/src/index";
 import { adminApi, type SyllabusTrees } from "./adminApi";
@@ -64,6 +68,9 @@ const seriesToInput = (s: SeriesDto, patch: Partial<SeriesInput> = {}): SeriesIn
   marksPerCorrect: s.marksPerCorrect,
   negativeMarksPerWrong: s.negativeMarksPerWrong,
   estimatedCutoffMarks: s.estimatedCutoffMarks,
+  accessType: s.accessType || "free",
+  requiredTier: s.requiredTier || "free",
+  priceInr: s.priceInr ?? 0,
   ...patch,
 });
 
@@ -403,6 +410,16 @@ export default function ExamSeriesManager({
                     <span className={`inline-block px-2 py-0.5 rounded text-[11px] ${KIND_TONE[s.kind]}`}>
                       {SERIES_KIND_LABELS[s.kind]}
                     </span>
+                    {s.accessType === "paid" ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/35">
+                        PAID · {SUBSCRIPTION_TIER_LABELS[s.requiredTier] || "Pro Prelims"}
+                        {s.priceInr > 0 ? ` (₹${s.priceInr})` : ""}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35">
+                        FREE TEST
+                      </span>
+                    )}
                     <span className="text-[11px] text-slate-400 font-mono">
                       {s.durationMinutes} min · +{s.marksPerCorrect}/−{s.negativeMarksPerWrong}
                       {s.estimatedCutoffMarks ? ` · cutoff ${s.estimatedCutoffMarks}` : ""}
@@ -548,8 +565,17 @@ export default function ExamSeriesManager({
         <section aria-labelledby="series-title" className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 id="series-title" className="text-sm font-bold text-white flex items-center gap-2">
+              <h2 id="series-title" className="text-sm font-bold text-white flex flex-wrap items-center gap-2">
                 {currentSeries.name.en} <StatusBadge status={currentSeries.status} />
+                {currentSeries.accessType === "paid" ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/35">
+                    PAID · {SUBSCRIPTION_TIER_LABELS[currentSeries.requiredTier] || "Pro Prelims"}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35">
+                    FREE TEST
+                  </span>
+                )}
               </h2>
               <p className="text-xs text-slate-400">
                 {SERIES_KIND_LABELS[currentSeries.kind]} · {currentSeries.totalQuestions} questions ·{" "}
@@ -793,6 +819,9 @@ function SeriesForm({
             defaults.slug === "wbpsc-clerkship" && defaults.estimatedCutoffMarks === 2.5
               ? 65
               : defaults.estimatedCutoffMarks,
+          accessType: "free",
+          requiredTier: "free",
+          priceInr: 0,
         }
   );
   const set = (patch: Partial<SeriesInput>) => setV((prev) => ({ ...prev, ...patch }));
@@ -985,6 +1014,143 @@ function SeriesForm({
             className={inputCls}
           />
         </label>
+
+        {/* ── Free Test vs Paid Test Selector (Admin Configurable) ── */}
+        <div className="md:col-span-2 rounded-xl border border-slate-800 bg-slate-950/70 p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                Test Access Type — Free Test or Paid Test *
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Select whether any student can take this test for free, or if a paid subscription tier is required.
+              </p>
+            </div>
+            <span
+              className={`px-2.5 py-1 rounded-md text-xs font-bold ${
+                v.accessType === "paid"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+              }`}
+            >
+              {v.accessType === "paid"
+                ? `PAID TEST (${SUBSCRIPTION_TIER_LABELS[v.requiredTier || "pro_prelims"]})`
+                : "FREE TEST (Open to All Aspirants)"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() =>
+                set({
+                  accessType: "free" as SeriesAccessType,
+                  requiredTier: "free" as SubscriptionTier,
+                  priceInr: 0,
+                })
+              }
+              className={`text-left p-3.5 rounded-xl border-2 transition-all cursor-pointer ${
+                v.accessType !== "paid"
+                  ? "bg-emerald-500/15 border-emerald-400 text-white shadow-md shadow-emerald-950/30"
+                  : "bg-slate-900/70 border-slate-800 text-slate-400 hover:border-slate-700"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                  Free Test Series
+                </span>
+                <span
+                  className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                    v.accessType !== "paid"
+                      ? "border-emerald-400 bg-emerald-500 text-slate-950"
+                      : "border-slate-600"
+                  }`}
+                >
+                  {v.accessType !== "paid" && <span className="w-1.5 h-1.5 rounded-full bg-slate-950" />}
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1">
+                Every signed-in aspirant (including Free Tier) can attempt this test series without payment.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const defaultPaidTier: SubscriptionTier =
+                  v.requiredTier && v.requiredTier !== "free" ? v.requiredTier : "pro_prelims";
+                const tierPrice =
+                  SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === defaultPaidTier)?.priceInr ?? 299;
+                set({
+                  accessType: "paid" as SeriesAccessType,
+                  requiredTier: defaultPaidTier,
+                  priceInr: v.priceInr && v.priceInr > 0 ? v.priceInr : tierPrice,
+                });
+              }}
+              className={`text-left p-3.5 rounded-xl border-2 transition-all cursor-pointer ${
+                v.accessType === "paid"
+                  ? "bg-amber-500/15 border-amber-400 text-white shadow-md shadow-amber-950/30"
+                  : "bg-slate-900/70 border-slate-800 text-slate-400 hover:border-slate-700"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                  Paid Test Series (Subscription Required)
+                </span>
+                <span
+                  className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                    v.accessType === "paid"
+                      ? "border-amber-400 bg-amber-500 text-slate-950"
+                      : "border-slate-600"
+                  }`}
+                >
+                  {v.accessType === "paid" && <span className="w-1.5 h-1.5 rounded-full bg-slate-950" />}
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1">
+                Requires an active Paid Subscription (Prelims, Mains Tier, Part-II Tier, or WBCS Executive Pass).
+              </p>
+            </button>
+          </div>
+
+          {v.accessType === "paid" && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/80">
+              <label className="text-xs text-slate-300 space-y-1">
+                <span className="font-semibold text-amber-300">Required Subscription Tier *</span>
+                <select
+                  value={v.requiredTier && v.requiredTier !== "free" ? v.requiredTier : "pro_prelims"}
+                  onChange={(e) => {
+                    const nextTier = e.target.value as SubscriptionTier;
+                    const tierMeta = SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === nextTier);
+                    set({
+                      requiredTier: nextTier,
+                      priceInr: tierMeta ? tierMeta.priceInr : v.priceInr,
+                    });
+                  }}
+                  className={inputCls}
+                >
+                  {SUBSCRIPTION_TIER_PLANS.filter((p) => p.tier !== "free").map((p) => (
+                    <option key={p.tier} value={p.tier}>
+                      {p.shortLabel} — ₹{p.priceInr}/yr ({p.labelEn})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-300 space-y-1">
+                <span className="font-semibold text-amber-300">Indicative Plan / Test Price (₹ INR)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={50000}
+                  value={v.priceInr ?? 299}
+                  onChange={num("priceInr")}
+                  className={inputCls}
+                />
+              </label>
+            </div>
+          )}
+        </div>
+
         <div className="md:col-span-2 space-y-2">
           <p className="text-xs font-semibold text-white">Marking scheme</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

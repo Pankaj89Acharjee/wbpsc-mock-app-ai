@@ -36,6 +36,8 @@ export const userRoleEnum = pgEnum("user_role", [
 export const subscriptionTierEnum = pgEnum("subscription_tier", [
   "free",
   "pro_prelims",
+  "pro_mains",
+  "part2_descriptive",
   "wbcs_executive_pass",
 ]);
 
@@ -145,6 +147,13 @@ export const users = pgTable(
     subscriptionExpiresAt: timestamp("subscription_expires_at", {
       withTimezone: true,
     }),
+    paymentDueInr: numeric("payment_due_inr", { precision: 8, scale: 2 })
+      .notNull()
+      .default("0.00"),
+    totalPaidInr: numeric("total_paid_inr", { precision: 8, scale: 2 })
+      .notNull()
+      .default("0.00"),
+    billingNotes: text("billing_notes"),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -830,6 +839,17 @@ export const examSeries = pgTable(
     estimatedCutoffMarks: numeric("estimated_cutoff_marks", { precision: 6, scale: 2 })
       .notNull()
       .default("0.00"),
+    // Free vs Paid test series access control (migrations/0005)
+    accessType: varchar("access_type", { length: 16 })
+      .$type<"free" | "paid">()
+      .notNull()
+      .default("free"),
+    requiredTier: subscriptionTierEnum("required_tier")
+      .notNull()
+      .default("free"),
+    priceInr: numeric("price_inr", { precision: 8, scale: 2 })
+      .notNull()
+      .default("0.00"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -841,6 +861,60 @@ export const examSeries = pgTable(
     check("exam_series_duration_minutes_check", sql`${table.durationMinutes} BETWEEN 1 AND 600`),
     uniqueIndex("exam_series_exam_slug_unique_idx").on(table.examId, table.slug),
     uniqueIndex("exam_series_id_exam_unique_idx").on(table.id, table.examId),
+  ]
+);
+
+export const studentSubscriptions = pgTable(
+  "student_subscriptions",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuid_generate_v4()`),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    planTier: subscriptionTierEnum("plan_tier")
+      .notNull()
+      .default("pro_prelims"),
+    planName: varchar("plan_name", { length: 160 }).notNull(),
+    billingCycle: varchar("billing_cycle", { length: 32 })
+      .notNull()
+      .default("yearly"),
+    planPriceInr: numeric("plan_price_inr", { precision: 8, scale: 2 })
+      .notNull()
+      .default("0.00"),
+    amountPaidInr: numeric("amount_paid_inr", { precision: 8, scale: 2 })
+      .notNull()
+      .default("0.00"),
+    amountDueInr: numeric("amount_due_inr", { precision: 8, scale: 2 })
+      .notNull()
+      .default("0.00"),
+    paymentStatus: varchar("payment_status", { length: 24 })
+      .$type<"paid" | "partial_due" | "pending_due" | "waived" | "refunded">()
+      .notNull()
+      .default("paid"),
+    paymentMode: varchar("payment_mode", { length: 32 })
+      .notNull()
+      .default("test_payment"),
+    transactionRef: varchar("transaction_ref", { length: 120 }),
+    notes: text("notes"),
+    startsAt: timestamp("starts_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("student_subscriptions_user_idx").on(table.userId, table.createdAt),
+    index("student_subscriptions_status_idx").on(table.paymentStatus),
   ]
 );
 

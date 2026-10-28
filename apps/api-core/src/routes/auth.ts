@@ -58,6 +58,10 @@ export function toUserDto(u: UserRow): UserDto {
     isActive: u.isActive,
     hasPassword: u.passwordHash !== null,
     hasGoogle: u.googleSub !== null,
+    paymentDueInr: Number(u.paymentDueInr ?? 0),
+    totalPaidInr: Number(u.totalPaidInr ?? 0),
+    billingNotes: u.billingNotes ?? null,
+    subscriptionExpiresAt: u.subscriptionExpiresAt ? u.subscriptionExpiresAt.toISOString() : null,
     createdAt: u.createdAt.toISOString(),
   };
 }

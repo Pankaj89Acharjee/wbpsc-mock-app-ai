@@ -1,15 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  AiNoteDto,
-  AttemptSummaryDto,
-  BilingualText,
-  CachedNoteRefDto,
-  MasteryDto,
-  PausedAttemptDto,
-  QuestionOptions,
-  StudentExamDto,
-  StudentSeriesDto,
-  UserDto,
+import {
+  SUBSCRIPTION_TIER_LABELS,
+  SUBSCRIPTION_TIER_PLANS,
+  type AiNoteDto,
+  type AttemptSummaryDto,
+  type BilingualText,
+  type CachedNoteRefDto,
+  type MasteryDto,
+  type PausedAttemptDto,
+  type QuestionOptions,
+  type StudentExamDto,
+  type StudentSeriesDto,
+  type StudentSubscriptionDto,
+  type SubscriptionTier,
+  type UserDto,
+  type UserRole,
 } from "../packages/shared-types/src/index";
 import { api } from "./api";
 import QuestionBankAdmin from "./admin/QuestionBankAdmin";
@@ -42,6 +47,9 @@ import {
   PauseCircle,
   Bookmark,
   Edit3,
+  Crown,
+  CreditCard,
+  X,
 } from "lucide-react";
 
 // ============================================================================
@@ -52,8 +60,6 @@ type SupportedLang = "en" | "bn";
 
 /** 303 -> "5min 3sec" */
 const formatClock = (sec: number) => `${Math.floor(sec / 60)}min ${sec % 60}sec`;
-type UserRole = UserDto["role"];
-type SubscriptionTier = UserDto["subscriptionTier"];
 
 /** A question as shown during a test — correct answers stay on the server until submission. */
 interface MockQuestion {
@@ -163,10 +169,42 @@ export default function App() {
   const [myPausedAttempts, setMyPausedAttempts] = useState<PausedAttemptDto[]>([]);
   const [myMastery, setMyMastery] = useState<MasteryDto[]>([]);
   const [cachedNotes, setCachedNotes] = useState<CachedNoteRefDto[]>([]);
+  const [mySubscriptions, setMySubscriptions] = useState<StudentSubscriptionDto[]>([]);
+
+  // Aspirant Subscription Purchase Modal State
+  const [showSubscriptionModal, setShowSubscriptionModal] = useState<boolean>(false);
+  const [selectedPurchaseTier, setSelectedPurchaseTier] = useState<SubscriptionTier>("pro_prelims");
+  const [purchaseBillingCycle, setPurchaseBillingCycle] = useState<"monthly" | "quarterly" | "yearly">("yearly");
+  const [testPaidAmountInput, setTestPaidAmountInput] = useState<string>("299");
+  const [payExistingDueOnly, setPayExistingDueOnly] = useState<boolean>(false);
+  const [purchaseNotesInput, setPurchaseNotesInput] = useState<string>("");
+  const [purchaseBusy, setPurchaseBusy] = useState<boolean>(false);
 
   // Admin-Only State
   const [allUsers, setAllUsers] = useState<UserDto[]>([]);
   const [allAttempts, setAllAttempts] = useState<AttemptSummaryDto[]>([]);
+  const [allSubscriptions, setAllSubscriptions] = useState<StudentSubscriptionDto[]>([]);
+  const [perfSearchQuery, setPerfSearchQuery] = useState<string>("");
+  const [subSearchQuery, setSubSearchQuery] = useState<string>("");
+  const [managingStudentSub, setManagingStudentSub] = useState<{
+    user: UserDto;
+    planTier: SubscriptionTier;
+    amountPaidNowInr: string;
+    paymentDueInr: string;
+    billingCycle: "monthly" | "quarterly" | "yearly" | "lifetime";
+    notes: string;
+  } | null>(null);
+  const [manageSubBusy, setManageSubBusy] = useState<boolean>(false);
+
+  // Top Navbar Sliding Tab Indicator Refs & State
+  const navContainerRef = useRef<HTMLElement | null>(null);
+  const navTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [navSliderStyle, setNavSliderStyle] = useState<{
+    left: number;
+    width: number;
+    opacity: number;
+  }>({ left: 0, width: 0, opacity: 0 });
+
   const [statusBanner, setStatusBanner] = useState<{
     type: "success" | "error" | "info";
     text: string;
@@ -241,6 +279,29 @@ export default function App() {
   const showError = (err: unknown, fallback: string) =>
     setStatusBanner({ type: "error", text: (err as Error)?.message || fallback });
 
+  // Measure active tab position for smooth sliding navbar animation
+  const updateNavSlider = useCallback(() => {
+    const navEl = navContainerRef.current;
+    const activeBtn = navTabRefs.current[activeNav];
+    if (!navEl || !activeBtn) {
+      setNavSliderStyle((prev) => ({ ...prev, opacity: 0 }));
+      return;
+    }
+    const navRect = navEl.getBoundingClientRect();
+    const btnRect = activeBtn.getBoundingClientRect();
+    setNavSliderStyle({
+      left: btnRect.left - navRect.left,
+      width: btnRect.width,
+      opacity: 1,
+    });
+  }, [activeNav]);
+
+  useEffect(() => {
+    updateNavSlider();
+    window.addEventListener("resize", updateNavSlider);
+    return () => window.removeEventListener("resize", updateNavSlider);
+  }, [updateNavSlider, isUserAdmin, user?.id]);
+
   // =========================================================================
   // 1. Session bootstrap (HttpOnly cookie → GET /auth/me)
   // =========================================================================
@@ -279,6 +340,9 @@ export default function App() {
     api<{ notes: CachedNoteRefDto[] }>("/ai/notes/cached")
       .then((r) => setCachedNotes(r.notes))
       .catch(() => setCachedNotes([]));
+    api<{ subscriptions: StudentSubscriptionDto[] }>("/me/subscriptions")
+      .then((r) => setMySubscriptions(r.subscriptions))
+      .catch(() => setMySubscriptions([]));
   }, []);
 
   const loadAdminData = useCallback(() => {
@@ -288,6 +352,9 @@ export default function App() {
     api<{ attempts: AttemptSummaryDto[] }>("/admin/attempts")
       .then((r) => setAllAttempts(r.attempts))
       .catch((err) => showError(err, "Could not load attempts"));
+    api<{ subscriptions: StudentSubscriptionDto[] }>("/admin/subscriptions")
+      .then((r) => setAllSubscriptions(r.subscriptions))
+      .catch(() => setAllSubscriptions([]));
   }, []);
 
   useEffect(() => {
@@ -297,7 +364,7 @@ export default function App() {
   }, [user?.id, loadExams, loadMyProgress]);
 
   useEffect(() => {
-    if (isUserAdmin && activeNav === "admin-console") loadAdminData();
+    if (isUserAdmin) loadAdminData();
   }, [isUserAdmin, activeNav, loadAdminData]);
 
   // Countdown: the exam's/series' duration; 0 = untimed
@@ -401,7 +468,7 @@ export default function App() {
 
   const handleAdminUpdateUser = async (
     target: UserDto,
-    updates: Partial<Pick<UserDto, "subscriptionTier" | "isActive">> & {
+    updates: Partial<Pick<UserDto, "subscriptionTier" | "isActive" | "paymentDueInr" | "totalPaidInr" | "billingNotes">> & {
       role?: Exclude<UserRole, "admin">;
     }
   ) => {
@@ -414,6 +481,91 @@ export default function App() {
       loadAdminData();
     } catch (err) {
       showError(err, "Could not update user");
+    }
+  };
+
+  const openSubscriptionModal = (defaultTier?: SubscriptionTier, dueOnly = false) => {
+    const tierToUse: SubscriptionTier =
+      defaultTier && defaultTier !== "free"
+        ? defaultTier
+        : user?.subscriptionTier && user.subscriptionTier !== "free" && dueOnly
+          ? user.subscriptionTier
+          : "pro_prelims";
+    const planMeta = SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === tierToUse) ?? SUBSCRIPTION_TIER_PLANS[1];
+    setSelectedPurchaseTier(tierToUse);
+    setPayExistingDueOnly(dueOnly);
+    setTestPaidAmountInput(
+      dueOnly ? String(user?.paymentDueInr ?? 0) : String(planMeta.priceInr)
+    );
+    setPurchaseNotesInput("");
+    setShowSubscriptionModal(true);
+  };
+
+  const handlePurchaseSubscription = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (purchaseBusy) return;
+    setPurchaseBusy(true);
+    try {
+      const r = await api<{ user: UserDto; subscription: StudentSubscriptionDto }>(
+        "/me/subscriptions/purchase",
+        {
+          method: "POST",
+          body: {
+            planTier: selectedPurchaseTier,
+            testPaidAmountInr: Number(testPaidAmountInput) || 0,
+            billingCycle: purchaseBillingCycle,
+            payExistingDueOnly,
+            notes: purchaseNotesInput.trim() || undefined,
+          },
+        }
+      );
+      setUser(r.user);
+      setShowSubscriptionModal(false);
+      loadMyProgress();
+      if (isUserAdmin) loadAdminData();
+      setStatusBanner({
+        type: "success",
+        text: `Subscription activated: ${SUBSCRIPTION_TIER_LABELS[r.user.subscriptionTier]} (Ref: ${r.subscription.transactionRef} · Paid ₹${r.subscription.amountPaidInr} · Due ₹${r.user.paymentDueInr ?? 0}). Shared with Admin.`,
+      });
+    } catch (err) {
+      showError(err, "Could not complete test subscription purchase");
+    } finally {
+      setPurchaseBusy(false);
+    }
+  };
+
+  const handleAdminManageSubscription = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!managingStudentSub || manageSubBusy) return;
+    setManageSubBusy(true);
+    try {
+      const r = await api<{ user: UserDto; subscription: StudentSubscriptionDto }>(
+        "/admin/subscriptions/manage",
+        {
+          method: "POST",
+          body: {
+            userId: managingStudentSub.user.id,
+            planTier: managingStudentSub.planTier,
+            amountPaidNowInr: Number(managingStudentSub.amountPaidNowInr) || 0,
+            paymentDueInr: Number(managingStudentSub.paymentDueInr) || 0,
+            billingCycle: managingStudentSub.billingCycle,
+            notes: managingStudentSub.notes.trim() || undefined,
+          },
+        }
+      );
+      if (user && r.user.id === user.id) {
+        setUser(r.user);
+      }
+      setManagingStudentSub(null);
+      loadAdminData();
+      setStatusBanner({
+        type: "success",
+        text: `Updated subscription for ${r.user.fullName}: ${SUBSCRIPTION_TIER_LABELS[r.user.subscriptionTier]} · Payment Due ₹${r.user.paymentDueInr ?? 0}.`,
+      });
+    } catch (err) {
+      showError(err, "Could not update student subscription");
+    } finally {
+      setManageSubBusy(false);
     }
   };
 
@@ -1031,7 +1183,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-['Plus_Jakarta_Sans','Noto_Sans_Bengali','Hind_Siliguri',sans-serif]">
       {/* Strict 3-Zone Top Bar Contract */}
-      <header className="flex items-center justify-between gap-8 px-6 py-4 border-b border-slate-800 bg-slate-950 sticky top-0 z-20">
+      <header className="flex items-center justify-between gap-6 px-6 py-3.5 border-b border-slate-800 bg-slate-950/95 backdrop-blur-md sticky top-0 z-20">
         {/* Zone 1: Single text element wordmark */}
         <a
           href="#top"
@@ -1044,49 +1196,76 @@ export default function App() {
           WBPSC Mock Tutor
         </a>
 
-        {/* Zone 2: 5 concise single-line navigation links */}
-        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-400">
-          <button
-            onClick={() => setActiveNav("mock-center")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "mock-center" ? "text-emerald-400 font-semibold" : ""
-              }`}
-          >
-            Mock Tests
-          </button>
-          <button
-            onClick={() => setActiveNav("weakness-tutor")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "weakness-tutor" ? "text-emerald-400 font-semibold" : ""
-              }`}
-          >
-            Weakness &amp; Tutor
-          </button>
-          <button
-            onClick={() => setActiveNav("descriptive-eval")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "descriptive-eval" ? "text-emerald-400 font-semibold" : ""
-              }`}
-          >
-            Part-II Evaluator
-          </button>
-          <button
-            onClick={() => setActiveNav("daily-ca")}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "daily-ca" ? "text-emerald-400 font-semibold" : ""
-              }`}
-          >
-            Daily Current Affairs
-          </button>
-          {isUserAdmin && (
-            <button
-              onClick={() => setActiveNav("admin-console")}
-              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${activeNav === "admin-console" ? "text-amber-400 font-semibold" : ""
+        {/* Zone 2: Semi-rounded Navbar with padding at both ends, sliding indicator & light active tab background */}
+        <nav
+          ref={navContainerRef}
+          aria-label="Main navigation"
+          className="hidden md:flex relative items-center gap-1.5 rounded-2xl bg-slate-900/95 border border-slate-800/90 px-4 py-1.5 shadow-inner text-sm font-medium"
+        >
+          {/* Sliding active tab background pill */}
+          <span
+            aria-hidden="true"
+            style={{
+              transform: `translateX(${navSliderStyle.left}px)`,
+              width: `${navSliderStyle.width}px`,
+              opacity: navSliderStyle.opacity,
+            }}
+            className={`pointer-events-none absolute top-1.5 bottom-1.5 left-0 rounded-xl transition-all duration-300 ease-out ${
+              activeNav === "admin-console"
+                ? "bg-amber-400/20 border border-amber-400/35 shadow-sm"
+                : "bg-slate-100/15 border border-slate-200/20 shadow-sm"
+            }`}
+          />
+          {(
+            [
+              { id: "mock-center" as const, label: "Mock Tests" },
+              { id: "weakness-tutor" as const, label: "Weakness & Tutor" },
+              { id: "descriptive-eval" as const, label: "Part-II Evaluator" },
+              { id: "daily-ca" as const, label: "Daily Current Affairs" },
+              ...(isUserAdmin
+                ? [{ id: "admin-console" as const, label: "Admin Console" }]
+                : []),
+            ] as const
+          ).map((tab) => {
+            const isActive = activeNav === tab.id;
+            const isAdminTab = tab.id === "admin-console";
+            return (
+              <button
+                key={tab.id}
+                ref={(el) => {
+                  navTabRefs.current[tab.id] = el;
+                }}
+                onClick={() => setActiveNav(tab.id)}
+                className={`relative z-10 px-4 py-1.5 rounded-xl transition-colors duration-200 whitespace-nowrap shrink-0 cursor-pointer ${
+                  isActive
+                    ? isAdminTab
+                      ? "text-amber-200 font-semibold bg-amber-400/10"
+                      : "text-white font-semibold bg-white/10"
+                    : "text-slate-400 hover:text-slate-100"
                 }`}
-            >
-              Admin Console
-            </button>
-          )}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </nav>
 
-        {/* Zone 3: 1 primary action */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* Zone 3: Primary actions (Buy/Upgrade Subscription for Aspirants + Sign Out) */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => openSubscriptionModal(user.subscriptionTier === "free" ? "pro_prelims" : user.subscriptionTier, false)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Crown className="w-3.5 h-3.5" />
+            {user.subscriptionTier === "free"
+              ? lang === "bn"
+                ? "সাবস্ক্রিপশন কিনুন"
+                : "Buy Subscription"
+              : lang === "bn"
+                ? `প্ল্যান: ${SUBSCRIPTION_TIER_LABELS[user.subscriptionTier]}`
+                : `Plan: ${SUBSCRIPTION_TIER_LABELS[user.subscriptionTier]}`}
+          </button>
           <button
             onClick={handleLogout}
             className="px-4 py-2 text-xs font-medium text-slate-200 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
@@ -1096,7 +1275,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Sub-header Workspace Toolbar (Role, Language Switch, Seed Action) */}
+      {/* Sub-header Workspace Toolbar (Role, Plan, Payment Dues, Language Switch) */}
       <div className="border-b border-slate-900 bg-slate-900/40 px-6 py-3">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
@@ -1112,11 +1291,31 @@ export default function App() {
             </span>
             <span aria-hidden="true">·</span>
             <span>
-              Tier:{" "}
-              <strong className="text-slate-200">
-                {user.subscriptionTier}
+              Plan:{" "}
+              <strong className="text-amber-300">
+                {SUBSCRIPTION_TIER_LABELS[user.subscriptionTier] || user.subscriptionTier}
               </strong>
             </span>
+            {(user.totalPaidInr ?? 0) > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono text-emerald-300">
+                  Paid: ₹{user.totalPaidInr}
+                </span>
+              </>
+            )}
+            {(user.paymentDueInr ?? 0) > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  onClick={() => openSubscriptionModal(user.subscriptionTier, true)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-mono font-semibold hover:bg-rose-500/30 cursor-pointer"
+                >
+                  Payment Due: ₹{user.paymentDueInr} (Pay Now)
+                </button>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -1544,8 +1743,18 @@ export default function App() {
                         exam={openExam}
                         series={seriesByExam[openExam.id]}
                         lang={lang}
+                        userTier={user.subscriptionTier}
+                        userRole={user.role}
                         onBack={() => setOpenExamId(null)}
                         onStartSeries={(x) => startSeriesTest(openExam, x)}
+                        onUnlockPaidSeries={(x) =>
+                          openSubscriptionModal(
+                            x.requiredTier && x.requiredTier !== "free"
+                              ? x.requiredTier
+                              : "pro_prelims",
+                            false
+                          )
+                        }
                         onResumeSeries={(x) => {
                           const match = myPausedAttempts.find(
                             (pa) => pa.seriesId === x.id || pa.attemptId === x.myPausedAttemptId
@@ -1586,6 +1795,634 @@ export default function App() {
                       <ExamCards exams={examsList} lang={lang} onOpen={openExamSeries} />
                     );
                   })()
+                )}
+
+                {/* Aspirant Subscription & Plan Banner (Visible to Aspirants on Dashboard) */}
+                {!isUserAdmin && (
+                  <section className="rounded-xl border border-amber-500/35 bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/25 p-5 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-300">
+                          <Crown className="w-4 h-4" />
+                          {lang === "bn"
+                            ? "আপনার সাবস্ক্রিপশন ও পেইড টেস্ট পাস"
+                            : "Your Subscription Plan & Paid Test Access"}
+                        </div>
+                        <h2 className="text-lg font-bold text-white">
+                          {lang === "bn" ? "বর্তমান প্ল্যান: " : "Current Plan: "}
+                          <span className="text-amber-300">
+                            {SUBSCRIPTION_TIER_LABELS[user.subscriptionTier] || user.subscriptionTier}
+                          </span>
+                        </h2>
+                        <p className="text-xs text-slate-300">
+                          {lang === "bn"
+                            ? "প্রিলিমস, মেইনস টিয়ার, পার্ট-II ডেসক্রিপটিভ বা WBCS এক্সিকিউটিভ পাস কিনুন এবং সকল পেইড মক টেস্ট আনলক করুন।"
+                            : "Purchase or upgrade to Pro Prelims, Mains Tier, Part-II Tier, or WBCS Executive Pass using Test Payment (shared live with Admin)."}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="rounded-lg bg-slate-950/90 border border-slate-800 px-3.5 py-2 text-xs font-mono">
+                          <span className="text-slate-400">Total Paid: </span>
+                          <strong className="text-emerald-400">₹{user.totalPaidInr ?? 0}</strong>
+                          <span className="mx-2 text-slate-700">|</span>
+                          <span className="text-slate-400">Payment Due: </span>
+                          <strong
+                            className={
+                              (user.paymentDueInr ?? 0) > 0 ? "text-rose-400" : "text-slate-200"
+                            }
+                          >
+                            ₹{user.paymentDueInr ?? 0}
+                          </strong>
+                        </div>
+
+                        {(user.paymentDueInr ?? 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => openSubscriptionModal(user.subscriptionTier, true)}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-rose-500 hover:bg-rose-400 text-slate-950 rounded-lg cursor-pointer"
+                          >
+                            <CreditCard className="w-3.5 h-3.5" />
+                            Pay Due (₹{user.paymentDueInr})
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openSubscriptionModal(
+                              user.subscriptionTier === "free"
+                                ? "pro_prelims"
+                                : "wbcs_executive_pass",
+                              false
+                            )
+                          }
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-lg cursor-pointer"
+                        >
+                          <Crown className="w-3.5 h-3.5" />
+                          {user.subscriptionTier === "free"
+                            ? lang === "bn"
+                              ? "সাবস্ক্রিপশন কিনুন (Test Pay)"
+                              : "Buy Subscription (Test Payment)"
+                            : lang === "bn"
+                              ? "প্ল্যান পরিবর্তন / আপগ্রেড"
+                              : "Upgrade / Change Plan"}
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {/* ===================================================================
+                    ADMIN SECTION BELOW 01. MOCK TEST SERIES:
+                    1) EVERY STUDENT'S EXAM PERFORMANCE (Fixed-height scrollable table)
+                    2) STUDENT SUBSCRIPTION & PAYMENT DUES MANAGEMENT
+                =================================================================== */}
+                {isUserAdmin && (
+                  <div className="space-y-8 pt-2">
+                    {/* Admin Section A: Every Student's Exam Performance Table */}
+                    <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                            <Award className="w-5 h-5 text-emerald-400" />
+                            Student Mock Result &amp; Exam Performance (All Aspirants)
+                          </h2>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Live performance across all students — Aspirant Name, Plan Type, Enrolled Exam, Test Given, Score, Negative Marks, Accuracy &amp; Status.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="search"
+                            value={perfSearchQuery}
+                            onChange={(e) => setPerfSearchQuery(e.target.value)}
+                            placeholder="Search aspirant, exam, series, plan…"
+                            className="px-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white focus:border-emerald-500 focus:outline-none w-64"
+                          />
+                          <button
+                            type="button"
+                            onClick={loadAdminData}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Fixed height table container with vertical scrolling on overflow */}
+                      <div className="max-h-96 overflow-y-auto overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/60">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead className="sticky top-0 z-10 bg-slate-950 border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400">
+                            <tr>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Aspirant Name</th>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Type of Plan</th>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Enrolled Exam</th>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Test Given</th>
+                              <th className="py-3 px-3.5 text-right whitespace-nowrap">Score</th>
+                              <th className="py-3 px-3.5 text-right whitespace-nowrap">Negative Marks</th>
+                              <th className="py-3 px-3.5 text-right whitespace-nowrap">Accuracy</th>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Attempt Details &amp; Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/70">
+                            {(() => {
+                              const q = perfSearchQuery.trim().toLowerCase();
+                              const filtered = allAttempts.filter((att) => {
+                                if (!q) return true;
+                                const hay = [
+                                  att.userName,
+                                  att.userEmail,
+                                  att.userSubscriptionTier,
+                                  att.userTargetExamSlug,
+                                  att.examTitleEn,
+                                  att.series?.name.en,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")
+                                  .toLowerCase();
+                                return hay.includes(q);
+                              });
+
+                              if (filtered.length === 0) {
+                                return (
+                                  <tr>
+                                    <td colSpan={8} className="py-8 px-4 text-center text-slate-400">
+                                      No student exam attempts match the filter yet.
+                                    </td>
+                                  </tr>
+                                );
+                              }
+
+                              return filtered.map((att) => {
+                                const tier = att.userSubscriptionTier || "free";
+                                const isPaused = att.attemptStatus === "in_progress";
+                                const testGivenLabel = att.series
+                                  ? att.series.name.en
+                                  : att.isRemedial
+                                    ? `Remedial Mock (${att.examTitleEn})`
+                                    : `Random Mock (${att.examTitleEn})`;
+                                return (
+                                  <tr key={att.id} className="hover:bg-slate-900/70 transition-colors">
+                                    <td className="py-3 px-3.5">
+                                      <div className="font-semibold text-white">
+                                        {att.userName || "Aspirant"}
+                                      </div>
+                                      <div className="text-[11px] text-slate-400 font-mono">
+                                        {att.userEmail}
+                                      </div>
+                                    </td>
+                                    <td className="py-3 px-3.5 whitespace-nowrap">
+                                      <span
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border ${
+                                          tier === "free"
+                                            ? "bg-slate-800/80 border-slate-700 text-slate-300"
+                                            : "bg-amber-500/15 border-amber-500/35 text-amber-300"
+                                        }`}
+                                      >
+                                        {SUBSCRIPTION_TIER_LABELS[tier] || tier}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 px-3.5">
+                                      <div className="text-slate-200 font-medium">
+                                        {att.examTitleEn}
+                                      </div>
+                                      <div className="text-[11px] text-slate-500 font-mono">
+                                        Target: {att.userTargetExamSlug || att.examSlug}
+                                      </div>
+                                    </td>
+                                    <td className="py-3 px-3.5">
+                                      <div className="font-semibold text-white flex flex-wrap items-center gap-1.5">
+                                        <span>{testGivenLabel}</span>
+                                        {att.series?.accessType === "paid" ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                            PAID
+                                          </span>
+                                        ) : (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                            FREE
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-[11px] text-slate-400">
+                                        {att.submittedAt
+                                          ? new Date(att.submittedAt).toLocaleString()
+                                          : att.startedAt
+                                            ? `Started ${new Date(att.startedAt).toLocaleString()}`
+                                            : "—"}
+                                      </div>
+                                    </td>
+                                    <td className="py-3 px-3.5 text-right font-mono tabular-nums whitespace-nowrap">
+                                      <div className="font-bold text-emerald-400">
+                                        {att.finalNetScore} / {att.maxPossibleScore}
+                                      </div>
+                                      <div className="text-[11px] text-slate-400">
+                                        +{att.rawPositiveScore ?? att.correctCount} raw ({att.correctCount}✓)
+                                      </div>
+                                    </td>
+                                    <td className="py-3 px-3.5 text-right font-mono tabular-nums whitespace-nowrap">
+                                      <div className="font-bold text-rose-400">
+                                        −{att.negativePenalty ?? 0}
+                                      </div>
+                                      <div className="text-[11px] text-slate-400">
+                                        {att.incorrectCount} wrong
+                                      </div>
+                                    </td>
+                                    <td className="py-3 px-3.5 text-right font-mono tabular-nums whitespace-nowrap">
+                                      <span
+                                        className={`px-2 py-0.5 rounded font-bold ${
+                                          att.accuracyPercentage >= 70
+                                            ? "bg-emerald-500/15 text-emerald-300"
+                                            : att.accuracyPercentage >= 45
+                                              ? "bg-amber-500/15 text-amber-300"
+                                              : "bg-rose-500/15 text-rose-300"
+                                        }`}
+                                      >
+                                        {att.accuracyPercentage}%
+                                      </span>
+                                    </td>
+                                    <td className="py-3 px-3.5 whitespace-nowrap">
+                                      <div className="flex items-center gap-1.5">
+                                        {isPaused ? (
+                                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                            PAUSED / ONGOING
+                                          </span>
+                                        ) : att.cutoffCleared ? (
+                                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                            CUTOFF CLEARED
+                                          </span>
+                                        ) : (
+                                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                                            BELOW CUTOFF
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                                        {att.attemptedCount}/{att.totalQuestions} attempted · {formatClock(att.totalTimeSpentSeconds)}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              });
+                            })()}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+
+                    {/* Admin Section B: Student Subscription & Payment Dues Management (Below Student Mock Result) */}
+                    <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                            <CreditCard className="w-5 h-5 text-amber-400" />
+                            Student Subscription &amp; Payment Dues Management
+                          </h2>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Manage every student&apos;s subscription tier (Free, Prelims, Mains Tier, Part-II Tier, WBCS Executive Pass), total paid amount, and pending payment dues.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="search"
+                            value={subSearchQuery}
+                            onChange={(e) => setSubSearchQuery(e.target.value)}
+                            placeholder="Search student or plan…"
+                            className="px-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white focus:border-emerald-500 focus:outline-none w-60"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Subscription KPI Summary Bar */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div className="rounded-lg border border-slate-800 bg-slate-950/80 p-3">
+                          <div className="text-[11px] text-slate-400">Total Registered Users</div>
+                          <div className="text-xl font-bold font-mono text-white mt-0.5">
+                            {allUsers.length}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-slate-800 bg-slate-950/80 p-3">
+                          <div className="text-[11px] text-slate-400">Paid Plan Subscribers</div>
+                          <div className="text-xl font-bold font-mono text-amber-300 mt-0.5">
+                            {allUsers.filter((u) => u.subscriptionTier !== "free").length}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-slate-800 bg-slate-950/80 p-3">
+                          <div className="text-[11px] text-slate-400">Total Test Payments Collected</div>
+                          <div className="text-xl font-bold font-mono text-emerald-400 mt-0.5">
+                            ₹
+                            {allUsers
+                              .reduce((sum, u) => sum + (u.totalPaidInr ?? 0), 0)
+                              .toLocaleString("en-IN")}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-slate-800 bg-slate-950/80 p-3">
+                          <div className="text-[11px] text-slate-400">Outstanding Payment Dues</div>
+                          <div className="text-xl font-bold font-mono text-rose-400 mt-0.5">
+                            ₹
+                            {allUsers
+                              .reduce((sum, u) => sum + (u.paymentDueInr ?? 0), 0)
+                              .toLocaleString("en-IN")}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Inline Manage Student Subscription Modal / Card */}
+                      {managingStudentSub && (
+                        <form
+                          onSubmit={handleAdminManageSubscription}
+                          className="rounded-xl border border-amber-500/40 bg-slate-950 p-4 space-y-4"
+                        >
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                            <div>
+                              <h3 className="text-sm font-bold text-white">
+                                Manage Subscription &amp; Dues — {managingStudentSub.user.fullName} ({managingStudentSub.user.email})
+                              </h3>
+                              <p className="text-[11px] text-slate-400">
+                                Assign plan tier, record a payment, or set/waive outstanding payment dues.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setManagingStudentSub(null)}
+                              className="text-slate-400 hover:text-white cursor-pointer"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                            <label className="space-y-1 text-slate-300">
+                              <span>Subscription Plan Tier *</span>
+                              <select
+                                value={managingStudentSub.planTier}
+                                onChange={(e) => {
+                                  const nextTier = e.target.value as SubscriptionTier;
+                                  setManagingStudentSub((prev) =>
+                                    prev ? { ...prev, planTier: nextTier } : null
+                                  );
+                                }}
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white"
+                              >
+                                {SUBSCRIPTION_TIER_PLANS.map((p) => (
+                                  <option key={p.tier} value={p.tier}>
+                                    {p.shortLabel} (₹{p.priceInr})
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+
+                            <label className="space-y-1 text-slate-300">
+                              <span>Billing Cycle</span>
+                              <select
+                                value={managingStudentSub.billingCycle}
+                                onChange={(e) =>
+                                  setManagingStudentSub((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          billingCycle: e.target.value as
+                                            | "monthly"
+                                            | "quarterly"
+                                            | "yearly"
+                                            | "lifetime",
+                                        }
+                                      : null
+                                  )
+                                }
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white"
+                              >
+                                <option value="yearly">Yearly</option>
+                                <option value="quarterly">Quarterly</option>
+                                <option value="monthly">Monthly</option>
+                                <option value="lifetime">Lifetime</option>
+                              </select>
+                            </label>
+
+                            <label className="space-y-1 text-slate-300">
+                              <span>Additional Amount Paid Now (₹)</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step="1"
+                                value={managingStudentSub.amountPaidNowInr}
+                                onChange={(e) =>
+                                  setManagingStudentSub((prev) =>
+                                    prev ? { ...prev, amountPaidNowInr: e.target.value } : null
+                                  )
+                                }
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+                              />
+                            </label>
+
+                            <label className="space-y-1 text-slate-300">
+                              <span className="flex items-center justify-between">
+                                <span>Remaining Payment Due (₹)</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setManagingStudentSub((prev) =>
+                                      prev ? { ...prev, paymentDueInr: "0" } : null
+                                    )
+                                  }
+                                  className="text-[10px] text-emerald-400 hover:underline cursor-pointer"
+                                >
+                                  Clear Due (₹0)
+                                </button>
+                              </span>
+                              <input
+                                type="number"
+                                min={0}
+                                step="1"
+                                value={managingStudentSub.paymentDueInr}
+                                onChange={(e) =>
+                                  setManagingStudentSub((prev) =>
+                                    prev ? { ...prev, paymentDueInr: e.target.value } : null
+                                  )
+                                }
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+                              />
+                            </label>
+
+                            <label className="space-y-1 text-slate-300 sm:col-span-2 lg:col-span-4">
+                              <span>Billing / Subscription Notes</span>
+                              <input
+                                type="text"
+                                value={managingStudentSub.notes}
+                                onChange={(e) =>
+                                  setManagingStudentSub((prev) =>
+                                    prev ? { ...prev, notes: e.target.value } : null
+                                  )
+                                }
+                                placeholder="e.g., Paid ₹200 via test payment, ₹99 due next month"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white"
+                              />
+                            </label>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="submit"
+                              disabled={manageSubBusy}
+                              className="px-4 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg cursor-pointer"
+                            >
+                              {manageSubBusy ? "Saving…" : "Save Subscription & Payment Dues"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setManagingStudentSub(null)}
+                              className="px-3.5 py-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      )}
+
+                      {/* Fixed-height Vertically Scrollable Student Subscriptions Table */}
+                      <div className="max-h-96 overflow-y-auto overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/60">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead className="sticky top-0 z-10 bg-slate-950 border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400">
+                            <tr>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Aspirant</th>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Current Plan Tier</th>
+                              <th className="py-3 px-3.5 text-right whitespace-nowrap">Plan Price</th>
+                              <th className="py-3 px-3.5 text-right whitespace-nowrap">Total Paid</th>
+                              <th className="py-3 px-3.5 text-right whitespace-nowrap">Payment Due</th>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Payment Status</th>
+                              <th className="py-3 px-3.5 whitespace-nowrap">Last Transaction / Notes</th>
+                              <th className="py-3 px-3.5 text-right whitespace-nowrap">Manage</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/70">
+                            {(() => {
+                              const q = subSearchQuery.trim().toLowerCase();
+                              const filteredUsers = allUsers.filter((u) => {
+                                if (!q) return true;
+                                return (
+                                  u.fullName.toLowerCase().includes(q) ||
+                                  u.email.toLowerCase().includes(q) ||
+                                  u.subscriptionTier.toLowerCase().includes(q)
+                                );
+                              });
+
+                              if (filteredUsers.length === 0) {
+                                return (
+                                  <tr>
+                                    <td colSpan={8} className="py-8 px-4 text-center text-slate-400">
+                                      No students match your search.
+                                    </td>
+                                  </tr>
+                                );
+                              }
+
+                              return filteredUsers.map((u) => {
+                                const planMeta =
+                                  SUBSCRIPTION_TIER_PLANS.find(
+                                    (p) => p.tier === u.subscriptionTier
+                                  ) ?? SUBSCRIPTION_TIER_PLANS[0];
+                                const latestTx = allSubscriptions.find((s) => s.userId === u.id);
+                                const due = u.paymentDueInr ?? 0;
+                                const paid = u.totalPaidInr ?? 0;
+
+                                return (
+                                  <tr key={u.id} className="hover:bg-slate-900/70 transition-colors">
+                                    <td className="py-3 px-3.5">
+                                      <div className="font-semibold text-white">{u.fullName}</div>
+                                      <div className="text-[11px] text-slate-400 font-mono">
+                                        {u.email}
+                                      </div>
+                                    </td>
+                                    <td className="py-3 px-3.5 whitespace-nowrap">
+                                      <select
+                                        value={u.subscriptionTier}
+                                        onChange={(e) =>
+                                          handleAdminUpdateUser(u, {
+                                            subscriptionTier: e.target.value as SubscriptionTier,
+                                          })
+                                        }
+                                        className="px-2.5 py-1 bg-slate-900 border border-slate-700 rounded text-white text-xs"
+                                      >
+                                        {SUBSCRIPTION_TIER_PLANS.map((p) => (
+                                          <option key={p.tier} value={p.tier}>
+                                            {p.shortLabel} ({p.tier})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </td>
+                                    <td className="py-3 px-3.5 text-right font-mono tabular-nums text-slate-300">
+                                      ₹{planMeta.priceInr}
+                                    </td>
+                                    <td className="py-3 px-3.5 text-right font-mono tabular-nums font-bold text-emerald-400">
+                                      ₹{paid}
+                                    </td>
+                                    <td className="py-3 px-3.5 text-right font-mono tabular-nums">
+                                      <span
+                                        className={`font-bold ${
+                                          due > 0 ? "text-rose-400" : "text-slate-400"
+                                        }`}
+                                      >
+                                        ₹{due}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 px-3.5 whitespace-nowrap">
+                                      {due > 0 ? (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                                          PAYMENT DUE (₹{due})
+                                        </span>
+                                      ) : u.subscriptionTier !== "free" ? (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                          PAID &amp; ACTIVE
+                                        </span>
+                                      ) : (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                                          FREE TIER
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-3 px-3.5">
+                                      {latestTx ? (
+                                        <div>
+                                          <div className="font-mono text-[11px] text-amber-300">
+                                            {latestTx.transactionRef} · ₹{latestTx.amountPaidInr} ({latestTx.paymentMode})
+                                          </div>
+                                          <div className="text-[11px] text-slate-400 truncate max-w-xs">
+                                            {latestTx.notes || u.billingNotes || new Date(latestTx.createdAt).toLocaleDateString()}
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-500">
+                                          {u.billingNotes || "No payment record yet"}
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-3 px-3.5 text-right whitespace-nowrap">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setManagingStudentSub({
+                                            user: u,
+                                            planTier: u.subscriptionTier,
+                                            amountPaidNowInr: "0",
+                                            paymentDueInr: String(u.paymentDueInr ?? 0),
+                                            billingCycle: "yearly",
+                                            notes: u.billingNotes ?? "",
+                                          })
+                                        }
+                                        className="px-2.5 py-1 text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded-md cursor-pointer"
+                                      >
+                                        Manage Plan / Dues
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              });
+                            })()}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
                 )}
 
                 {/* All attempts, below the exam cards */}
@@ -2145,11 +2982,11 @@ export default function App() {
                             }
                             className="px-2.5 py-1 bg-slate-950 border border-slate-700 rounded text-white"
                           >
-                            <option value="free">free</option>
-                            <option value="pro_prelims">pro_prelims</option>
-                            <option value="wbcs_executive_pass">
-                              wbcs_executive_pass
-                            </option>
+                            {SUBSCRIPTION_TIER_PLANS.map((p) => (
+                              <option key={p.tier} value={p.tier}>
+                                {p.tier} ({p.shortLabel})
+                              </option>
+                            ))}
                           </select>
                         </td>
                         <td className="py-3 px-4 text-slate-400">
@@ -2236,6 +3073,224 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* ===================================================================
+          ASPIRANT SUBSCRIPTION & TEST PAYMENT MODAL
+          (Simulated Test Paid Amount before Razorpay integration — shared with Admin)
+      =================================================================== */}
+      {showSubscriptionModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-w-3xl rounded-2xl border border-amber-500/40 bg-slate-900 p-6 space-y-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-300">
+                  <Crown className="w-4 h-4" />
+                  WBPSC Mock Tutor Subscription Pass (Test Payment Mode)
+                </span>
+                <h2 className="text-xl font-bold text-white mt-1">
+                  {payExistingDueOnly
+                    ? "Clear Pending Subscription Dues"
+                    : "Choose Your Subscription Tier & Complete Test Payment"}
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Select a plan below and confirm the Test Paid Amount. Your plan and payment details are immediately synced with the Admin Console.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSubscriptionModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white bg-slate-800/70 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handlePurchaseSubscription} className="space-y-5">
+              {/* Plan Tier Cards */}
+              {!payExistingDueOnly && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {SUBSCRIPTION_TIER_PLANS.filter((p) => p.tier !== "free").map((plan) => {
+                    const isSelected = selectedPurchaseTier === plan.tier;
+                    return (
+                      <button
+                        key={plan.tier}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPurchaseTier(plan.tier);
+                          setTestPaidAmountInput(String(plan.priceInr));
+                        }}
+                        className={`text-left p-4 rounded-xl border-2 transition-all cursor-pointer space-y-2 ${
+                          isSelected
+                            ? "bg-amber-500/15 border-amber-400 text-white shadow-lg shadow-amber-950/30"
+                            : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                            {plan.shortLabel}
+                          </span>
+                          <span className="text-lg font-bold font-mono text-white">
+                            ₹{plan.priceInr}
+                            <span className="text-[11px] font-normal text-slate-400">/yr</span>
+                          </span>
+                        </div>
+                        <div className="text-sm font-bold text-white">
+                          {lang === "bn" ? plan.labelBn : plan.labelEn}
+                        </div>
+                        <p className="text-xs text-slate-400 leading-relaxed">
+                          {lang === "bn" ? plan.descriptionBn : plan.descriptionEn}
+                        </p>
+                        <ul className="space-y-1 pt-1">
+                          {plan.features.map((f, i) => (
+                            <li key={i} className="text-[11px] text-emerald-300 flex items-center gap-1.5">
+                              <CheckCircle2 className="w-3 h-3 shrink-0" />
+                              <span>{f}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Payment Mode & Test Paid Amount Inputs */}
+              {(() => {
+                const chosenPlan =
+                  SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === selectedPurchaseTier) ??
+                  SUBSCRIPTION_TIER_PLANS[1];
+                const existingDue = user.paymentDueInr ?? 0;
+                const targetPrice = payExistingDueOnly ? existingDue : chosenPlan.priceInr;
+                const payingNow = Math.max(0, Number(testPaidAmountInput) || 0);
+                const projectedDue = payExistingDueOnly
+                  ? Math.max(0, Number((existingDue - payingNow).toFixed(2)))
+                  : Math.max(0, Number((existingDue + (targetPrice - payingNow)).toFixed(2)));
+
+                return (
+                  <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                      <label className="space-y-1 text-slate-300">
+                        <span className="font-semibold text-amber-300">
+                          Test Paid Amount (₹ INR) *
+                        </span>
+                        <input
+                          type="number"
+                          required
+                          min={0}
+                          max={50000}
+                          step="1"
+                          value={testPaidAmountInput}
+                          onChange={(e) => setTestPaidAmountInput(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-sm"
+                        />
+                        <span className="block text-[11px] text-slate-500">
+                          Enter full fee (₹{targetPrice}) or a partial test amount to simulate payment due.
+                        </span>
+                      </label>
+
+                      <label className="space-y-1 text-slate-300">
+                        <span>Billing Cycle</span>
+                        <select
+                          value={purchaseBillingCycle}
+                          onChange={(e) =>
+                            setPurchaseBillingCycle(
+                              e.target.value as "monthly" | "quarterly" | "yearly"
+                            )
+                          }
+                          className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white"
+                        >
+                          <option value="yearly">Yearly (12 Months)</option>
+                          <option value="quarterly">Quarterly (3 Months)</option>
+                          <option value="monthly">Monthly (1 Month)</option>
+                        </select>
+                      </label>
+
+                      <label className="space-y-1 text-slate-300">
+                        <span>Reference Note (Optional)</span>
+                        <input
+                          type="text"
+                          value={purchaseNotesInput}
+                          onChange={(e) => setPurchaseNotesInput(e.target.value)}
+                          placeholder="e.g., Test payment for Prelims/Mains"
+                          className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white"
+                        />
+                      </label>
+                    </div>
+
+                    {/* Live Summary Strip */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-900 border border-slate-800 px-4 py-3 text-xs font-mono">
+                      <div>
+                        <span className="text-slate-400">Selected Plan Fee: </span>
+                        <strong className="text-white">₹{targetPrice}</strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Test Amount Paying Now: </span>
+                        <strong className="text-emerald-400">₹{payingNow}</strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Balance Payment Due: </span>
+                        <strong className={projectedDue > 0 ? "text-rose-400" : "text-emerald-400"}>
+                          ₹{projectedDue}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Student's Past Transactions */}
+              {mySubscriptions.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-slate-400">
+                    Your Recent Subscription &amp; Test Payment Records ({mySubscriptions.length})
+                  </p>
+                  <div className="max-h-32 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 divide-y divide-slate-800/70 text-xs">
+                    {mySubscriptions.map((sub) => (
+                      <div key={sub.id} className="px-3.5 py-2 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <span className="font-semibold text-white">{sub.planName}</span>
+                          <span className="ml-2 font-mono text-[11px] text-amber-300">
+                            {sub.transactionRef}
+                          </span>
+                        </div>
+                        <div className="font-mono text-[11px] text-slate-300">
+                          Paid: <strong className="text-emerald-400">₹{sub.amountPaidInr}</strong> · Due:{" "}
+                          <strong className={sub.amountDueInr > 0 ? "text-rose-400" : "text-slate-400"}>
+                            ₹{sub.amountDueInr}
+                          </strong>{" "}
+                          · {new Date(sub.createdAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-end gap-3 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowSubscriptionModal(false)}
+                  className="px-4 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={purchaseBusy}
+                  className="inline-flex items-center gap-1.5 px-5 py-2.5 text-xs font-semibold bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+                >
+                  <CreditCard className="w-4 h-4" />
+                  {purchaseBusy
+                    ? "Processing Test Payment…"
+                    : payExistingDueOnly
+                      ? `Confirm Test Payment (₹${testPaidAmountInput || 0})`
+                      : `Complete Test Purchase & Unlock ${SUBSCRIPTION_TIER_LABELS[selectedPurchaseTier]}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

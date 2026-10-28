@@ -1,12 +1,16 @@
 import React from "react";
-import { ArrowLeft, Award, ChevronRight, Clock, FileText, PauseCircle, Play, RotateCcw, Shuffle } from "lucide-react";
-import type {
-  AttemptSummaryDto,
-  SeriesKind,
-  StudentExamDto,
-  StudentSeriesDto,
+import { ArrowLeft, Award, ChevronRight, Clock, Crown, FileText, Lock, PauseCircle, Play, RotateCcw, Shuffle } from "lucide-react";
+import {
+  SERIES_KIND_LABELS,
+  SUBSCRIPTION_TIER_LABELS,
+  canAccessSeriesTier,
+  type AttemptSummaryDto,
+  type SeriesKind,
+  type StudentExamDto,
+  type StudentSeriesDto,
+  type SubscriptionTier,
+  type UserRole,
 } from "../../packages/shared-types/src/index";
-import { SERIES_KIND_LABELS } from "../../packages/shared-types/src/index";
 
 // ============================================================================
 // Student "Mock Tests" library: one stacked card per exam type with its test
@@ -143,9 +147,12 @@ export function ExamSeriesView({
   exam,
   series,
   lang,
+  userTier = "free",
+  userRole = "aspirant",
   onBack,
   onStartSeries,
   onResumeSeries,
+  onUnlockPaidSeries,
   onStartRandom,
   children,
 }: {
@@ -153,9 +160,12 @@ export function ExamSeriesView({
   /** undefined while loading */
   series: StudentSeriesDto[] | undefined;
   lang: Lang;
+  userTier?: SubscriptionTier;
+  userRole?: UserRole;
   onBack: () => void;
   onStartSeries: (series: StudentSeriesDto) => void;
   onResumeSeries?: (series: StudentSeriesDto) => void;
+  onUnlockPaidSeries?: (series: StudentSeriesDto) => void;
   onStartRandom: () => void;
   /** Rendered under the series, e.g. the student's history for this exam */
   children?: React.ReactNode;
@@ -222,21 +232,45 @@ export function ExamSeriesView({
                   .map((s) => {
                     const attemptsCount = s.myAttemptCount ?? 0;
                     const isPaused = Boolean(s.myPausedAttemptId);
+                    const isPaidSeries = s.accessType === "paid";
+                    const hasAccess = canAccessSeriesTier(
+                      userTier,
+                      s.accessType ?? "free",
+                      s.requiredTier ?? "free",
+                      userRole
+                    );
+                    const reqTierLabel =
+                      SUBSCRIPTION_TIER_LABELS[s.requiredTier || "pro_prelims"] || "Pro Prelims";
+
                     return (
                       <li
                         key={s.id}
                         className={`flex flex-col gap-3 rounded-lg border p-4 transition-colors ${
                           isPaused
                             ? "border-amber-500/50 bg-amber-950/15 hover:border-amber-400"
-                            : "border-slate-800 bg-slate-950/60 hover:border-slate-700"
+                            : isPaidSeries && !hasAccess
+                              ? "border-amber-500/35 bg-slate-950/80 hover:border-amber-500/60"
+                              : "border-slate-800 bg-slate-950/60 hover:border-slate-700"
                         }`}
                       >
                         <div className="flex items-start gap-2.5">
                           <FileText className="w-4 h-4 mt-0.5 shrink-0 text-slate-500" />
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold text-white">
-                              {lang === "bn" ? s.name.bn : s.name.en}
-                            </p>
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <p className="text-sm font-semibold text-white">
+                                {lang === "bn" ? s.name.bn : s.name.en}
+                              </p>
+                              {isPaidSeries ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/35">
+                                  <Crown className="w-3 h-3" />
+                                  PAID · {reqTierLabel}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35">
+                                  FREE
+                                </span>
+                              )}
+                            </div>
                             {(lang === "bn" ? s.description.bn : s.description.en) && (
                               <p className="text-xs text-slate-400">
                                 {lang === "bn" ? s.description.bn : s.description.en}
@@ -289,7 +323,20 @@ export function ExamSeriesView({
                           </div>
                         )}
 
-                        {isPaused && onResumeSeries ? (
+                        {!hasAccess ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUnlockPaidSeries ? onUnlockPaidSeries(s) : onStartSeries(s)
+                            }
+                            className="mt-auto inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg cursor-pointer"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                            {lang === "bn"
+                              ? `সাবস্ক্রিপশন কিনুন (${reqTierLabel})`
+                              : `Unlock Paid Test (${reqTierLabel})`}
+                          </button>
+                        ) : isPaused && onResumeSeries ? (
                           <div className="mt-auto flex items-center gap-2">
                             <button
                               type="button"
