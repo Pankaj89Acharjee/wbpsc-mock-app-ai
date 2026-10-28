@@ -9,6 +9,7 @@ import {
   questions,
   studentSubscriptions,
   subjects,
+  subscriptionPlans,
   subtopics,
   testAttempts,
   users,
@@ -24,6 +25,7 @@ import {
   type PausedAttemptDto,
   type SeriesAccessType,
   type StudentSubscriptionDto,
+  type SubscriptionPlanDto,
   type SubscriptionTier,
 } from "../../../../packages/shared-types/src/index";
 import { requireUser } from "../lib/auth";
@@ -32,6 +34,65 @@ import { toUserDto } from "./auth";
 
 type AttemptRow = typeof testAttempts.$inferSelect;
 type ExamRow = typeof exams.$inferSelect;
+type SubscriptionPlanRow = typeof subscriptionPlans.$inferSelect;
+
+export function toSubscriptionPlanDto(p: SubscriptionPlanRow): SubscriptionPlanDto {
+  return {
+    id: p.id,
+    tier: p.tier,
+    shortLabel: p.shortLabel,
+    labelEn: p.labelEn,
+    labelBn: p.labelBn || p.labelEn,
+    priceInr: Number(p.priceInr ?? 0),
+    billingCycle: p.billingCycle,
+    durationDays: p.durationDays,
+    descriptionEn: p.descriptionEn,
+    descriptionBn: p.descriptionBn || p.descriptionEn,
+    features: Array.isArray(p.features) ? p.features : [],
+    isActive: p.isActive,
+    displayOrder: p.displayOrder,
+    createdAt: p.createdAt.toISOString(),
+    updatedAt: p.updatedAt.toISOString(),
+  };
+}
+
+/** Ensures the default 5 subscription plans exist in PostgreSQL. */
+export async function ensureSubscriptionPlansSeeded(): Promise<SubscriptionPlanDto[]> {
+  let rows = await db
+    .select()
+    .from(subscriptionPlans)
+    .orderBy(asc(subscriptionPlans.displayOrder), asc(subscriptionPlans.createdAt));
+
+  if (rows.length === 0) {
+    await db
+      .insert(subscriptionPlans)
+      .values(
+        SUBSCRIPTION_TIER_PLANS.map((p, idx) => ({
+          tier: p.tier,
+          shortLabel: p.shortLabel,
+          labelEn: p.labelEn,
+          labelBn: p.labelBn,
+          priceInr: String(p.priceInr),
+          billingCycle: p.billingCycle,
+          durationDays: p.durationDays ?? (p.tier === "free" ? 0 : 365),
+          descriptionEn: p.descriptionEn,
+          descriptionBn: p.descriptionBn,
+          features: p.features,
+          isActive: true,
+          displayOrder: p.displayOrder ?? idx + 1,
+        }))
+      )
+      .onConflictDoNothing({ target: subscriptionPlans.tier });
+
+    rows = await db
+      .select()
+      .from(subscriptionPlans)
+      .orderBy(asc(subscriptionPlans.displayOrder), asc(subscriptionPlans.createdAt));
+  }
+
+  return rows.map(toSubscriptionPlanDto);
+}
+
 /** The test series an attempt was for; it sets the cutoff */
 export type SeriesRef = {
   id: string;
@@ -293,7 +354,13 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
     return { deleted: true };
   });
 
-  /** 6. GET /me/subscriptions — student's own subscription & test payment history */
+  /** 6. GET /me/plans — active subscription plans available for Aspirants */
+  fastify.get("/plans", async () => {
+    const allPlans = await ensureSubscriptionPlansSeeded();
+    return { plans: allPlans.filter((p) => p.isActive) };
+  });
+
+  /** 7. GET /me/subscriptions — student's own subscription & test payment history */
   fastify.get("/subscriptions", async (request) => {
     const rows = await db
       .select()
@@ -323,10 +390,10 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
   });
 
   /**
-   * 7. POST /me/subscriptions/purchase
+   * 8. POST /me/subscriptions/purchase
    * Allows a logged-in aspirant to buy/upgrade a subscription plan or pay pending dues
    * using a simulated Test Payment (before live Razorpay integration).
-   * Updates `users` and records a row in `student_subscriptions` visible to Admin immediately.
+   * Admins do not purchase plans.
    */
   const PurchaseSubscriptionBodySchema = z.object({
     planTier: SubscriptionTierSchema,
@@ -337,14 +404,22 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
   });
 
   fastify.post("/subscriptions/purchase", async (request, reply) => {
+    if (request.user?.role === "admin") {
+      return reply.status(403).send({
+        error: "Admins manage subscription plans and do not purchase aspirant plans.",
+      });
+    }
     const parsed = PurchaseSubscriptionBodySchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: formatIssues(parsed.error.issues) });
     }
     const body = parsed.data;
     const currentUser = request.user!;
+    const allPlans = await ensureSubscriptionPlansSeeded();
     const planMeta =
+      allPlans.find((p) => p.tier === body.planTier) ??
       SUBSCRIPTION_TIER_PLANS.find((p) => p.tier === body.planTier) ??
+      allPlans[1] ??
       SUBSCRIPTION_TIER_PLANS[1];
 
     const result = await db.transaction(async (tx) => {

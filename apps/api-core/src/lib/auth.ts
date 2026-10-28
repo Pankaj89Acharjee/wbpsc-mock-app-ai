@@ -10,7 +10,7 @@ import {
   type JsonWebKey,
 } from "node:crypto";
 import { promisify } from "node:util";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, lte, ne } from "drizzle-orm";
 import { db } from "../db/index";
 import { users } from "../db/schema";
 
@@ -129,14 +129,56 @@ export function clearSessionCookie(reply: FastifyReply) {
 
 // ─── Request guards ───────────────────────────────────────────────────────────
 
-/** Loads the signed-in user (fresh from DB so role/active changes apply at once). */
+/**
+ * Automatically switches any non-admin user whose subscription has expired
+ * (`subscriptionExpiresAt <= NOW()`) back to the `'free'` plan.
+ */
+export async function syncExpiredSubscriptions(): Promise<void> {
+  await db
+    .update(users)
+    .set({
+      subscriptionTier: "free",
+      subscriptionExpiresAt: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        ne(users.role, "admin"),
+        ne(users.subscriptionTier, "free"),
+        isNotNull(users.subscriptionExpiresAt),
+        lte(users.subscriptionExpiresAt, new Date())
+      )
+    );
+}
+
+/** Loads the signed-in user (fresh from DB so role/active/expiry changes apply at once). */
 export async function loadSessionUser(request: FastifyRequest): Promise<UserRow | null> {
   if (request.user) return request.user;
   const token = readCookie(request, SESSION_COOKIE);
   const claims = token ? verifySession(token) : null;
   if (!claims) return null;
-  const [user] = await db.select().from(users).where(eq(users.id, claims.sub)).limit(1);
+  let [user] = await db.select().from(users).where(eq(users.id, claims.sub)).limit(1);
   if (!user || !user.isActive) return null;
+
+  // Automatically switch aspirant to 'free' plan if subscription has ended
+  if (
+    user.role !== "admin" &&
+    user.subscriptionTier !== "free" &&
+    user.subscriptionExpiresAt &&
+    user.subscriptionExpiresAt.getTime() <= Date.now()
+  ) {
+    const [downgraded] = await db
+      .update(users)
+      .set({
+        subscriptionTier: "free",
+        subscriptionExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, user.id))
+      .returning();
+    if (downgraded) user = downgraded;
+  }
+
   request.user = user;
   return user;
 }
