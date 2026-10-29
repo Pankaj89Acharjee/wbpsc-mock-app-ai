@@ -7,6 +7,7 @@ export type ActiveNav =
   | "weakness-tutor"
   | "descriptive-eval"
   | "daily-ca"
+  | "payment-console"
   | "admin-console";
 
 export type AdminSubTab =
@@ -15,7 +16,9 @@ export type AdminSubTab =
   | "exams"
   | "cache-attempts"
   | "bulk-import"
-  | "series";
+  | "series"
+  | "analytics"
+  | "payments";
 
 /** 303 -> "5min 3sec" */
 export const formatClock = (sec: number) => `${Math.floor(sec / 60)}min ${sec % 60}sec`;

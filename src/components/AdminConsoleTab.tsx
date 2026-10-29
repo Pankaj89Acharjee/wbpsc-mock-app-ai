@@ -1,15 +1,18 @@
-import React from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   SUBSCRIPTION_TIER_PLANS,
   type AttemptSummaryDto,
   type CachedNoteRefDto,
   type StudentExamDto,
+  type StudentSubscriptionDto,
   type SubscriptionPlanDto,
   type SubscriptionTier,
   type UserDto,
   type UserRole,
 } from "../../packages/shared-types/src/index";
 import QuestionBankAdmin from "../admin/QuestionBankAdmin";
+import AdminAnalyticsCharts from "./AdminAnalyticsCharts";
+import PaymentManagementConsole from "./PaymentManagementConsole";
 import { AdminSubscriptionPlansManager } from "./SubscriptionModal";
 import type { AdminSubTab } from "./types";
 
@@ -19,6 +22,7 @@ interface AdminConsoleTabProps {
   examsList: StudentExamDto[];
   cachedNotes: CachedNoteRefDto[];
   allAttempts: AttemptSummaryDto[];
+  allSubscriptions: StudentSubscriptionDto[];
   plans: SubscriptionPlanDto[];
   onChangeAdminTab: (tab: AdminSubTab) => void;
   onUpdateUser: (
@@ -47,6 +51,7 @@ export default function AdminConsoleTab({
   examsList,
   cachedNotes,
   allAttempts,
+  allSubscriptions,
   plans,
   onChangeAdminTab,
   onUpdateUser,
@@ -56,81 +61,138 @@ export default function AdminConsoleTab({
 }: AdminConsoleTabProps) {
   const planCatalog = plans.length > 0 ? plans : SUBSCRIPTION_TIER_PLANS;
 
+  // Refs & state for the centered, taller, smooth-sliding Admin Sub-Navigation Menu
+  const menuTrackRef = useRef<HTMLDivElement | null>(null);
+  const tabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [sliderBox, setSliderBox] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    opacity: number;
+  }>({ left: 0, top: 0, width: 0, height: 0, opacity: 0 });
+
+  const updateMenuSlider = useCallback(() => {
+    const trackEl = menuTrackRef.current;
+    const btnEl = tabButtonRefs.current[adminTab];
+    if (!trackEl || !btnEl) {
+      setSliderBox((prev) => ({ ...prev, opacity: 0 }));
+      return;
+    }
+    const trackRect = trackEl.getBoundingClientRect();
+    const btnRect = btnEl.getBoundingClientRect();
+    setSliderBox({
+      left: btnRect.left - trackRect.left,
+      top: btnRect.top - trackRect.top,
+      width: btnRect.width,
+      height: btnRect.height,
+      opacity: 1,
+    });
+  }, [adminTab]);
+
+  useEffect(() => {
+    updateMenuSlider();
+    window.addEventListener("resize", updateMenuSlider);
+    return () => window.removeEventListener("resize", updateMenuSlider);
+  }, [
+    updateMenuSlider,
+    allUsers.length,
+    planCatalog.length,
+    examsList.length,
+    cachedNotes.length,
+    allAttempts.length,
+    allSubscriptions.length,
+  ]);
+
+  const adminTabsList: Array<{ id: AdminSubTab; label: string }> = [
+    { id: "users", label: `1. Users & RBAC (${allUsers.length})` },
+    { id: "plans", label: `2. Subscription Plans (${planCatalog.length})` },
+    { id: "exams", label: `3. Exams & Syllabus (${examsList.length})` },
+    {
+      id: "cache-attempts",
+      label: `4. AI Cache (${cachedNotes.length}) & Attempts (${allAttempts.length})`,
+    },
+    { id: "bulk-import", label: "5. Question Bank (Add · Bulk · AI)" },
+    { id: "series", label: "6. Exam Series" },
+    { id: "analytics", label: "7. Revenue & Trend Charts" },
+    { id: "payments", label: `8. Payments Console (${allSubscriptions.length})` },
+  ];
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
         <div>
           <h1 className="text-2xl font-bold text-white">ADMIN Control Panel</h1>
           <p className="text-xs text-slate-400 mt-1">
-            Users &amp; RBAC, subscription plans, exams &amp; syllabus, the question bank, AI cache and
-            all attempts — stored in PostgreSQL.
+            Users &amp; RBAC, subscription plans, exams &amp; syllabus, the question bank, AI cache, analytics charts, and payment management — stored in PostgreSQL.
           </p>
         </div>
       </div>
 
-      {/* Admin Sub-Navigation Tabs */}
-      <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg w-fit">
-        <button
-          onClick={() => onChangeAdminTab("users")}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-            adminTab === "users"
-              ? "bg-slate-800 text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
+      {/* Centered, Taller, Professional Animated Admin Sub-Navigation Menu */}
+      <div className="w-full flex justify-center py-1">
+        <div
+          ref={menuTrackRef}
+          role="tablist"
+          aria-label="Admin Control Panel Navigation"
+          className="relative mx-auto flex flex-wrap items-center justify-center gap-1.5 px-3 py-2 min-h-[56px] bg-slate-900/95 border border-slate-800/90 rounded-2xl shadow-lg shadow-slate-950/60 w-fit max-w-full"
         >
-          1. Users &amp; RBAC ({allUsers.length})
-        </button>
-        <button
-          onClick={() => onChangeAdminTab("plans")}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-            adminTab === "plans"
-              ? "bg-slate-800 text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          2. Subscription Plans ({planCatalog.length})
-        </button>
-        <button
-          onClick={() => onChangeAdminTab("exams")}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-            adminTab === "exams"
-              ? "bg-slate-800 text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          3. Exams &amp; Syllabus ({examsList.length})
-        </button>
-        <button
-          onClick={() => onChangeAdminTab("cache-attempts")}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-            adminTab === "cache-attempts"
-              ? "bg-slate-800 text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          4. AI Cache ({cachedNotes.length}) &amp; Attempts ({allAttempts.length})
-        </button>
-        <button
-          onClick={() => onChangeAdminTab("bulk-import")}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-            adminTab === "bulk-import"
-              ? "bg-slate-800 text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          5. Question Bank (Add · Bulk · AI)
-        </button>
-        <button
-          onClick={() => onChangeAdminTab("series")}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-            adminTab === "series"
-              ? "bg-slate-800 text-white"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          6. Exam Series
-        </button>
+          {/* Smooth Sliding Highlight Indicator Pill */}
+          <span
+            aria-hidden="true"
+            style={{
+              transform: `translate(${sliderBox.left}px, ${sliderBox.top}px)`,
+              width: `${sliderBox.width}px`,
+              height: `${sliderBox.height}px`,
+              opacity: sliderBox.opacity,
+            }}
+            className="pointer-events-none absolute top-0 left-0 rounded-xl bg-gradient-to-r from-amber-500/20 via-slate-800/95 to-emerald-500/20 border border-amber-400/40 shadow-md transition-all duration-300 ease-out"
+          />
+
+          {adminTabsList.map((tab) => {
+            const isActive = adminTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={isActive}
+                ref={(el) => {
+                  tabButtonRefs.current[tab.id] = el;
+                }}
+                onClick={() => onChangeAdminTab(tab.id)}
+                className={`relative z-10 px-4 py-2.5 text-xs sm:text-[13px] rounded-xl transition-all duration-200 whitespace-nowrap cursor-pointer ${
+                  isActive
+                    ? "text-white font-bold bg-white/5 shadow-sm scale-[1.01]"
+                    : "text-slate-400 font-medium hover:text-slate-100 hover:bg-slate-800/40"
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      {/* Sub-Tab 7: Admin Analytics & Trend Charts */}
+      {adminTab === "analytics" && (
+        <AdminAnalyticsCharts
+          allUsers={allUsers}
+          allSubscriptions={allSubscriptions}
+          examsList={examsList}
+          plans={plans}
+        />
+      )}
+
+      {/* Sub-Tab 8: Admin Payment Management Console */}
+      {adminTab === "payments" && (
+        <PaymentManagementConsole
+          allUsers={allUsers}
+          allSubscriptions={allSubscriptions}
+          plans={plans}
+          onRefreshAdminData={onPlansChanged}
+          onNotify={onNotify}
+        />
+      )}
 
       {/* Sub-Tab 6: Exam Series */}
       {adminTab === "series" && (

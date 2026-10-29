@@ -1,12 +1,15 @@
 import React from "react";
 import type {
   AiNoteDto,
+  AttemptSummaryDto,
   CachedNoteRefDto,
   MasteryDto,
 } from "../../packages/shared-types/src/index";
+import AspirantAnalyticsDashboard from "./AspirantAnalyticsDashboard";
 import type { SupportedLang } from "./types";
 
 interface WeaknessTutorTabProps {
+  myAttempts: AttemptSummaryDto[];
   myMastery: MasteryDto[];
   cachedNotes: CachedNoteRefDto[];
   selectedNote: AiNoteDto | null;
@@ -17,6 +20,7 @@ interface WeaknessTutorTabProps {
 }
 
 export default function WeaknessTutorTab({
+  myAttempts,
   myMastery,
   cachedNotes,
   selectedNote,
@@ -26,17 +30,28 @@ export default function WeaknessTutorTab({
   onOpenOrGenerateAiNote,
 }: WeaknessTutorTabProps) {
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-      <div className="lg:col-span-6 space-y-4">
-        <div>
-          <h1 className="text-xl font-bold text-white">
-            01. Subtopic Weakness &amp; Mastery Matrix
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Sorted by lowest accuracy first. Click any subtopic to open its L2
-            cached AI study note (or generate on cache miss).
-          </p>
-        </div>
+    <div className="space-y-8">
+      {/* Comprehensive Aspirant Performance, Subject Breakdown & Weak/Strong Diagnostics */}
+      <AspirantAnalyticsDashboard
+        myAttempts={myAttempts}
+        myMastery={myMastery}
+        cachedNotes={cachedNotes}
+        generatingTopicSlug={generatingTopicSlug}
+        lang={lang}
+        onOpenOrGenerateAiNote={onOpenOrGenerateAiNote}
+      />
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 pt-2 border-t border-slate-800/80">
+        <div className="lg:col-span-6 space-y-4">
+          <div>
+            <h1 className="text-xl font-bold text-white">
+              01. Subtopic Weakness &amp; Mastery Matrix
+            </h1>
+            <p className="text-xs text-slate-400 mt-1">
+              Sorted by lowest accuracy first. Click any subtopic to open its L2
+              cached AI study note (or generate on cache miss).
+            </p>
+          </div>
 
         {myMastery.length === 0 ? (
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-xs text-slate-400 space-y-3">
@@ -52,7 +67,7 @@ export default function WeaknessTutorTab({
             </button>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="max-h-[520px] overflow-y-auto pr-1 space-y-3">
             {myMastery.map((m) => {
               const isCached = cachedNotes.some(
                 (n) =>
@@ -149,6 +164,7 @@ export default function WeaknessTutorTab({
             Select a subtopic on the left to open its revision note.
           </div>
         )}
+      </div>
       </div>
     </div>
   );

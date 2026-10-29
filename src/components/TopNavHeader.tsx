@@ -92,7 +92,7 @@ export default function TopNavHeader({
               opacity: navSliderStyle.opacity,
             }}
             className={`pointer-events-none absolute top-1.5 bottom-1.5 left-0 rounded-xl transition-all duration-300 ease-out ${
-              activeNav === "admin-console"
+              activeNav === "admin-console" || activeNav === "payment-console"
                 ? "bg-amber-400/20 border border-amber-400/35 shadow-sm"
                 : "bg-slate-100/15 border border-slate-200/20 shadow-sm"
             }`}
@@ -104,12 +104,16 @@ export default function TopNavHeader({
               { id: "descriptive-eval" as const, label: "Part-II Evaluator" },
               { id: "daily-ca" as const, label: "Daily Current Affairs" },
               ...(isUserAdmin
-                ? [{ id: "admin-console" as const, label: "Admin Console" }]
+                ? [
+                    { id: "payment-console" as const, label: "Payments Console" },
+                    { id: "admin-console" as const, label: "Admin Console" },
+                  ]
                 : []),
             ] as const
           ).map((tab) => {
             const isActive = activeNav === tab.id;
-            const isAdminTab = tab.id === "admin-console";
+            const isAdminTab =
+              tab.id === "admin-console" || tab.id === "payment-console";
             return (
               <button
                 key={tab.id}
@@ -230,6 +234,7 @@ export default function TopNavHeader({
               <option value="weakness-tutor">Weakness &amp; Tutor</option>
               <option value="descriptive-eval">Part-II Evaluator</option>
               <option value="daily-ca">Daily Current Affairs</option>
+              {isUserAdmin && <option value="payment-console">Payments Console</option>}
               {isUserAdmin && <option value="admin-console">Admin Console</option>}
             </select>
 

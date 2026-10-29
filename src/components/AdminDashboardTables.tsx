@@ -1,9 +1,10 @@
 import React, { useState } from "react";
-import { Award, CreditCard, RefreshCw, X } from "lucide-react";
+import { Award, CreditCard, ExternalLink, RefreshCw, X } from "lucide-react";
 import {
   SUBSCRIPTION_TIER_PLANS,
   getSubscriptionTierLabel,
   type AttemptSummaryDto,
+  type StudentExamDto,
   type StudentSubscriptionDto,
   type SubscriptionPlanDto,
   type SubscriptionTier,
@@ -11,6 +12,7 @@ import {
   type UserRole,
 } from "../../packages/shared-types/src/index";
 import { api } from "../api";
+import AdminAnalyticsCharts from "./AdminAnalyticsCharts";
 import { AdminSubscriptionPlansManager } from "./SubscriptionModal";
 import { formatClock } from "./types";
 
@@ -18,8 +20,10 @@ interface AdminDashboardTablesProps {
   allUsers: UserDto[];
   allAttempts: AttemptSummaryDto[];
   allSubscriptions: StudentSubscriptionDto[];
+  examsList: StudentExamDto[];
   plans: SubscriptionPlanDto[];
   onRefreshAdminData: () => void;
+  onOpenPaymentConsole?: () => void;
   onUpdateUser: (
     target: UserDto,
     updates: Partial<
@@ -42,8 +46,10 @@ export default function AdminDashboardTables({
   allUsers,
   allAttempts,
   allSubscriptions,
+  examsList,
   plans,
   onRefreshAdminData,
+  onOpenPaymentConsole,
   onUpdateUser,
   onNotify,
 }: AdminDashboardTablesProps) {
@@ -102,6 +108,16 @@ export default function AdminDashboardTables({
 
   return (
     <div className="space-y-8 pt-2">
+      {/* ===================================================================
+          0. ADMIN ANALYTICS: SUBSCRIPTION TRENDS, EXAM PRICE TRENDS & REVENUE
+      =================================================================== */}
+      <AdminAnalyticsCharts
+        allUsers={allUsers}
+        allSubscriptions={allSubscriptions}
+        examsList={examsList}
+        plans={plans}
+      />
+
       {/* ===================================================================
           1. EVERY STUDENT'S EXAM PERFORMANCE TABLE (Below 01. Mock Test Series)
       =================================================================== */}
@@ -310,6 +326,16 @@ export default function AdminDashboardTables({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {onOpenPaymentConsole && (
+              <button
+                type="button"
+                onClick={onOpenPaymentConsole}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded-lg cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Open Payments &amp; Issues Console
+              </button>
+            )}
             <input
               type="search"
               value={subSearchQuery}
