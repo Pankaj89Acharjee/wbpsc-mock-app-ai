@@ -205,8 +205,10 @@ ${JSON.stringify(params.existing)}
 }
 
 // ============================================================================
-// 3. Auto-Translate & Enrich Question Draft (English → Bengali + Explanation)
+// 3. Auto-Translate & Enrich Question Draft (Bidirectional: EN ↔ BN + Explanation)
 // ============================================================================
+
+const BENGALI_CHAR_REGEX = /[\u0980-\u09FF]/;
 
 export async function translateAndEnrichQuestionDraft(
   draft: StagedQuestionDraft
@@ -216,9 +218,10 @@ export async function translateAndEnrichQuestionDraft(
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
     contents: `You are a bilingual WBPSC exam editor (English & Bengali / বাংলা).
-Given the following MCQ draft, translate any missing or incomplete Bengali ("bn") fields from the English ("en") text using formal WBPSC question paper Bengali with accurate conjuncts (যুক্তাক্ষর).
-Also, if the English or Bengali explanation is blank, write a clear, accurate 2–3 sentence explanation for why option ${draft.correctOption} is the correct answer.
-Preserve any existing non-empty English or Bengali text unless it is blank.
+Given the following MCQ draft:
+- If the Bengali ("bn") fields are blank or incomplete, translate from the English ("en") text into formal WBPSC question paper Bengali with accurate conjuncts (যুক্তাক্ষর).
+- If the English ("en") fields are blank or contain Bengali script, translate from the Bengali ("bn") text into clear, accurate academic English.
+- If the English or Bengali explanation is blank, write a clear, accurate 2–3 sentence explanation in BOTH English ("en") and Bengali ("bn") for why option ${draft.correctOption} is the correct answer.
 
 Input Draft:
 Stem (EN): ${draft.stem.en}
@@ -260,10 +263,16 @@ Explanation (BN): ${draft.explanation.bn}`,
     explanation?: BilingualText;
   };
 
-  const pickText = (orig: BilingualText, gen?: BilingualText): BilingualText => ({
-    en: orig.en.trim() || gen?.en?.trim() || "",
-    bn: orig.bn.trim() || gen?.bn?.trim() || orig.en.trim(),
-  });
+  const pickText = (orig: BilingualText, gen?: BilingualText): BilingualText => {
+    const origEnHasBn = BENGALI_CHAR_REGEX.test(orig.en);
+    const en =
+      (!origEnHasBn && orig.en.trim()) ||
+      gen?.en?.trim() ||
+      orig.en.trim() ||
+      orig.bn.trim();
+    const bn = orig.bn.trim() || gen?.bn?.trim() || (origEnHasBn ? orig.en.trim() : en);
+    return { en, bn };
+  };
 
   return {
     ...draft,
@@ -280,6 +289,7 @@ Explanation (BN): ${draft.explanation.bn}`,
 
 // ============================================================================
 // 4. Extract & Categorize Questions from Uploaded Question Paper (PDF / Image)
+//    Supports Bengali-only PDF/Image → Auto-Convert to English + Bilingual Bank
 // ============================================================================
 
 export interface ExtractedPaperQuestion {
@@ -381,7 +391,7 @@ function sanitizeExtractedQuestion(
 ): ExtractedPaperQuestion | null {
   const stemEn = String(q.stem?.en || q.stem?.bn || "").trim();
   const stemBn = String(q.stem?.bn || q.stem?.en || "").trim();
-  if (!stemEn) return null;
+  if (!stemEn && !stemBn) return null;
 
   const ensureOpt = (opt: Partial<BilingualText> | undefined, fallbackLabel: string): BilingualText => {
     const en = String(opt?.en || opt?.bn || fallbackLabel).trim();
@@ -434,11 +444,129 @@ function sanitizeExtractedQuestion(
   };
 }
 
+/**
+ * Post-verification pass: if any question extracted from a Bengali PDF/Image still has
+ * Bengali Unicode characters in its `.en` fields, translates those `.en` fields into
+ * clean English while keeping the original Bengali in `.bn`.
+ */
+async function ensureEnglishTranslatedFromBengali(
+  ai: GoogleGenAI,
+  questions: ExtractedPaperQuestion[]
+): Promise<ExtractedPaperQuestion[]> {
+  const needsTranslationIndices: number[] = [];
+  questions.forEach((q, idx) => {
+    if (
+      BENGALI_CHAR_REGEX.test(q.stem.en) ||
+      BENGALI_CHAR_REGEX.test(q.options.A.en) ||
+      BENGALI_CHAR_REGEX.test(q.options.B.en) ||
+      BENGALI_CHAR_REGEX.test(q.options.C.en) ||
+      BENGALI_CHAR_REGEX.test(q.options.D.en)
+    ) {
+      needsTranslationIndices.push(idx);
+    }
+  });
+
+  if (needsTranslationIndices.length === 0) return questions;
+
+  // Translate in chunks of 25
+  const updated = [...questions];
+  for (let start = 0; start < needsTranslationIndices.length; start += 25) {
+    const sliceIdx = needsTranslationIndices.slice(start, start + 25);
+    const payload = sliceIdx.map((idx) => ({
+      idx,
+      stem_bn: updated[idx].stem.bn || updated[idx].stem.en,
+      option_a_bn: updated[idx].options.A.bn || updated[idx].options.A.en,
+      option_b_bn: updated[idx].options.B.bn || updated[idx].options.B.en,
+      option_c_bn: updated[idx].options.C.bn || updated[idx].options.C.en,
+      option_d_bn: updated[idx].options.D.bn || updated[idx].options.D.en,
+      explanation_bn: updated[idx].explanation.bn || updated[idx].explanation.en,
+    }));
+
+    try {
+      const resp = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Translate the following Bengali (বাংলা) WBPSC Multiple-Choice Questions into accurate, natural academic English. Return ONLY the English translations mapped by "idx":
+${JSON.stringify(payload)}`,
+        config: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              items: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    idx: { type: Type.INTEGER },
+                    stem_en: { type: Type.STRING },
+                    option_a_en: { type: Type.STRING },
+                    option_b_en: { type: Type.STRING },
+                    option_c_en: { type: Type.STRING },
+                    option_d_en: { type: Type.STRING },
+                    explanation_en: { type: Type.STRING },
+                  },
+                  required: [
+                    "idx",
+                    "stem_en",
+                    "option_a_en",
+                    "option_b_en",
+                    "option_c_en",
+                    "option_d_en",
+                    "explanation_en",
+                  ],
+                },
+              },
+            },
+            required: ["items"],
+          },
+        },
+      });
+
+      const parsed = JSON.parse(resp.text || "{}") as {
+        items?: Array<{
+          idx: number;
+          stem_en: string;
+          option_a_en: string;
+          option_b_en: string;
+          option_c_en: string;
+          option_d_en: string;
+          explanation_en: string;
+        }>;
+      };
+
+      for (const tr of parsed.items || []) {
+        const target = updated[tr.idx];
+        if (!target) continue;
+        target.stem = {
+          en: tr.stem_en.trim() || target.stem.en,
+          bn: target.stem.bn.trim() || target.stem.en,
+        };
+        target.options = {
+          A: { en: tr.option_a_en.trim() || target.options.A.en, bn: target.options.A.bn },
+          B: { en: tr.option_b_en.trim() || target.options.B.en, bn: target.options.B.bn },
+          C: { en: tr.option_c_en.trim() || target.options.C.en, bn: target.options.C.bn },
+          D: { en: tr.option_d_en.trim() || target.options.D.en, bn: target.options.D.bn },
+        };
+        target.explanation = {
+          en: tr.explanation_en.trim() || target.explanation.en,
+          bn: target.explanation.bn.trim() || target.explanation.en,
+        };
+      }
+    } catch {
+      // Keep original if translation fallback fails
+    }
+  }
+
+  return updated;
+}
+
 export async function extractQuestionsFromMediaWithAi(params: {
   examSlug: string;
   examTitleEn: string;
   fileBase64: string;
   mimeType: string;
+  languageMode?: "auto" | "bn_to_en" | "en_to_bn";
   existingCategories: Array<{
     subjectEn: string;
     chapterEn: string;
@@ -463,6 +591,14 @@ export async function extractQuestionsFromMediaWithAi(params: {
           .join("\n")
       : "- General Studies > Indian History > Indian National Movement\n- General Studies > Indian Polity > Constitution\n- Arithmetic > Quantitative Aptitude > Ratio & Percentage\n- General English > Grammar & Vocabulary > Usage";
 
+  const bnFocusInstruction =
+    params.languageMode === "bn_to_en"
+      ? `CRITICAL BENGALI-TO-ENGLISH CONVERSION INSTRUCTION:
+This uploaded PDF/Image contains questions written in Bengali (বাংলা).
+1. Accurately OCR the original Bengali text into every "bn" field (stem.bn, options.A.bn, B.bn, C.bn, D.bn, explanation.bn).
+2. Translate every single Bengali question stem, all 4 options (A, B, C, D), and the explanation into clear, grammatically accurate English in the corresponding "en" fields (stem.en, options.A.en, B.en, C.en, D.en, explanation.en). NEVER leave Bengali script inside any ".en" field!`
+      : `2. Provide BOTH English ("en") and Bengali ("bn" বাংলা) versions for the stem, all 4 options, and a concise 1-sentence explanation. If the paper is in Bengali (বাংলা), translate every question and option into clear English ("en") while keeping the Bengali in ("bn"). If the paper is in English, translate it into formal WBPSC Bengali ("bn").`;
+
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
     contents: {
@@ -478,10 +614,10 @@ export async function extractQuestionsFromMediaWithAi(params: {
 
 For every MCQ found in the document:
 1. Extract the question stem and options A, B, C, D.
-2. Provide BOTH English ("en") and Bengali ("bn" বাংলা) versions for the stem, all 4 options, and a concise 1-sentence explanation. If the paper is only in English, translate it into formal WBPSC Bengali. If the paper is only in Bengali, translate it into clear English.
+${bnFocusInstruction}
 3. Determine the factually correct option ("A", "B", "C", or "D").
 4. Set "confidence" as a decimal between 0.0 and 1.0 (e.g. 0.95).
-5. Categorize the question into the best matching Subject, Chapter, and Subtopic. Prefer matching one of the exam's existing categories below, or provide a clean standard WBPSC Subject > Chapter > Subtopic (in both English and Bengali):
+5. Categorize the question into the best matching Subject, Chapter, and Subtopic (with English names in subject_en, chapter_en, subtopic_en and Bengali names in subject_bn, chapter_bn, subtopic_bn). Prefer matching one of the exam's existing categories below, or provide a clean standard WBPSC Subject > Chapter > Subtopic:
 
 Existing Exam Syllabus Categories:
 ${categoryCatalog}`,
@@ -545,9 +681,11 @@ ${categoryCatalog}`,
   });
 
   const rawItems = parseOrSalvageExtractedQuestions(response.text || "");
-  return rawItems
+  const sanitized = rawItems
     .map((item, idx) => sanitizeExtractedQuestion(item, idx))
     .filter((item): item is ExtractedPaperQuestion => item !== null);
+
+  return ensureEnglishTranslatedFromBengali(ai, sanitized);
 }
 
 // ============================================================================

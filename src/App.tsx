@@ -31,6 +31,7 @@ import DescriptiveEvaluatorTab from "./components/DescriptiveEvaluatorTab";
 import DailyCurrentAffairsTab from "./components/DailyCurrentAffairsTab";
 import AdminConsoleTab from "./components/AdminConsoleTab";
 import SubscriptionModal from "./components/SubscriptionModal";
+import ExamOrientedNotesTab from "./components/ExamOrientedNotesTab";
 import {
   formatClock,
   toMockQuestion,
@@ -959,6 +960,24 @@ export default function App() {
               </>
             )}
           </div>
+        )}
+
+        {/* ====================================================================
+            TAB 1B: EXAM-ORIENTED NOTES FOR QUICK REVISION + 30-MCQ TOPIC TESTS
+        ==================================================================== */}
+        {activeNav === "revision-notes" && (
+          <ExamOrientedNotesTab
+            user={user}
+            lang={lang}
+            onOpenSubscriptionModal={() => {
+              setModalInitialTier(
+                user.subscriptionTier === "free" ? "pro_prelims" : user.subscriptionTier
+              );
+              setModalInitialDueOnly(false);
+              setShowSubscriptionModal(true);
+            }}
+            onNotify={notify}
+          />
         )}
 
         {/* ====================================================================

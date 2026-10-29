@@ -4,6 +4,7 @@ export type SupportedLang = "en" | "bn";
 
 export type ActiveNav =
   | "mock-center"
+  | "revision-notes"
   | "weakness-tutor"
   | "descriptive-eval"
   | "daily-ca"

@@ -168,3 +168,55 @@ Use these crisp explanations if an interviewer asks *"What does X actually do un
 ### 9. **Multimodal Vision OCR Evaluation**
 * **Simple meaning:** Instead of chaining an old OCR tool (like Tesseract, which struggles with handwritten Bengali matras/conjuncts) into a separate text grader, a **multimodal model** reads the raw image pixels and evaluates the writing in a single pass.
 * **Behind the scenes in our app:** In `/ai/evaluate-descriptive`, when a student uploads a photo of their handwritten Clerkship Part-II answer sheet, we pass the raw image bytes via `types.Part.from_bytes(data=image_bytes, mime_type=...)` directly to `gemini-2.5-flash`. It transcribes the Bengali/English handwriting and grades Grammar, Content, and Word Limit in one unified step.
+
+---
+
+## 5. Scaling to 1,000,000+ Questions in the Question Bank (Architecture Guide)
+
+When the Question Bank grows to **1,000,000+ MCQs**, a human Admin cannot manually browse or tick checkboxes to assemble a 100-question WBPSC Clerkship or 200-question WBCS Prelims Test Series. Even a naive `ORDER BY RANDOM() LIMIT 100` in PostgreSQL will perform a full sequential scan and disk sort over 1M rows (taking several seconds per query and producing unbalanced papers).
+
+Here is the production-grade **4-Layer Hybrid Selection & Deduplication Architecture** to assemble test series and search across 1M+ questions in `< 25 ms`:
+
+### A. Deterministic Stratified Blueprint Sampling (Primary Test Assembly Engine)
+Instead of manual picking, the Admin defines an **Exam Blueprint Rule** (e.g., *Total = 100 Qs | History: 15, Polity: 10, Geography: 15, Arithmetic: 30, English: 30 | Difficulty Mix: 30% Easy, 50% Medium, 20% Hard | Min 25% PYQs*).
+* **How it works in PostgreSQL:**
+  1. Partition the blueprint into `(subject_id, difficulty, is_pyq)` buckets.
+  2. Exclude questions already used in recent sibling Test Series (`NOT EXISTS (SELECT 1 FROM mock_series_questions msq WHERE ...)`).
+  3. Use a **Composite B-Tree Index** on `(exam_id, subject, difficulty, is_active, id)` paired with `TABLESAMPLE SYSTEM_ROWS` or indexed random key-range jumping rather than `ORDER BY RANDOM()`.
+* **Why deterministic matching wins here:** Exam rules (exact subject quota, exact difficulty ratio, zero overlap with Series #1–#10) are hard constraints that must be 100% deterministic.
+
+### B. Hybrid Search for Admin Curated Selection (Deterministic Filter + Fuzzy Trigram + Vector Semantic Search)
+When an Admin wants to search 1M questions for a specific theme (e.g., *"Viceroys who passed Press Acts"* or a Bengali phrase with slight spelling variations):
+1. **Stage 1 — Deterministic Metadata Pre-Filter (B-Tree / GIN Index):**
+   Filters 1,000,000 rows down to ~15,000 rows instantly using `WHERE exam_id = $1 AND subject = $2 AND difficulty = $3`.
+2. **Stage 2 — Fuzzy Lexical Matching (`pg_trgm` Trigram GIN Index):**
+   Handles typos, transliteration differences (*"Chittaranjan"* vs *"Chitta Ranjan"*), and near-duplicate stem detection using PostgreSQL's `pg_trgm` extension (`question_text->>'en' % $query` and `similarity(stem, $query) > 0.35`).
+   * Also used at **ingestion time** to block duplicate questions before they enter the 1M bank (`similarity > 0.85` = auto-flag as duplicate).
+3. **Stage 3 — Semantic Vector Matching (`pgvector` HNSW Index):**
+   Matches conceptual queries even when exact words differ (e.g., searching *"Montagu-Chelmsford Reforms"* automatically finds questions phrased as *"Government of India Act 1919 Dyarchy"*).
+   * At 1M rows, use an **HNSW (`Hierarchical Navigable Small World`) index** (`CREATE INDEX ON questions USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)`), which searches 1,000,000 vectors in `< 15 ms` with >98% recall.
+4. **Stage 4 — Reciprocal Rank Fusion (RRF):**
+   Combines the Trigram Fuzzy score + Vector Semantic score + Historical Discrimination Index (how well the question separates top scorers from low scorers) to pick the top $K$ questions.
+
+---
+
+## 6. AI Agents & Agentic Workflows (Current State vs. Next-Gen Agents)
+
+### Current State in the Codebase
+Right now, the application uses **Single-Turn Structured LLM Pipelines & RAG Workflows** (not autonomous multi-step agents):
+* **Weakness Tutor (`rag.py`):** Deterministic SQL finds weak subtopics $\rightarrow$ 3-tier cache check $\rightarrow$ `pgvector` retrieval $\rightarrow$ single structured Gemini call.
+* **Media OCR & Bilingual Ingestion (`aiEnrichment.ts`):** Multimodal Gemini extracts MCQs from PDF/Images and translates `BN` $\leftrightarrow$ `EN` with a verification pass.
+* **Exam-Oriented Revision Notes (`revisionNotes.ts`):** Admin triggers structured note + visual diagram card + 30-MCQ synthesis.
+
+### Why & How to Introduce True AI Agents (Tool-Using, Multi-Step Loop)
+In an interview, explain that an **AI Agent** differs from a standard LLM call because it has **1) A Goal, 2) Tools (SQL queries, Web Search, Python code execution), 3) Memory/State, and 4) A Self-Reflection / Verification Loop**.
+
+Here are the **5 High-Impact Agents** to introduce into the WBPSC platform:
+
+| Agent Name | Role & Goal | Tools Used by the Agent | Self-Correction / Critic Loop |
+| :--- | :--- | :--- | :--- |
+| **1. Autonomous Question Bank Auditor & Deduplicator Agent** | Continuously audits newly uploaded PDFs/questions for factual accuracy, syllabus drift, and duplicates. | `search_similar_questions_pgvector`, `check_trigram_duplicate`, `verify_historical_date_fact`, `update_question_status` | **Fact-Critic Step:** If an extracted MCQ claims *"Lord Curzon partitioned Bengal in 1906"*, the Critic Agent flags the year error (`1905`), rewrites the explanation, and marks it for Admin review. |
+| **2. Adaptive Study Planner & Socratic Coach Agent** | Creates a personalized 7-day revision schedule after every mock test and quizzes the student interactively on weak subtopics. | `get_student_weak_subtopics_sql`, `fetch_revision_note`, `schedule_remedial_quiz`, `record_subtopic_mastery` | Monitors if accuracy on a weak topic (e.g., *Viceroys*) improves from `<40%` to `>75%` across 2 remedial sets before marking the goal complete. |
+| **3. Autonomous Paper Setter (Blueprint Architect) Agent** | Builds a balanced 100/200-question Mock Test Series from a 1M question bank from a natural-language Admin prompt (*"Create a high-difficulty Clerkship Mock focusing on 2024–25 pattern"*). | `query_question_distribution_sql`, `sample_stratified_questions`, `generate_missing_subtopic_mcqs`, `validate_paper_balance` | Checks if any subtopic is over-represented (e.g., 8 questions on the same Viceroy) and swaps redundant items automatically until the paper passes diversity constraints. |
+| **4. Daily Current Affairs Web-Scout & Exam-Mapper Agent** | Runs on a daily cron schedule, gathers West Bengal & National current events, maps each news item to static WBPSC syllabus topics, and drafts bilingual MCQs + PDF digests. | `google_search_grounding`, `map_to_wbpsc_syllabus_vector`, `generate_bilingual_ca_mcqs`, `compile_pdf_digest` | Filters out non-exam gossip/politics and retains only exam-relevant appointments, GI tags, awards, schemes, and constitutional updates. |
+| **5. Clerkship Part-II Multi-Agent Rubric Grader** | Uses a 3-agent panel (**Grammar Agent**, **Content & Structure Agent**, **Chief Examiner Aggregator**) to grade descriptive Bengali/English essays, precis, and translations. | `ocr_handwriting_vision`, `count_precis_words_deterministic`, `lookup_idiom_dictionary` | Uses deterministic word-count math (instead of LLM token guessing) for the 1/3rd Precis rule and reconciles score variance between sub-graders. |

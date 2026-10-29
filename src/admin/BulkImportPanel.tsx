@@ -149,6 +149,7 @@ export default function BulkImportPanel({
   const [creating, setCreating] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [extractingPaper, setExtractingPaper] = useState(false);
+  const [paperLangMode, setPaperLangMode] = useState<"auto" | "bn_to_en" | "en_to_bn">("auto");
 
   const [batches, setBatches] = useState<IngestionBatchSummary[]>([]);
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -477,6 +478,7 @@ export default function BulkImportPanel({
 
             <button
               onClick={() => {
+                setPaperLangMode("auto");
                 setExtractingPaper(true);
                 setCreating(false);
                 setGenerating(false);
@@ -484,6 +486,18 @@ export default function BulkImportPanel({
               className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 rounded-lg cursor-pointer"
             >
               <FileUp className="w-3.5 h-3.5" /> Upload Question Paper (PDF / Image)
+            </button>
+
+            <button
+              onClick={() => {
+                setPaperLangMode("bn_to_en");
+                setExtractingPaper(true);
+                setCreating(false);
+                setGenerating(false);
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-lg cursor-pointer"
+            >
+              <Languages className="w-3.5 h-3.5" /> Bengali PDF/Image → English Question Bank
             </button>
 
             <button
@@ -662,6 +676,7 @@ export default function BulkImportPanel({
       {extractingPaper && (
         <PaperUploadPanel
           exam={exam}
+          initialLanguageMode={paperLangMode}
           onClose={() => setExtractingPaper(false)}
           onExtracted={async (res) => {
             setExtractingPaper(false);
@@ -679,7 +694,7 @@ export default function BulkImportPanel({
               kind: "success",
               text: `Extracted ${res.total} question(s) from question paper using ${res.modelUsed} · ${
                 res.insertedLive > 0
-                  ? `${res.insertedLive} inserted directly into the Live Question Bank`
+                  ? `${res.insertedLive} converted to English & Bengali and inserted directly into the Live Question Bank`
                   : `${res.pendingReview} ready in Review Queue`
               }${
                 res.categoriesCreated > 0
@@ -1311,11 +1326,13 @@ function ReviewFilterBar({
 
 function PaperUploadPanel({
   exam,
+  initialLanguageMode = "auto",
   onClose,
   onExtracted,
   onError,
 }: {
   exam: ExamDto;
+  initialLanguageMode?: "auto" | "bn_to_en" | "en_to_bn";
   onClose: () => void;
   onExtracted: (res: ExtractMediaQuestionsResult & { insertedLive: number }) => Promise<void>;
   onError: (msg: string) => void;
@@ -1329,7 +1346,14 @@ function PaperUploadPanel({
   const [source, setSource] = useState<"pyq" | "educator">("pyq");
   const [pyqYear, setPyqYear] = useState<number>(new Date().getFullYear() - 1);
   const [insertDirectlyToBank, setInsertDirectlyToBank] = useState(true);
+  const [languageMode, setLanguageMode] = useState<"auto" | "bn_to_en" | "en_to_bn">(
+    initialLanguageMode
+  );
   const [busy, setBusy] = useState(false);
+
+  React.useEffect(() => {
+    setLanguageMode(initialLanguageMode);
+  }, [initialLanguageMode]);
 
   const handleMediaPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1382,6 +1406,7 @@ function PaperUploadPanel({
             source,
             pyqYear: source === "pyq" ? pyqYear : null,
             insertDirectlyToBank,
+            languageMode,
           },
         }
       );
@@ -1402,13 +1427,31 @@ function PaperUploadPanel({
         <div>
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
             <FileUp className="w-4 h-4 text-sky-400" />
-            Upload Question Paper (PDF or Image) → Auto-Categorize &amp; Insert into DB
+            {languageMode === "bn_to_en"
+              ? "Bengali (বাংলা) PDF or Image → Auto-Convert to English & Add to Question Bank"
+              : "Upload Question Paper (PDF or Image) → Auto-Categorize & Insert into Question Bank"}
           </h3>
           <p className="text-xs text-slate-300 mt-1 max-w-2xl">
-            Upload a PDF or photo/scan of a question paper for <strong>{exam.titleEn}</strong>. AI
-            Vision extracts every MCQ, translates missing English/Bengali text, writes detailed
-            explanations, automatically matches or creates the right{" "}
-            <strong>Subject → Chapter → Topic</strong> category, and inserts them into the database.
+            {languageMode === "bn_to_en" ? (
+              <>
+                Upload a <strong>Bengali (বাংলা)</strong> question paper in PDF or Image format for{" "}
+                <strong>{exam.titleEn}</strong>. AI Vision OCR reads the Bengali script,{" "}
+                <strong className="text-amber-300">
+                  automatically translates every question stem, all 4 options, and the explanation
+                  into English
+                </strong>
+                , maps the right <strong>Subject → Chapter → Topic</strong>, and saves both English
+                &amp; Bengali into the Question Bank.
+              </>
+            ) : (
+              <>
+                Upload a PDF or photo/scan of a question paper for <strong>{exam.titleEn}</strong>.
+                AI Vision extracts every MCQ, translates missing English/Bengali text, writes
+                detailed explanations, automatically matches or creates the right{" "}
+                <strong>Subject → Chapter → Topic</strong> category, and inserts them into the
+                Question Bank.
+              </>
+            )}
           </p>
         </div>
         <button
@@ -1420,15 +1463,57 @@ function PaperUploadPanel({
         </button>
       </div>
 
+      {/* Language Conversion Mode Selector */}
+      <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl bg-slate-950 border border-slate-800">
+        <span className="text-xs font-semibold text-slate-300 mr-2">Paper Language Mode:</span>
+        {(
+          [
+            [
+              "bn_to_en",
+              "বাংলা (Bengali) PDF/Image → Auto-Convert to English",
+              "border-amber-400/50 bg-amber-400/15 text-amber-200",
+            ],
+            [
+              "auto",
+              "Auto-Detect (Bengali / English / Bilingual)",
+              "border-sky-400/50 bg-sky-500/15 text-sky-200",
+            ],
+            [
+              "en_to_bn",
+              "English PDF/Image → Auto-Convert to বাংলা",
+              "border-emerald-400/50 bg-emerald-500/15 text-emerald-200",
+            ],
+          ] as const
+        ).map(([mode, label, activeCls]) => (
+          <button
+            key={mode}
+            type="button"
+            disabled={busy}
+            onClick={() => setLanguageMode(mode)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+              languageMode === mode
+                ? activeCls
+                : "border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <label className="flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-sky-500/40 hover:border-sky-400 rounded-xl cursor-pointer text-center bg-slate-950/50">
         <FileUp className="w-6 h-6 text-sky-400" />
         <span className="text-xs font-medium text-white">
           {selectedMedia
             ? `${selectedMedia.name} (${selectedMedia.sizeKb} KB)`
-            : "Click to choose a Question Paper PDF (.pdf) or Image (.jpg, .png, .webp)"}
+            : languageMode === "bn_to_en"
+              ? "Click to choose a Bengali (বাংলা) Question Paper PDF (.pdf) or Image (.jpg, .png, .webp)"
+              : "Click to choose a Question Paper PDF (.pdf) or Image (.jpg, .png, .webp)"}
         </span>
         <span className="text-[11px] text-slate-400">
-          Supports English, Bengali, or bilingual question papers up to 15 MB
+          {languageMode === "bn_to_en"
+            ? "Automatically converts Bengali questions & options into English and adds them to the Question Bank (up to 15 MB)"
+            : "Supports English, Bengali, or bilingual question papers up to 15 MB"}
         </span>
         <input
           type="file"
@@ -1488,8 +1573,12 @@ function PaperUploadPanel({
         >
           <Sparkles className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />
           {busy
-            ? "Extracting & Categorizing Questions from Paper… (20–60s)"
-            : "Extract Questions & Save to Database"}
+            ? languageMode === "bn_to_en"
+              ? "Converting Bengali PDF/Image to English & Saving to Question Bank… (20–60s)"
+              : "Extracting & Categorizing Questions from Paper… (20–60s)"
+            : languageMode === "bn_to_en"
+              ? "Convert Bengali Questions to English & Add to Question Bank"
+              : "Extract Questions & Save to Question Bank"}
         </button>
       </div>
     </div>
@@ -1568,8 +1657,8 @@ function JobEditor({
   };
 
   const handleAutoTranslate = async () => {
-    if (!d.stem.en.trim()) {
-      setTranslateNotice("Type the English question stem first, then click Auto-Translate.");
+    if (!d.stem.en.trim() && !d.stem.bn.trim()) {
+      setTranslateNotice("Type the question stem in either English or বাংলা first, then click Auto-Translate.");
       return;
     }
     setTranslating(true);
@@ -1581,7 +1670,7 @@ function JobEditor({
       });
       setD(res.draft);
       setDirty(true);
-      setTranslateNotice("Bengali translation & explanation filled in!");
+      setTranslateNotice("Bilingual translation (English ↔ বাংলা) & explanation filled in!");
     } catch (err) {
       setTranslateNotice(`Translation failed: ${(err as Error).message}`);
     } finally {
@@ -1596,11 +1685,16 @@ function JobEditor({
   };
 
   const hasEnglishStemAndOptions =
-    Boolean(d.stem.en.trim()) &&
-    Boolean(d.options.A.en.trim()) &&
-    Boolean(d.options.B.en.trim()) &&
-    Boolean(d.options.C.en.trim()) &&
-    Boolean(d.options.D.en.trim());
+    (Boolean(d.stem.en.trim()) &&
+      Boolean(d.options.A.en.trim()) &&
+      Boolean(d.options.B.en.trim()) &&
+      Boolean(d.options.C.en.trim()) &&
+      Boolean(d.options.D.en.trim())) ||
+    (Boolean(d.stem.bn.trim()) &&
+      Boolean(d.options.A.bn.trim()) &&
+      Boolean(d.options.B.bn.trim()) &&
+      Boolean(d.options.C.bn.trim()) &&
+      Boolean(d.options.D.bn.trim()));
 
   const inputCls =
     "w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white disabled:opacity-70";

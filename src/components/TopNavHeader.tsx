@@ -100,6 +100,7 @@ export default function TopNavHeader({
           {(
             [
               { id: "mock-center" as const, label: "Mock Tests" },
+              { id: "revision-notes" as const, label: "Exam-Oriented Notes" },
               { id: "weakness-tutor" as const, label: "Weakness & Tutor" },
               { id: "descriptive-eval" as const, label: "Part-II Evaluator" },
               { id: "daily-ca" as const, label: "Daily Current Affairs" },
@@ -231,6 +232,7 @@ export default function TopNavHeader({
               className="md:hidden px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200"
             >
               <option value="mock-center">Mock Tests</option>
+              <option value="revision-notes">Exam-Oriented Notes</option>
               <option value="weakness-tutor">Weakness &amp; Tutor</option>
               <option value="descriptive-eval">Part-II Evaluator</option>
               <option value="daily-ca">Daily Current Affairs</option>

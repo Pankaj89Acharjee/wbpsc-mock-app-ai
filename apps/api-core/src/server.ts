@@ -9,6 +9,7 @@ import { examRoutes } from "./routes/exam";
 import { ingestionRoutes } from "./routes/ingestion";
 import { syllabusRoutes } from "./routes/syllabus";
 import { seriesRoutes } from "./routes/series";
+import { revisionNotesRoutes } from "./routes/revisionNotes";
 import { closeDbConnection, ensureDatabaseReady, queryClient } from "./db/index";
 import { pendingMigrations, runMigrations } from "./db/migrate";
 
@@ -78,6 +79,9 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
 
   // AI tutor notes & descriptive evaluation (proxied to internal api-ai)
   await app.register(aiRoutes, { prefix: "/ai" });
+
+  // Exam-Oriented Quick Revision Notes + Visuals + 30-MCQ Topic Practice Engine
+  await app.register(revisionNotesRoutes, { prefix: "/revision-notes" });
 
   // User management & all attempts (admin only)
   await app.register(adminRoutes, { prefix: "/admin" });
