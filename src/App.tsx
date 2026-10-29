@@ -613,7 +613,7 @@ export default function App() {
         }));
 
   return (
-    <div className="min-h-screen bg-[#0B0F17] text-slate-100 flex flex-col">
+    <div className="min-h-screen bg-[#0B0F17] text-slate-100 flex flex-col overflow-x-hidden">
       {/* Top Navbar with Semi-Rounded Sliding Pill Indicator & Role-Aware Plan Action */}
       <TopNavHeader
         user={user}
