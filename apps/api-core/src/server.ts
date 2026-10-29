@@ -10,6 +10,7 @@ import { ingestionRoutes } from "./routes/ingestion";
 import { syllabusRoutes } from "./routes/syllabus";
 import { seriesRoutes } from "./routes/series";
 import { revisionNotesRoutes } from "./routes/revisionNotes";
+import { currentAffairsRoutes } from "./routes/currentAffairs";
 import { closeDbConnection, ensureDatabaseReady, queryClient } from "./db/index";
 import { pendingMigrations, runMigrations } from "./db/migrate";
 
@@ -82,6 +83,9 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
 
   // Exam-Oriented Quick Revision Notes + Visuals + 30-MCQ Topic Practice Engine
   await app.register(revisionNotesRoutes, { prefix: "/revision-notes" });
+
+  // Autonomous Current Affairs Web-Scout & Syllabus-Mapper Agent + Multi-Month Archive
+  await app.register(currentAffairsRoutes, { prefix: "/current-affairs" });
 
   // User management & all attempts (admin only)
   await app.register(adminRoutes, { prefix: "/admin" });

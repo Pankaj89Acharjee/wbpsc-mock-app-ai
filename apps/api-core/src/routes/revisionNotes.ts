@@ -1153,16 +1153,16 @@ async function seedDefaultRevisionTopics(): Promise<void> {
       'লর্ড ক্যানিং থেকে লর্ড মাউন্টব্যাটেন পর্যন্ত সকল ভাইসরয়ের গুরুত্বপূর্ণ আইন, কমিশন ও ৩০টি বাছাই করা MCQ প্র্যাকটিস সেট।',
       ${viceroyMarkdownEn},
       ${viceroyMarkdownBn},
-      ${queryClient.json([
+      ${JSON.stringify([
         "First Census (1872) = Lord Mayo (non-synchronous), whereas First Regular Decennial Census (1881) = Lord Ripon.",
         "Delhi Durbar 1877 = Lord Lytton; Delhi Durbar 1903 = Lord Curzon; Delhi Durbar 1911 (Capital shift) = Lord Hardinge II.",
         "Congress attended ONLY the Second Round Table Conference (1931) after the Gandhi-Irwin Pact.",
-      ])},
-      ${queryClient.json([
+      ])}::jsonb,
+      ${JSON.stringify([
         "প্রথম জনগণনা (১৮৭২) = লর্ড মেয়ো, কিন্তু প্রথম নিয়মিত দশবার্ষিকী জনগণনা (১৮৮১) = লর্ড রিপন।",
         "১৮৭৭ দিল্লি দরবার = লর্ড লিটন; ১৯০৩ দিল্লি দরবার = লর্ড কার্জন; ১৯১১ দিল্লি দরবার (রাজধানী স্থানান্তর) = দ্বিতীয় লর্ড হার্ডিঞ্জ।",
         "গান্ধী-আরউইন চুক্তির পর কংগ্রেস শুধুমাত্র দ্বিতীয় গোলটেবিল বৈঠকে (১৯৩১) অংশগ্রহণ করেছিল।",
-      ])},
+      ])}::jsonb,
       ${JSON.stringify(viceroyVisuals)}::jsonb
     )
     RETURNING id
@@ -1187,10 +1187,10 @@ async function seedDefaultRevisionTopics(): Promise<void> {
           ${setRow.id},
           ${viceroyTopic.id},
           ${i + 1},
-          ${queryClient.json(q.stem)},
-          ${queryClient.json(q.options)},
+          ${JSON.stringify(q.stem)}::jsonb,
+          ${JSON.stringify(q.options)}::jsonb,
           ${q.correctOption},
-          ${queryClient.json(q.explanation)},
+          ${JSON.stringify(q.explanation)}::jsonb,
           ${q.difficulty},
           ${q.examTag}
         )
@@ -1335,16 +1335,16 @@ async function seedDefaultRevisionTopics(): Promise<void> {
       'ডব্লিউবিপিএসসি ক্লার্কশিপ এবং ডব্লিউবিসিএস প্রিলিমস ইংরেজি গ্রামারের বাক্য রূপান্তর, ভয়েস ও ডিগ্রি পরিবর্তনের শর্ট নোটস এবং ৩০টি প্র্যাকটিস প্রশ্ন।',
       ${engMarkdownEn},
       ${engMarkdownBn},
-      ${queryClient.json([
+      ${JSON.stringify([
         "Never pair 'No sooner' with 'when' or 'then' — always use 'than' (No sooner had ... than).",
         "In Passive Voice, 'know', 'marry', and 'oblige' take 'to' (known to me), NOT 'by'.",
         "'One of the + superlative' always takes a PLURAL noun and maps to 'Very few' in Positive degree.",
-      ])},
-      ${queryClient.json([
+      ])}::jsonb,
+      ${JSON.stringify([
         "'No sooner'-এর পর সর্বদা 'than' বসে ('when' বা 'then' বসে না)।",
         "Passive Voice-এ 'know' ক্রিয়ার পর 'by' না বসে সর্বদা 'to' বসে ('known to me')।",
         "'One of the + superlative'-এর পর সর্বদা বহুবচন বিশেষ্য বসে এবং Positive Degree-তে 'Very few' হয়।",
-      ])},
+      ])}::jsonb,
       ${JSON.stringify(engVisuals)}::jsonb
     )
     RETURNING id
@@ -1369,10 +1369,10 @@ async function seedDefaultRevisionTopics(): Promise<void> {
           ${setRow.id},
           ${engTopic.id},
           ${i + 1},
-          ${queryClient.json(q.stem)},
-          ${queryClient.json(q.options)},
+          ${JSON.stringify(q.stem)}::jsonb,
+          ${JSON.stringify(q.options)}::jsonb,
           ${q.correctOption},
-          ${queryClient.json(q.explanation)},
+          ${JSON.stringify(q.explanation)}::jsonb,
           ${q.difficulty},
           ${q.examTag}
         )
@@ -1978,8 +1978,8 @@ export const revisionNotesRoutes: FastifyPluginAsync = async (fastify) => {
         ${noteData.summaryBn},
         ${noteData.contentMarkdownEn},
         ${noteData.contentMarkdownBn},
-        ${queryClient.json(noteData.examTrapsEn)},
-        ${queryClient.json(noteData.examTrapsBn)},
+        ${JSON.stringify(noteData.examTrapsEn)}::jsonb,
+        ${JSON.stringify(noteData.examTrapsBn)}::jsonb,
         ${JSON.stringify(noteData.visuals)}::jsonb,
         ${user.id}
       )
@@ -2011,10 +2011,10 @@ export const revisionNotesRoutes: FastifyPluginAsync = async (fastify) => {
           ${setRow.id},
           ${createdTopic.id},
           ${i + 1},
-          ${queryClient.json(q.stem)},
-          ${queryClient.json(q.options)},
+          ${JSON.stringify(q.stem)}::jsonb,
+          ${JSON.stringify(q.options)}::jsonb,
           ${q.correctOption},
-          ${queryClient.json(q.explanation)},
+          ${JSON.stringify(q.explanation)}::jsonb,
           ${q.difficulty},
           ${q.examTag || "WBPSC High-Yield"}
         )
@@ -2131,10 +2131,10 @@ export const revisionNotesRoutes: FastifyPluginAsync = async (fastify) => {
           ${createdSet.id},
           ${id},
           ${i + 1},
-          ${queryClient.json(q.stem)},
-          ${queryClient.json(q.options)},
+          ${JSON.stringify(q.stem)}::jsonb,
+          ${JSON.stringify(q.options)}::jsonb,
           ${q.correctOption},
-          ${queryClient.json(q.explanation)},
+          ${JSON.stringify(q.explanation)}::jsonb,
           ${q.difficulty},
           ${q.examTag || "WBPSC Topic Practice"}
         )
@@ -2217,7 +2217,7 @@ export const revisionNotesRoutes: FastifyPluginAsync = async (fastify) => {
         ${maxScore},
         ${accuracyPercentage},
         ${timeSpentSeconds},
-        ${queryClient.json(answers)}
+        ${JSON.stringify(answers)}::jsonb
       )
       RETURNING id, created_at
     `;

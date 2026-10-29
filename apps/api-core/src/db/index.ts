@@ -22,6 +22,16 @@ export const queryClient = postgres(connectionString, {
 
 export const db = drizzle(queryClient, { schema });
 
+// Drizzle's postgres-js driver replaces queryClient.options.serializers["114"] and ["3802"]
+// with an identity function `(val) => val` because Drizzle pre-stringifies JSON params.
+// Restoring a string-aware serializer ensures raw `queryClient` / `queryClient.json(...)`
+// calls with Arrays or Objects serialize to JSON strings instead of throwing ERR_INVALID_ARG_TYPE,
+// while keeping Drizzle's pre-stringified JSON strings untouched.
+const safeJsonSerializer = (val: unknown) =>
+  typeof val === "string" ? val : JSON.stringify(val);
+queryClient.options.serializers["114"] = safeJsonSerializer;
+queryClient.options.serializers["3802"] = safeJsonSerializer;
+
 /**
  * Fails fast with a clear message when PostgreSQL is unreachable, instead of
  * starting with a broken (or different) database.

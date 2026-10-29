@@ -19,7 +19,8 @@ export type AdminSubTab =
   | "bulk-import"
   | "series"
   | "analytics"
-  | "payments";
+  | "payments"
+  | "current-affairs";
 
 /** 303 -> "5min 3sec" */
 export const formatClock = (sec: number) => `${Math.floor(sec / 60)}min ${sec % 60}sec`;

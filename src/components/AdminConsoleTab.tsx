@@ -13,6 +13,7 @@ import {
 import QuestionBankAdmin from "../admin/QuestionBankAdmin";
 import AdminAnalyticsCharts from "./AdminAnalyticsCharts";
 import PaymentManagementConsole from "./PaymentManagementConsole";
+import DailyCurrentAffairsTab from "./DailyCurrentAffairsTab";
 import { AdminSubscriptionPlansManager } from "./SubscriptionModal";
 import type { AdminSubTab } from "./types";
 
@@ -116,6 +117,7 @@ export default function AdminConsoleTab({
     { id: "series", label: "6. Exam Series" },
     { id: "analytics", label: "7. Revenue & Trend Charts" },
     { id: "payments", label: `8. Payments Console (${allSubscriptions.length})` },
+    { id: "current-affairs", label: "9. Current Affairs Agent" },
   ];
 
   return (
@@ -373,6 +375,18 @@ export default function AdminConsoleTab({
             ))}
           </div>
         </div>
+      )}
+
+      {/* Sub-Tab 9: Autonomous Current Affairs Agent & Multi-Month Archive Dashboard */}
+      {adminTab === "current-affairs" && (
+        <DailyCurrentAffairsTab
+          user={allUsers.find((u) => u.role === "admin") || allUsers[0]}
+          lang="en"
+          onError={(err, fallback) =>
+            onNotify("error", err instanceof Error ? err.message : fallback)
+          }
+          onNotify={onNotify}
+        />
       )}
     </div>
   );

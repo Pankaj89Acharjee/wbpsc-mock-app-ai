@@ -1004,10 +1004,15 @@ export default function App() {
         )}
 
         {/* ====================================================================
-            TAB 4: AUTOMATED BILINGUAL DAILY CURRENT AFFAIRS DIGEST
+            TAB 4: AUTOMATED BILINGUAL DAILY CURRENT AFFAIRS DIGEST & AGENT
         ==================================================================== */}
         {activeNav === "daily-ca" && (
-          <DailyCurrentAffairsTab lang={lang} onError={handleApiError} />
+          <DailyCurrentAffairsTab
+            user={user}
+            lang={lang}
+            onError={handleApiError}
+            onNotify={notify}
+          />
         )}
 
         {/* ====================================================================
