@@ -213,6 +213,21 @@ In an interview, explain that an **AI Agent** differs from a standard LLM call b
 
 Here are the **5 High-Impact Agents** to introduce into the WBPSC platform:
 
+1. **Autonomous Question Bank Auditor & Fact-Critic Agent**:
+Runs a multi-step loop over newly uploaded PDFs: checks `pg_trgm` + `pgvector` for duplicates, verifies historical dates/articles/amendments via a Critic step, fixes broken options, and promotes verified questions to `Live`.
+
+2. **Autonomous Paper Setter (Blueprint Architect) Agent**:
+Takes a natural-language Admin goal (*"Build a hard WBCS Prelims mock test weighted toward 2023–25 PYQ trends"*), queries PostgreSQL subject pools, samples questions, checks subtopic diversity so no single subtopic dominates, and fills any syllabus gap automatically.
+
+3. **Adaptive 7-Day Study Planner & Socratic Coach Agent**:
+Triggered after a mock test submission; inspects the student's weak subtopics via SQL, schedules daily revision targets from `Exam-Oriented Notes`, and quizzes the student conversationally until mastery crosses.
+
+4. **Daily Current Affairs Web-Scout & Syllabus-Mapper Agent**:
+Uses Google Search Grounding to fetch daily West Bengal & National news, filters out non-exam noise, maps each event to static WBPSC syllabus topics, and generates bilingual MCQs.
+
+5. **Clerkship Part-II Multi-Agent Rubric Grader:**
+Splits descriptive grading into 3 specialized sub-agents (**Grammar & Orthography Agent, Content & Structure Agent, and Deterministic Word-Count / Chief Examiner Aggregator**) for higher grading reliability on Bengali/English essays, precis, and translations.
+
 | Agent Name | Role & Goal | Tools Used by the Agent | Self-Correction / Critic Loop |
 | :--- | :--- | :--- | :--- |
 | **1. Autonomous Question Bank Auditor & Deduplicator Agent** | Continuously audits newly uploaded PDFs/questions for factual accuracy, syllabus drift, and duplicates. | `search_similar_questions_pgvector`, `check_trigram_duplicate`, `verify_historical_date_fact`, `update_question_status` | **Fact-Critic Step:** If an extracted MCQ claims *"Lord Curzon partitioned Bengal in 1906"*, the Critic Agent flags the year error (`1905`), rewrites the explanation, and marks it for Admin review. |
