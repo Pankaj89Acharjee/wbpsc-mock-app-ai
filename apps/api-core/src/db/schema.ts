@@ -931,7 +931,16 @@ export const studentSubscriptions = pgTable(
       .notNull()
       .default("0.00"),
     paymentStatus: varchar("payment_status", { length: 24 })
-      .$type<"paid" | "partial_due" | "pending_due" | "waived" | "refunded">()
+      .$type<
+        | "paid"
+        | "partial_due"
+        | "pending_due"
+        | "waived"
+        | "refunded"
+        | "failed"
+        | "duplicate"
+        | "disputed"
+      >()
       .notNull()
       .default("paid"),
     paymentMode: varchar("payment_mode", { length: 32 })

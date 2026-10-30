@@ -118,6 +118,7 @@ const ExtractMediaBodySchema = z.object({
   source: z.enum(["pyq", "educator", "ai_generated"]).default("pyq"),
   pyqYear: z.coerce.number().int().min(1990).max(2100).nullable().optional(),
   insertDirectlyToBank: z.boolean().default(true),
+  languageMode: z.enum(["auto", "bn_to_en", "en_to_bn"]).default("auto"),
 });
 
 /** Staging rows that still count as "in the pipeline" for duplicate checks. */
@@ -570,6 +571,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
         source,
         pyqYear,
         insertDirectlyToBank,
+        languageMode,
       } = parsed.data;
 
       const [exam] = await db
@@ -622,6 +624,7 @@ export const ingestionRoutes: FastifyPluginAsync = async (
           examTitleEn: exam.title.en,
           mimeType,
           fileBase64: base64Data,
+          languageMode,
           existingCategories: existingSubtopicsList,
         });
       } catch (err) {

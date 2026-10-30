@@ -41,14 +41,36 @@ const UpdateUserBodySchema = z.object({
   subscriptionExpiresAt: z.string().trim().nullable().optional(),
 });
 
+const PaymentStatusEnumSchema = z.enum([
+  "paid",
+  "partial_due",
+  "pending_due",
+  "waived",
+  "refunded",
+  "failed",
+  "duplicate",
+  "disputed",
+]);
+
 const AdminManageSubscriptionBodySchema = z.object({
   userId: z.string().uuid(),
   planTier: SubscriptionTierSchema,
   amountPaidNowInr: z.coerce.number().min(0).max(100_000).default(0),
   paymentDueInr: z.coerce.number().min(0).max(100_000).default(0),
   billingCycle: z.enum(["monthly", "quarterly", "yearly", "lifetime", "expire_now"]).default("yearly"),
+  paymentStatus: PaymentStatusEnumSchema.optional(),
+  paymentMode: z.string().trim().max(32).optional(),
+  transactionRef: z.string().trim().max(120).optional(),
   customExpiresAt: z.string().trim().optional(),
   notes: z.string().trim().max(500).optional(),
+});
+
+const AdminUpdatePaymentTransactionSchema = z.object({
+  paymentStatus: PaymentStatusEnumSchema,
+  amountPaidInr: z.coerce.number().min(0).max(100_000).optional(),
+  amountDueInr: z.coerce.number().min(0).max(100_000).optional(),
+  notes: z.string().trim().max(500).optional(),
+  syncUserBalance: z.boolean().default(true),
 });
 
 // ============================================================================
@@ -208,7 +230,7 @@ export const adminRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) 
   /**
    * 5. POST /admin/subscriptions/manage
    * Allows Admin to update a student's subscription plan, record a payment, adjust/waive payment dues,
-   * or expire a subscription (which automatically switches the aspirant to the 'free' plan).
+   * log a failed/duplicate payment, or expire a subscription (auto-switches aspirant to 'free' plan).
    */
   fastify.post("/subscriptions/manage", async (request, reply) => {
     const parsed = AdminManageSubscriptionBodySchema.safeParse(request.body);
@@ -233,14 +255,19 @@ export const adminRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) 
 
       const paidNow = Number(body.amountPaidNowInr.toFixed(2));
       const newDue = Number(body.paymentDueInr.toFixed(2));
-      const newTotalPaid = Number((Number(target.totalPaidInr ?? 0) + paidNow).toFixed(2));
-
-      const paymentStatus: StudentSubscriptionDto["paymentStatus"] =
-        newDue <= 0
+      const computedStatus: StudentSubscriptionDto["paymentStatus"] =
+        body.paymentStatus ??
+        (newDue <= 0
           ? "paid"
           : paidNow > 0
             ? "partial_due"
-            : "pending_due";
+            : "pending_due");
+
+      const isFailedOrRefunded =
+        computedStatus === "failed" || computedStatus === "refunded";
+      const newTotalPaid = isFailedOrRefunded
+        ? Number(target.totalPaidInr ?? 0)
+        : Number((Number(target.totalPaidInr ?? 0) + paidNow).toFixed(2));
 
       let effectiveTier = body.planTier;
       let expiresAt: Date | null = null;
@@ -248,6 +275,9 @@ export const adminRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) 
       if (body.billingCycle === "expire_now" || body.planTier === "free") {
         effectiveTier = "free";
         expiresAt = null;
+      } else if (computedStatus === "failed") {
+        effectiveTier = target.subscriptionTier;
+        expiresAt = target.subscriptionExpiresAt;
       } else if (body.customExpiresAt) {
         const parsedDate = new Date(body.customExpiresAt);
         if (!Number.isNaN(parsedDate.getTime())) {
@@ -281,9 +311,10 @@ export const adminRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) 
           planPriceInr: String(planMeta.priceInr),
           amountPaidInr: String(paidNow),
           amountDueInr: String(newDue),
-          paymentStatus,
-          paymentMode: "admin_managed",
-          transactionRef: `ADM-${Date.now().toString(36).toUpperCase()}`,
+          paymentStatus: computedStatus,
+          paymentMode: body.paymentMode || "admin_managed",
+          transactionRef:
+            body.transactionRef || `ADM-${Date.now().toString(36).toUpperCase()}`,
           notes:
             body.notes ||
             (body.billingCycle === "expire_now"
@@ -335,6 +366,121 @@ export const adminRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) 
     return {
       user: toUserDto(result.updatedUser),
       subscription: subscriptionDto,
+    };
+  });
+
+  /**
+   * 5b. PATCH /admin/subscriptions/:id
+   * Allows Admin to resolve failed payments, mark duplicate payments as refunded,
+   * waive pending dues, or update transaction amounts/notes directly from Payment Management Console.
+   */
+  fastify.patch("/subscriptions/:id", async (request, reply) => {
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    const parsed = AdminUpdatePaymentTransactionSchema.safeParse(request.body);
+    if (!params.success || !parsed.success) {
+      return reply.status(400).send({
+        error: parsed.success ? "Invalid transaction id" : formatIssues(parsed.error.issues),
+      });
+    }
+    const body = parsed.data;
+
+    const [existing] = await db
+      .select()
+      .from(studentSubscriptions)
+      .where(eq(studentSubscriptions.id, params.data.id))
+      .limit(1);
+    if (!existing) {
+      return reply.status(404).send({ error: "Payment transaction not found" });
+    }
+
+    const result = await db.transaction(async (tx) => {
+      const [targetUser] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, existing.userId))
+        .limit(1);
+
+      const prevPaid = Number(existing.amountPaidInr ?? 0);
+      const nextPaid =
+        body.amountPaidInr !== undefined ? Number(body.amountPaidInr.toFixed(2)) : prevPaid;
+      const nextDue =
+        body.amountDueInr !== undefined
+          ? Number(body.amountDueInr.toFixed(2))
+          : body.paymentStatus === "paid" || body.paymentStatus === "waived" || body.paymentStatus === "refunded"
+            ? 0
+            : Number(existing.amountDueInr ?? 0);
+
+      const [updatedSub] = await tx
+        .update(studentSubscriptions)
+        .set({
+          paymentStatus: body.paymentStatus,
+          amountPaidInr: String(nextPaid.toFixed(2)),
+          amountDueInr: String(nextDue.toFixed(2)),
+          notes: body.notes !== undefined ? body.notes : existing.notes,
+          updatedAt: new Date(),
+        })
+        .where(eq(studentSubscriptions.id, existing.id))
+        .returning();
+
+      let updatedUser = targetUser;
+      if (targetUser && body.syncUserBalance) {
+        let userTotalPaid = Number(targetUser.totalPaidInr ?? 0);
+        // If resolving a duplicate/disputed payment via refund, deduct the refunded amount
+        if (
+          body.paymentStatus === "refunded" &&
+          existing.paymentStatus !== "refunded" &&
+          existing.paymentStatus !== "failed"
+        ) {
+          userTotalPaid = Math.max(0, Number((userTotalPaid - prevPaid).toFixed(2)));
+        } else if (
+          body.paymentStatus === "paid" &&
+          (existing.paymentStatus === "failed" || existing.paymentStatus === "pending_due")
+        ) {
+          userTotalPaid = Number((userTotalPaid + nextPaid).toFixed(2));
+        } else if (body.amountPaidInr !== undefined) {
+          userTotalPaid = Math.max(0, Number((userTotalPaid + (nextPaid - prevPaid)).toFixed(2)));
+        }
+
+        const [uRow] = await tx
+          .update(users)
+          .set({
+            totalPaidInr: String(userTotalPaid.toFixed(2)),
+            paymentDueInr: String(nextDue.toFixed(2)),
+            billingNotes: body.notes !== undefined ? body.notes : targetUser.billingNotes,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, targetUser.id))
+          .returning();
+        updatedUser = uRow;
+      }
+
+      return { updatedSub, updatedUser };
+    });
+
+    const subscriptionDto: StudentSubscriptionDto = {
+      id: result.updatedSub.id,
+      userId: result.updatedSub.userId,
+      userName: result.updatedUser?.fullName,
+      userEmail: result.updatedUser?.email,
+      userTargetExamSlug: result.updatedUser?.targetExamSlug,
+      planTier: result.updatedSub.planTier,
+      planName: result.updatedSub.planName,
+      billingCycle: result.updatedSub.billingCycle,
+      planPriceInr: Number(result.updatedSub.planPriceInr),
+      amountPaidInr: Number(result.updatedSub.amountPaidInr),
+      amountDueInr: Number(result.updatedSub.amountDueInr),
+      paymentStatus: result.updatedSub.paymentStatus,
+      paymentMode: result.updatedSub.paymentMode,
+      transactionRef: result.updatedSub.transactionRef ?? null,
+      notes: result.updatedSub.notes ?? null,
+      startsAt: result.updatedSub.startsAt.toISOString(),
+      expiresAt: result.updatedSub.expiresAt ? result.updatedSub.expiresAt.toISOString() : null,
+      createdAt: result.updatedSub.createdAt.toISOString(),
+    };
+
+    return {
+      subscription: subscriptionDto,
+      user: result.updatedUser ? toUserDto(result.updatedUser) : null,
     };
   });
 

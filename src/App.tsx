@@ -24,11 +24,14 @@ import TopNavHeader from "./components/TopNavHeader";
 import PausedTestsBanner from "./components/PausedTestsBanner";
 import MockTestRunner from "./components/MockTestRunner";
 import AdminDashboardTables from "./components/AdminDashboardTables";
+import AspirantAnalyticsDashboard from "./components/AspirantAnalyticsDashboard";
+import PaymentManagementConsole from "./components/PaymentManagementConsole";
 import WeaknessTutorTab from "./components/WeaknessTutorTab";
 import DescriptiveEvaluatorTab from "./components/DescriptiveEvaluatorTab";
 import DailyCurrentAffairsTab from "./components/DailyCurrentAffairsTab";
 import AdminConsoleTab from "./components/AdminConsoleTab";
 import SubscriptionModal from "./components/SubscriptionModal";
+import ExamOrientedNotesTab from "./components/ExamOrientedNotesTab";
 import {
   formatClock,
   toMockQuestion,
@@ -610,7 +613,7 @@ export default function App() {
         }));
 
   return (
-    <div className="min-h-screen bg-[#0B0F17] text-slate-100 flex flex-col">
+    <div className="min-h-screen bg-[#0B0F17] text-slate-100 flex flex-col overflow-x-hidden">
       {/* Top Navbar with Semi-Rounded Sliding Pill Indicator & Role-Aware Plan Action */}
       <TopNavHeader
         user={user}
@@ -915,7 +918,27 @@ export default function App() {
                   </section>
                 )}
 
+                {/* ASPIRANT DASHBOARD ANALYTICS CONSOLE:
+                    - Performance Metrics Progression
+                    - Performance Metrics by Subject
+                    - Weak Sections (Where Lacking Knowledge) vs Strong Sections */}
+                {!isUserAdmin && !openExam && (
+                  <AspirantAnalyticsDashboard
+                    myAttempts={myAttempts}
+                    myMastery={myMastery}
+                    cachedNotes={cachedNotes}
+                    generatingTopicSlug={generatingTopicSlug}
+                    lang={lang}
+                    onOpenOrGenerateAiNote={(m) => {
+                      void handleOpenOrGenerateAiNote(m);
+                      setActiveNav("weakness-tutor");
+                    }}
+                    onNavigateToWeaknessTutor={() => setActiveNav("weakness-tutor")}
+                  />
+                )}
+
                 {/* ADMIN-ONLY SECTIONS BELOW 01. MOCK TEST SERIES:
+                    - 00. Admin Analytics Charts (Subscription Growth, Exam Price Trends, Total & Per-Aspirant Revenue)
                     - 02. Every Student's Exam Performance Table (Fixed height + Vertical scroll)
                     - 03. Student Subscription & Payment Dues Management + Available Plans CRUD */}
                 {isUserAdmin && (
@@ -923,11 +946,13 @@ export default function App() {
                     allUsers={allUsers}
                     allAttempts={allAttempts}
                     allSubscriptions={allSubscriptions}
+                    examsList={examsList}
                     plans={effectivePlans}
                     onRefreshAdminData={() => {
                       void loadAdminData();
                       void loadStudentData();
                     }}
+                    onOpenPaymentConsole={() => setActiveNav("payment-console")}
                     onUpdateUser={handleUpdateUser}
                     onNotify={notify}
                   />
@@ -938,10 +963,29 @@ export default function App() {
         )}
 
         {/* ====================================================================
+            TAB 1B: EXAM-ORIENTED NOTES FOR QUICK REVISION + 30-MCQ TOPIC TESTS
+        ==================================================================== */}
+        {activeNav === "revision-notes" && (
+          <ExamOrientedNotesTab
+            user={user}
+            lang={lang}
+            onOpenSubscriptionModal={() => {
+              setModalInitialTier(
+                user.subscriptionTier === "free" ? "pro_prelims" : user.subscriptionTier
+              );
+              setModalInitialDueOnly(false);
+              setShowSubscriptionModal(true);
+            }}
+            onNotify={notify}
+          />
+        )}
+
+        {/* ====================================================================
             TAB 2: WEAKNESS ANALYTICS & 3-TIER CACHED RAG AI TUTOR
         ==================================================================== */}
         {activeNav === "weakness-tutor" && (
           <WeaknessTutorTab
+            myAttempts={myAttempts}
             myMastery={myMastery}
             cachedNotes={cachedNotes}
             selectedNote={selectedNote}
@@ -960,14 +1004,35 @@ export default function App() {
         )}
 
         {/* ====================================================================
-            TAB 4: AUTOMATED BILINGUAL DAILY CURRENT AFFAIRS DIGEST
+            TAB 4: AUTOMATED BILINGUAL DAILY CURRENT AFFAIRS DIGEST & AGENT
         ==================================================================== */}
         {activeNav === "daily-ca" && (
-          <DailyCurrentAffairsTab lang={lang} onError={handleApiError} />
+          <DailyCurrentAffairsTab
+            user={user}
+            lang={lang}
+            onError={handleApiError}
+            onNotify={notify}
+          />
         )}
 
         {/* ====================================================================
-            TAB 5: ADMIN CONSOLE (Users, Subscription Plans, Syllabus, Bank, Series)
+            TAB 5: DEDICATED ADMIN PAYMENT MANAGEMENT CONSOLE (Separate Menu Item)
+        ==================================================================== */}
+        {activeNav === "payment-console" && isUserAdmin && (
+          <PaymentManagementConsole
+            allUsers={allUsers}
+            allSubscriptions={allSubscriptions}
+            plans={effectivePlans}
+            onRefreshAdminData={() => {
+              void loadAdminData();
+              void loadStudentData();
+            }}
+            onNotify={notify}
+          />
+        )}
+
+        {/* ====================================================================
+            TAB 6: ADMIN CONSOLE (Users, Subscription Plans, Syllabus, Bank, Series, Charts)
         ==================================================================== */}
         {activeNav === "admin-console" && isUserAdmin && (
           <AdminConsoleTab
@@ -976,6 +1041,7 @@ export default function App() {
             examsList={examsList}
             cachedNotes={cachedNotes}
             allAttempts={allAttempts}
+            allSubscriptions={allSubscriptions}
             plans={effectivePlans}
             onChangeAdminTab={setAdminTab}
             onUpdateUser={handleUpdateUser}

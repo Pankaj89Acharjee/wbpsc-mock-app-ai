@@ -4,9 +4,11 @@ export type SupportedLang = "en" | "bn";
 
 export type ActiveNav =
   | "mock-center"
+  | "revision-notes"
   | "weakness-tutor"
   | "descriptive-eval"
   | "daily-ca"
+  | "payment-console"
   | "admin-console";
 
 export type AdminSubTab =
@@ -15,7 +17,10 @@ export type AdminSubTab =
   | "exams"
   | "cache-attempts"
   | "bulk-import"
-  | "series";
+  | "series"
+  | "analytics"
+  | "payments"
+  | "current-affairs";
 
 /** 303 -> "5min 3sec" */
 export const formatClock = (sec: number) => `${Math.floor(sec / 60)}min ${sec % 60}sec`;

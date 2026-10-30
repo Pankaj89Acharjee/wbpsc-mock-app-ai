@@ -270,7 +270,7 @@ export default function ExamSyllabusPanel({
           <Plus className="w-4 h-4" /> Create New Exam
         </button>
 
-        <div className="space-y-1.5 pt-1">
+        <div className="space-y-1.5 pt-1 max-h-[540px] overflow-y-auto pr-1">
           {exams.map((e) => {
             const isSelected = selectedSlug === e.slug && formMode !== "create";
             const ov = overviewList.find((o) => o.id === e.id || o.slug === e.slug);
@@ -513,9 +513,9 @@ export default function ExamSyllabusPanel({
                     papers.
                   </div>
                 ) : (
-                  <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/70">
+                  <div className="max-h-56 overflow-y-auto overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/70">
                     <table className="w-full text-xs">
-                      <thead>
+                      <thead className="sticky top-0 z-10 bg-slate-900">
                         <tr className="border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400 bg-slate-900/60">
                           <th className="text-left py-2 px-3 font-semibold">Test Series Name</th>
                           <th className="text-left py-2 px-3 font-semibold">Type &amp; Status</th>
@@ -1874,8 +1874,8 @@ function EditableSyllabusTree({
         </div>
       </div>
 
-      {/* Subjects Accordion */}
-      <div className="space-y-2">
+      {/* Fixed-Height Vertically Scrollable Subjects & Topics Accordion */}
+      <div className="max-h-[520px] overflow-y-auto pr-1.5 space-y-2 rounded-xl border border-slate-800/70 bg-slate-950/40 p-2.5">
         {filteredSubjects.map((s) => {
           const questionCount = s.chapters.reduce(
             (n, c) => n + c.subtopics.reduce((m, t) => m + t.questionCount, 0),
@@ -2672,7 +2672,7 @@ function ExamForm({
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        <div className="max-h-64 overflow-y-auto pr-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
           {subjectOptions.map((subj) => {
             const checked = Boolean(subj.id) || selectedSubjects.has(subj.en);
             const isEditing = editingSubjKey === subj.en;

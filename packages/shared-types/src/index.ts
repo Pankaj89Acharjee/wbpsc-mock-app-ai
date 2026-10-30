@@ -2028,7 +2028,15 @@ export interface StudentSubscriptionDto {
   planPriceInr: number;
   amountPaidInr: number;
   amountDueInr: number;
-  paymentStatus: "paid" | "partial_due" | "pending_due" | "waived" | "refunded";
+  paymentStatus:
+    | "paid"
+    | "partial_due"
+    | "pending_due"
+    | "waived"
+    | "refunded"
+    | "failed"
+    | "duplicate"
+    | "disputed";
   paymentMode: string;
   transactionRef: string | null;
   notes: string | null;
