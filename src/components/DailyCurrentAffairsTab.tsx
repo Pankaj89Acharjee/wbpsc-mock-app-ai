@@ -521,7 +521,7 @@ export default function DailyCurrentAffairsTab({
         "/current-affairs/scheduler-toggle",
         {
           method: "POST",
-          body: JSON.stringify({ enabled: !scheduler?.enabled }),
+          body: { enabled: !scheduler?.enabled },
         }
       );
       setScheduler(res.scheduler);
@@ -554,17 +554,19 @@ export default function DailyCurrentAffairsTab({
         scheduler: CaAutoSchedulerStatus;
       }>("/current-affairs/auto-backfill", {
         method: "POST",
-        body: JSON.stringify({
+        body: {
           monthKey: targetMonth,
           batchRange: targetRange,
-        }),
+        },
       });
       setScheduler(res.scheduler);
       await loadArchive();
       openFloatingDeckForMonth(targetMonth, "all");
       onNotify?.(
         "success",
-        `Batch Historical Backfill Agent populated ${res.backfilledDates.length} continuous dates for ${formatReadableMonth(targetMonth, "en")} (${targetRange}) and refreshed the UI!`
+        res.backfilledDates.length > 0
+          ? `Batch Historical Backfill Agent populated/topped up ${res.backfilledDates.length} dates to 12 topics for ${formatReadableMonth(targetMonth, "en")} (${targetRange})!`
+          : `All dates in ${formatReadableMonth(targetMonth, "en")} (${targetRange}) already have 12/12 topics stored — skipped regeneration!`
       );
     } catch (err) {
       onError(err, "Failed to batch-backfill past days.");
@@ -581,6 +583,18 @@ export default function DailyCurrentAffairsTab({
       );
       return;
     }
+
+    const existingEdition = editionsByDate.get(targetDate);
+    const existingCount = existingEdition?.topics?.length || 0;
+    if (existingCount >= 12) {
+      openFloatingDeckForMonth(targetDate.slice(0, 7), targetDate);
+      onNotify?.(
+        "info",
+        `${formatReadableDate(targetDate, "en")} already has ${existingCount}/12 Current Affairs topics stored. Regeneration skipped.`
+      );
+      return;
+    }
+
     setAgentBusy(true);
     try {
       const res = await api<{
@@ -588,21 +602,33 @@ export default function DailyCurrentAffairsTab({
         editionDate: string;
         topicsCount: number;
         mcqsCount: number;
+        addedTopicsCount?: number;
+        alreadyComplete?: boolean;
       }>("/current-affairs/agent-run", {
         method: "POST",
-        body: JSON.stringify({
+        body: {
           editionDate: targetDate,
           sourceUrl: agentSourceUrl,
           focusTopics: agentFocusTopics,
           targetTopicCount: 12,
-        }),
+        },
       });
       await loadArchive();
       openFloatingDeckForMonth(res.editionDate.slice(0, 7), res.editionDate);
-      onNotify?.(
-        "success",
-        `Agent collected & classified ${res.topicsCount} topics and ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
-      );
+      if (res.alreadyComplete) {
+        onNotify?.(
+          "info",
+          `${formatReadableDate(res.editionDate, "en")} already has ${res.topicsCount}/12 Current Affairs topics stored. Regeneration skipped.`
+        );
+      } else {
+        const addedCount = res.addedTopicsCount ?? res.topicsCount;
+        onNotify?.(
+          "success",
+          existingCount > 0
+            ? `Generated remaining ${addedCount} unique topics without duplicates (now ${res.topicsCount}/12 topics) for ${formatReadableDate(res.editionDate, "en")}.`
+            : `Agent collected & classified ${res.topicsCount}/12 topics and ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
+        );
+      }
     } catch (err) {
       onError(err, "Autonomous Current Affairs Agent execution failed.");
     } finally {
@@ -620,15 +646,19 @@ export default function DailyCurrentAffairsTab({
         monthLabelEn: string;
         topicsCount: number;
         mcqsCount: number;
+        addedTopicsCount?: number;
+        alreadyComplete?: boolean;
       }>("/current-affairs/classify-month", {
         method: "POST",
-        body: JSON.stringify({ monthKey }),
+        body: { monthKey },
       });
       await loadArchive();
       openFloatingDeckForMonth(monthKey, "all");
       onNotify?.(
         "success",
-        `Monthly Category Classifier Agent organized ${res.topicsCount} topics across Sports, Awards, Science, Polity, Economy & WB Special for ${res.monthLabelEn}!`
+        res.alreadyComplete
+          ? `${res.monthLabelEn} capsule date already has ${res.topicsCount}/12 classified topics — skipped regeneration.`
+          : `Monthly Category Classifier Agent organized ${res.topicsCount}/12 topics across Sports, Awards, Science, Polity, Economy & WB Special for ${res.monthLabelEn}!`
       );
     } catch (err) {
       onError(err, "Monthly Category Classifier Agent failed.");
@@ -1239,24 +1269,45 @@ export default function DailyCurrentAffairsTab({
                 {scheduler?.enabled ? "Pause Daily Auto-Run" : "Turn ON Daily Auto-Run"}
               </button>
 
-              <button
-                type="button"
-                disabled={agentBusy}
-                onClick={() => void handleRunAgentForDate(todayIso)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-              >
-                {agentBusy ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Collecting Today&apos;s 12 Topics...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5" />
-                    Refresh Today&apos;s 12 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
-                  </>
-                )}
-              </button>
+              {(() => {
+                const todayCount = editionsByDate.get(todayIso)?.topics.length || 0;
+                const isTodayComplete = todayCount >= 12;
+                const todayRemaining = Math.max(0, 12 - todayCount);
+                return (
+                  <button
+                    type="button"
+                    disabled={agentBusy || isTodayComplete}
+                    onClick={() => void handleRunAgentForDate(todayIso)}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
+                      isTodayComplete
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
+                        : "bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 cursor-pointer"
+                    }`}
+                  >
+                    {agentBusy ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        Collecting Today&apos;s Topics...
+                      </>
+                    ) : isTodayComplete ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Today&apos;s 12/12 Topics Complete
+                      </>
+                    ) : todayCount > 0 ? (
+                      <>
+                        <Play className="w-3.5 h-3.5" />
+                        Generate Remaining {todayRemaining} Topics ({todayCount}/12 Stored)
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5" />
+                        Collect Today&apos;s 12 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
+                      </>
+                    )}
+                  </button>
+                );
+              })()}
             </div>
           </div>
 
@@ -1415,15 +1466,45 @@ export default function DailyCurrentAffairsTab({
                 className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
               />
 
-              <button
-                type="button"
-                disabled={agentBusy}
-                onClick={() => void handleRunAgentForDate(agentEditionDate)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-              >
-                <Bot className="w-3.5 h-3.5" />
-                Collect / Retry {formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")}
-              </button>
+              {(() => {
+                const pickedCount = editionsByDate.get(agentEditionDate)?.topics.length || 0;
+                const isPickedComplete = pickedCount >= 12;
+                const pickedRemaining = Math.max(0, 12 - pickedCount);
+                return (
+                  <button
+                    type="button"
+                    disabled={agentBusy || isPickedComplete}
+                    onClick={() => void handleRunAgentForDate(agentEditionDate)}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
+                      isPickedComplete
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
+                        : "bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 cursor-pointer"
+                    }`}
+                  >
+                    {agentBusy ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        Generating Topics...
+                      </>
+                    ) : isPickedComplete ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        12/12 Topics Already Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                      </>
+                    ) : pickedCount > 0 ? (
+                      <>
+                        <Bot className="w-3.5 h-3.5" />
+                        Generate Remaining {pickedRemaining} Topics ({pickedCount}/12 Stored)
+                      </>
+                    ) : (
+                      <>
+                        <Bot className="w-3.5 h-3.5" />
+                        Collect 12 Topics for {formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")}
+                      </>
+                    )}
+                  </button>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -1612,6 +1693,40 @@ export default function DailyCurrentAffairsTab({
                     ? `Showing Whole Month: ${formatReadableMonth(modalMonthKey, lang)} (${storedEditionsInModalMonth.length} Stored ${storedEditionsInModalMonth.length === 1 ? "Date" : "Dates"})`
                     : `Showing Selected Date: ${formatReadableDate(modalDateFilter, lang)}`}
                 </span>
+
+                {/* Admin Top-Up Button if Selected Single Date has < 12 Topics */}
+                {isAdmin &&
+                  modalDateFilter !== "all" &&
+                  modalDateFilter <= todayIso &&
+                  (() => {
+                    const selectedDateCount =
+                      editionsByDate.get(modalDateFilter)?.topics.length || 0;
+                    const remainingTo12 = Math.max(0, 12 - selectedDateCount);
+                    if (selectedDateCount >= 12) {
+                      return (
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-bold text-emerald-300 inline-flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          12/12 Topics Complete
+                        </span>
+                      );
+                    }
+                    return (
+                      <button
+                        type="button"
+                        disabled={agentBusy}
+                        onClick={() => void handleRunAgentForDate(modalDateFilter)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-purple-500 hover:bg-purple-400 disabled:opacity-50 text-xs font-bold text-slate-950 cursor-pointer shadow-sm"
+                        title={`Generate remaining ${remainingTo12} unique Current Affairs topics for ${modalDateFilter}`}
+                      >
+                        <Bot className="w-3.5 h-3.5" />
+                        {agentBusy
+                          ? "Generating..."
+                          : selectedDateCount > 0
+                            ? `+ Generate Remaining ${remainingTo12} Topics (${selectedDateCount}/12)`
+                            : `+ Collect 12 Topics`}
+                      </button>
+                    );
+                  })()}
               </div>
 
               <div className="flex items-center gap-2">

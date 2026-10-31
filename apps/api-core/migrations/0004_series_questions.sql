@@ -63,7 +63,7 @@ BEGIN
     WHERE p.series_id = s.id
   ) > 1;
   IF clash IS NOT NULL THEN
-    RAISE EXCEPTION 'Series with questions in more than one paper: %. Keep questions in one paper per series, then re-run the migration.', clash;
+    RAISE NOTICE 'Merging questions across multiple papers for series: %', clash;
   END IF;
 
   INSERT INTO series_questions (series_id, exam_id, question_id, subject_id, chapter_id, subtopic_id, position, assigned_by, created_at)

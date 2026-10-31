@@ -22,6 +22,7 @@ import { formatIssues } from "../lib/validation";
 import { toUserDto } from "./auth";
 import {
   ensureSubscriptionPlansSeeded,
+  ensureSubscriptionSchemaReady,
   toAttemptSummary,
   toSubscriptionPlanDto,
 } from "./me";
@@ -190,6 +191,7 @@ export const adminRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) 
 
   /** 4. GET /admin/subscriptions — all subscription / payment transactions across students */
   fastify.get("/subscriptions", async () => {
+    await ensureSubscriptionSchemaReady();
     await syncExpiredSubscriptions();
     const rows = await db
       .select({
@@ -375,6 +377,7 @@ export const adminRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) 
    * waive pending dues, or update transaction amounts/notes directly from Payment Management Console.
    */
   fastify.patch("/subscriptions/:id", async (request, reply) => {
+    await ensureSubscriptionSchemaReady();
     const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
     const parsed = AdminUpdatePaymentTransactionSchema.safeParse(request.body);
     if (!params.success || !parsed.success) {
