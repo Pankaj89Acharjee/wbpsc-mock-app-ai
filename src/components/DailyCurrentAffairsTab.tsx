@@ -876,10 +876,17 @@ export default function DailyCurrentAffairsTab({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-1.5 max-w-3xl">
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold">
-                <Bot className="w-3.5 h-3.5" />
-                {scheduler?.enabled ? "Daily Auto-Collector: ACTIVE" : "Daily Auto-Collector: PAUSED"}
-              </span>
+              {isAdmin ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold">
+                  <Bot className="w-3.5 h-3.5" />
+                  {scheduler?.enabled ? "Daily Auto-Collector: ACTIVE" : "Daily Auto-Collector: PAUSED"}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold">
+                  <BookOpen className="w-3.5 h-3.5" />
+                  WBPSC Exam-Ready Current Affairs Capsule
+                </span>
+              )}
               <span className="text-slate-400 font-mono">
                 Today: <strong className="text-white">{formatReadableDate(todayIso, lang)}</strong>
               </span>
@@ -968,14 +975,14 @@ export default function DailyCurrentAffairsTab({
 
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Daily Auto-Collector Status</span>
+                <span>{isAdmin ? "Daily Auto-Collector Status" : "PYQ-Pattern Practice MCQs"}</span>
                 <Clock className="w-4 h-4 text-amber-400" />
               </div>
               <div className="text-xl font-bold font-mono text-amber-300">
-                12 Topics / Day
+                {isAdmin ? "12 Topics / Day" : `${stats.totalMcqsCount} Practice MCQs`}
               </div>
               <div className="text-[11px] text-slate-400">
-                <span>Latest Collected: </span>
+                <span>Latest Edition: </span>
                 <span className="text-emerald-300 font-semibold">
                   {formatReadableDate(stats.latestDate || todayIso, "en")}
                 </span>
@@ -1023,7 +1030,6 @@ export default function DailyCurrentAffairsTab({
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 max-h-[360px] overflow-y-auto pr-1">
           {monthsArchive.map((m) => {
             const monthEditions = editions.filter((e) => e.monthKey === m.monthKey);
-            const isClassifying = classifierBusyMonth === m.monthKey;
             const totalDaysPossible = getDaysInMonthCount(m.monthKey, todayIso);
             const storedDaysCount = monthEditions.length;
             const coveragePct = Math.min(
@@ -1058,7 +1064,7 @@ export default function DailyCurrentAffairsTab({
                     <span>{m.downloadsCount} DLs</span>
                   </div>
 
-                  {/* Clean Monthly Daily Coverage Progress Bar (Scales cleanly for 30/31 Days!) */}
+                  {/* Clean Monthly Daily Coverage Progress Bar */}
                   <div className="bg-slate-900/90 border border-slate-800/90 rounded-lg p-2 space-y-1.5">
                     <div className="flex items-center justify-between text-[10px]">
                       <span
@@ -1073,7 +1079,7 @@ export default function DailyCurrentAffairsTab({
                           : `📅 ${storedDaysCount} of ${totalDaysPossible} Days (${coveragePct}%)`}
                       </span>
 
-                      {!isFullMonthStored ? (
+                      {isAdmin && !isFullMonthStored ? (
                         <button
                           type="button"
                           disabled={backfillBusy}
@@ -1084,12 +1090,14 @@ export default function DailyCurrentAffairsTab({
                             void handleAutoBackfillPastDays(m.monthKey, "full-month");
                           }}
                           className="px-1.5 py-0.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold cursor-pointer"
-                          title={`Batch-fill all ${totalDaysPossible} days of ${m.monthLabelEn}`}
+                          title={`Batch-fill unpopulated days of ${m.monthLabelEn}`}
                         >
                           + Batch Fill {totalDaysPossible}d
                         </button>
                       ) : (
-                        <span className="text-slate-400 font-mono">1st–{totalDaysPossible}st</span>
+                        <span className="text-slate-400 font-mono">
+                          {isFullMonthStored ? `1st–${totalDaysPossible}st` : `${storedDaysCount}d ready`}
+                        </span>
                       )}
                     </div>
 
@@ -1110,38 +1118,22 @@ export default function DailyCurrentAffairsTab({
                     Open Calendar &amp; Cards
                   </span>
 
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={isClassifying}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleRunMonthlyClassifierAgent(m.monthKey);
-                      }}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-[10px] font-semibold text-emerald-300 border border-emerald-500/30 cursor-pointer"
-                      title="Collect & classify 12 PSCWB exam topics for this month"
-                    >
-                      <Bot className="w-3 h-3" />
-                      {isClassifying ? "Running..." : "12-Topic Agent"}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleDownloadCategorizedCapsulePdf(
-                          monthEditions,
-                          `${m.monthLabelEn} (${m.monthLabelBn}) — Categorized Monthly Capsule`,
-                          `WBPSC-CA-Categorized-${m.monthKey}`
-                        );
-                      }}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded bg-sky-500/15 hover:bg-sky-500/25 text-[10px] font-semibold text-sky-300 border border-sky-500/30 cursor-pointer"
-                      title="Download Categorized Monthly Capsule PDF"
-                    >
-                      <Download className="w-3 h-3" />
-                      PDF
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleDownloadCategorizedCapsulePdf(
+                        monthEditions,
+                        `${m.monthLabelEn} (${m.monthLabelBn}) — Categorized Monthly Capsule`,
+                        `WBPSC-CA-Categorized-${m.monthKey}`
+                      );
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-sky-500/15 hover:bg-sky-500/25 text-[10px] font-semibold text-sky-300 border border-sky-500/30 cursor-pointer"
+                    title="Download Categorized Monthly Capsule PDF"
+                  >
+                    <Download className="w-3 h-3" />
+                    Download PDF
+                  </button>
                 </div>
               </div>
             );
@@ -1150,9 +1142,10 @@ export default function DailyCurrentAffairsTab({
       </div>
 
       {/* ====================================================================
-          SECTION 3: CLEAN, PLAIN-ENGLISH AGENT MANAGEMENT CONSOLE
-          (Includes 5-Agent Architecture Inventory + Month-Wise Batch Backfill)
+          SECTION 3: CLEAN, PLAIN-ENGLISH AGENT MANAGEMENT CONSOLE (ADMIN ONLY)
+          Aspirants ONLY consume generated Current Affairs and never see Agent controls.
       ==================================================================== */}
+      {isAdmin && (
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
           <div className="space-y-1">
@@ -1435,6 +1428,7 @@ export default function DailyCurrentAffairsTab({
           </div>
         </div>
       </div>
+      )}
 
       {/* ====================================================================
           SECTION 4: CLEAN INTERACTIVE CURRENT AFFAIRS MCQ PRACTICE QUIZ
@@ -1764,7 +1758,9 @@ export default function DailyCurrentAffairsTab({
                                   ? `${formatReadableDate(cell.dateStr, "en")}: Future date (not yet occurred)`
                                   : matchingEdition
                                     ? `${formatReadableDate(cell.dateStr, "en")}: ${matchingEdition.topics.length} Topics stored — Click to view`
-                                    : `${formatReadableDate(cell.dateStr, "en")}: Click to collect 12 topics for this date`
+                                    : isAdmin
+                                      ? `${formatReadableDate(cell.dateStr, "en")}: Click to collect topics for this date`
+                                      : `${formatReadableDate(cell.dateStr, "en")}: No Current Affairs published for this date`
                               }
                               className={`h-7 rounded-md text-[11px] font-mono transition-all flex flex-col items-center justify-center relative ${
                                 isFutureDate
@@ -1867,7 +1863,9 @@ export default function DailyCurrentAffairsTab({
                     </h3>
                     <p className="text-xs text-slate-400 leading-relaxed">
                       {modalDateFilter !== "all"
-                        ? "You can either view all stored dates in this month or click below to let the AI Agent collect 12 exam topics for this exact past date."
+                        ? isAdmin
+                          ? "You can either view all stored dates in this month or click below to let the AI Agent collect exam topics for this exact past date."
+                          : "Current Affairs for this specific date has not been published yet. Click below to view all published Current Affairs cards for this month."
                         : "Switch the category filter back to 'All 10 Categories' to see all cards."}
                     </p>
                     <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
@@ -1883,7 +1881,7 @@ export default function DailyCurrentAffairsTab({
                         Show Whole Month ({formatReadableMonth(modalMonthKey, "en")})
                       </button>
 
-                      {modalDateFilter !== "all" && modalDateFilter <= todayIso && (
+                      {isAdmin && modalDateFilter !== "all" && modalDateFilter <= todayIso && (
                         <button
                           type="button"
                           disabled={agentBusy}
@@ -1892,8 +1890,8 @@ export default function DailyCurrentAffairsTab({
                         >
                           <Bot className="w-4 h-4" />
                           {agentBusy
-                            ? "Collecting 12 Topics..."
-                            : `Collect 12 Topics for ${formatReadableDate(modalDateFilter, "en").replace(/\s*\(.*\)$/, "")}`}
+                            ? "Collecting Topics..."
+                            : `Collect Topics for ${formatReadableDate(modalDateFilter, "en").replace(/\s*\(.*\)$/, "")}`}
                         </button>
                       )}
                     </div>
