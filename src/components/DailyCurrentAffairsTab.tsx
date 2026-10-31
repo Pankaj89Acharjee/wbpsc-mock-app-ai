@@ -220,6 +220,19 @@ export function formatReadableMonth(monthKey: string, lang: SupportedLang): stri
   return `${MONTH_NAMES_EN[monthIdx]} ${year}`;
 }
 
+function getDaysInMonthCount(monthKey: string, todayIso: string): number {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) return 30;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const totalInMonth = new Date(year, month, 0).getDate();
+  if (monthKey === todayIso.slice(0, 7)) {
+    const todayDay = Number(todayIso.slice(8, 10)) || totalInMonth;
+    return Math.min(totalInMonth, todayDay);
+  }
+  return totalInMonth;
+}
+
 function buildCalendarDays(monthKey: string): Array<{
   dayNumber: number | null;
   dateStr: string | null;
@@ -295,6 +308,10 @@ export default function DailyCurrentAffairsTab({
   // =========================================================================
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [backfillBusy, setBackfillBusy] = useState<boolean>(false);
+  const [backfillMonthKey, setBackfillMonthKey] = useState<string>("2026-09");
+  const [backfillBatchRange, setBackfillBatchRange] = useState<
+    "days-1-10" | "days-11-20" | "days-21-end" | "full-month"
+  >("full-month");
   const [toggleSchedulerBusy, setToggleSchedulerBusy] = useState<boolean>(false);
   const [classifierBusyMonth, setClassifierBusyMonth] = useState<string | null>(null);
   const [classifierSelectedMonth, setClassifierSelectedMonth] = useState<string>("2026-10");
@@ -305,7 +322,7 @@ export default function DailyCurrentAffairsTab({
     "https://www.gktoday.in/current-affairs/"
   );
   const [agentFocusTopics, setAgentFocusTopics] = useState<string>(
-    "GKToday + PYQArena (The Hindu) + PIB: Collect 12 high-yield PSCWB topics across Sports, Awards, Science & Tech, Polity, Economy, West Bengal Special, Defence, Environment & Indices"
+    "GKToday + PYQArena (The Hindu) + PIB + WB Gazette: Collect 12 high-yield PSCWB topics across West Bengal Special, Polity, Economy, Science & Tech, Sports, Awards, Defence, Environment & Indices"
   );
 
   // =========================================================================
@@ -509,25 +526,36 @@ export default function DailyCurrentAffairsTab({
     }
   };
 
-  const handleAutoBackfillPastDays = async () => {
+  const handleAutoBackfillPastDays = async (
+    customMonthKey?: string,
+    customBatchRange?: "days-1-10" | "days-11-20" | "days-21-end" | "full-month"
+  ) => {
+    const targetMonth = customMonthKey || backfillMonthKey;
+    const targetRange = customBatchRange || backfillBatchRange;
     setBackfillBusy(true);
     try {
       const res = await api<{
         backfilledDates: string[];
+        monthKey?: string;
+        batchRange?: string;
         todayIso: string;
         scheduler: CaAutoSchedulerStatus;
       }>("/current-affairs/auto-backfill", {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          monthKey: targetMonth,
+          batchRange: targetRange,
+        }),
       });
       setScheduler(res.scheduler);
       await loadArchive();
+      openFloatingDeckForMonth(targetMonth, "all");
       onNotify?.(
         "success",
-        `Past-Days Auto-Backfill Agent verified & populated ${res.backfilledDates.length} recent dates (up to ${formatReadableDate(res.todayIso, "en")}) and all 12 past months!`
+        `Batch Historical Backfill Agent populated ${res.backfilledDates.length} continuous dates for ${formatReadableMonth(targetMonth, "en")} (${targetRange}) and refreshed the UI!`
       );
     } catch (err) {
-      onError(err, "Failed to auto-backfill past days.");
+      onError(err, "Failed to batch-backfill past days.");
     } finally {
       setBackfillBusy(false);
     }
@@ -980,11 +1008,17 @@ export default function DailyCurrentAffairsTab({
         </div>
 
         {/* 12-Month Grid (Fixed Max Height with Vertical Scrollbar for responsiveness) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 max-h-[340px] overflow-y-auto pr-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 max-h-[360px] overflow-y-auto pr-1">
           {monthsArchive.map((m) => {
             const monthEditions = editions.filter((e) => e.monthKey === m.monthKey);
             const isClassifying = classifierBusyMonth === m.monthKey;
-            const storedDatesList = monthEditions.map((e) => e.editionDate);
+            const totalDaysPossible = getDaysInMonthCount(m.monthKey, todayIso);
+            const storedDaysCount = monthEditions.length;
+            const coveragePct = Math.min(
+              100,
+              Math.round((storedDaysCount / Math.max(1, totalDaysPossible)) * 100)
+            );
+            const isFullMonthStored = storedDaysCount >= totalDaysPossible;
 
             return (
               <div
@@ -992,7 +1026,7 @@ export default function DailyCurrentAffairsTab({
                 onClick={() => openFloatingDeckForMonth(m.monthKey, "all")}
                 className="rounded-xl p-4 border bg-slate-950/90 border-slate-800 hover:border-amber-400/60 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
               >
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-bold text-sm text-white group-hover:text-amber-300 transition-colors">
                       {lang === "bn" ? m.monthLabelBn : m.monthLabelEn}
@@ -1003,8 +1037,8 @@ export default function DailyCurrentAffairsTab({
                   </div>
 
                   <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-1.5">
-                    <span>
-                      {m.editionsCount} {m.editionsCount === 1 ? "Date" : "Dates"} Stored
+                    <span className="font-semibold text-slate-200">
+                      {storedDaysCount} / {totalDaysPossible} Days Available
                     </span>
                     <span aria-hidden="true">·</span>
                     <span>{m.mcqsCount} MCQs</span>
@@ -1012,32 +1046,59 @@ export default function DailyCurrentAffairsTab({
                     <span>{m.downloadsCount} DLs</span>
                   </div>
 
-                  {/* Show stored dates inside this month clearly */}
-                  <div className="pt-1 flex flex-wrap gap-1">
-                    {storedDatesList.slice(0, 3).map((d) => (
-                      <button
-                        key={d}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openFloatingDeckForMonth(m.monthKey, d);
-                        }}
-                        className="px-2 py-0.5 rounded bg-slate-900 hover:bg-amber-400/20 text-[10px] font-mono text-slate-300 hover:text-amber-300 border border-slate-800 cursor-pointer"
-                        title={`Open ${formatReadableDate(d, "en")} directly in Floating Card Modal`}
+                  {/* Clean Monthly Daily Coverage Progress Bar (Scales cleanly for 30/31 Days!) */}
+                  <div className="bg-slate-900/90 border border-slate-800/90 rounded-lg p-2 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span
+                        className={
+                          isFullMonthStored
+                            ? "text-emerald-300 font-bold"
+                            : "text-sky-300 font-semibold"
+                        }
                       >
-                        📅 {formatReadableDate(d, lang).replace(/\s*\(.*\)$/, "")}
-                      </button>
-                    ))}
+                        {isFullMonthStored
+                          ? `✓ All ${totalDaysPossible} Days Stored (100%)`
+                          : `📅 ${storedDaysCount} of ${totalDaysPossible} Days (${coveragePct}%)`}
+                      </span>
+
+                      {!isFullMonthStored ? (
+                        <button
+                          type="button"
+                          disabled={backfillBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBackfillMonthKey(m.monthKey);
+                            setBackfillBatchRange("full-month");
+                            void handleAutoBackfillPastDays(m.monthKey, "full-month");
+                          }}
+                          className="px-1.5 py-0.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold cursor-pointer"
+                          title={`Batch-fill all ${totalDaysPossible} days of ${m.monthLabelEn}`}
+                        >
+                          + Batch Fill {totalDaysPossible}d
+                        </button>
+                      ) : (
+                        <span className="text-slate-400 font-mono">1st–{totalDaysPossible}st</span>
+                      )}
+                    </div>
+
+                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          isFullMonthStored ? "bg-emerald-400" : "bg-sky-400"
+                        }`}
+                        style={{ width: `${Math.max(10, coveragePct)}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
 
                 <div className="pt-2.5 border-t border-slate-800/90 flex items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-300 group-hover:underline">
                     <Maximize2 className="w-3 h-3" />
-                    Open Month Cards
+                    Open Calendar &amp; Cards
                   </span>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     <button
                       type="button"
                       disabled={isClassifying}
@@ -1046,7 +1107,7 @@ export default function DailyCurrentAffairsTab({
                         void handleRunMonthlyClassifierAgent(m.monthKey);
                       }}
                       className="inline-flex items-center gap-1 px-2 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-[10px] font-semibold text-emerald-300 border border-emerald-500/30 cursor-pointer"
-                      title="Collect & classify 12 exam topics for this month"
+                      title="Collect & classify 12 PSCWB exam topics for this month"
                     >
                       <Bot className="w-3 h-3" />
                       {isClassifying ? "Running..." : "12-Topic Agent"}
@@ -1078,22 +1139,55 @@ export default function DailyCurrentAffairsTab({
 
       {/* ====================================================================
           SECTION 3: CLEAN, PLAIN-ENGLISH AGENT MANAGEMENT CONSOLE
-          (Replaces the confusing 3rd screenshot with crystal-clear explanations)
+          (Includes 5-Agent Architecture Inventory + Month-Wise Batch Backfill)
       ==================================================================== */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
           <div className="space-y-1">
             <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-wider">
               <Sparkles className="w-4 h-4" />
-              Autonomous Current Affairs Agent Management Console
+              Autonomous Current Affairs Agent Management Console (5 Specialized Agents)
             </div>
             <h2 className="text-base font-bold text-white">
-              How Your Current Affairs Agents Work &amp; Simple Controls
+              Complete 5-Agent Architecture &amp; Batch Controls (PSCWB Exam-Oriented)
             </h2>
             <p className="text-xs text-slate-400">
-              Every option below includes a simple explanation of what it does behind the scenes. Future dates (after{" "}
-              <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>) are strictly blocked.
+              There are <strong className="text-white">5 Specialized Agents</strong> powering Current Affairs: <strong className="text-emerald-300">4 Actionable Orchestrator Agents</strong> (managed below) and <strong className="text-amber-300">1 Automatic Internal Sub-Agent</strong> (Bilingual Fact-Critic, Trap-Detector &amp; MCQ Generator) that runs automatically inside every collection run so you don&apos;t need to manage it separately.
             </p>
+          </div>
+        </div>
+
+        {/* 5-Agent Inventory Summary Strip */}
+        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 grid grid-cols-1 md:grid-cols-5 gap-2.5 text-xs">
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-emerald-500/30">
+            <div className="font-bold text-emerald-300">Agent 1: Daily Collector</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Auto-runs daily for Today ({todayIso}) · Has Pause &amp; Manual Refresh below.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-sky-500/30">
+            <div className="font-bold text-sky-300">Agent 2: Batch Backfiller</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Fills continuous 10-day batches or all 30/31 days of any month with zero gaps.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-amber-500/30">
+            <div className="font-bold text-amber-300">Agent 3: Month Classifier</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Groups topics into 10 WBPSC categories &amp; compiles Monthly PDF Capsules.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-purple-500/30">
+            <div className="font-bold text-purple-300">Agent 4: Date Recovery</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Manual fallback if an automatic run ever fails on a specific past date.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-700">
+            <div className="font-bold text-slate-200">Agent 5: Bilingual Critic &amp; MCQ</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              <span className="text-emerald-400 font-semibold">100% Automatic Internal Pipeline</span> — adds Static GK, Traps &amp; বাংলা অনুবাদ.
+            </div>
           </div>
         </div>
 
@@ -1118,13 +1212,14 @@ export default function DailyCurrentAffairsTab({
               </div>
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does in simple words:</strong> This agent runs{" "}
-                <strong>automatically every day</strong>. It visits{" "}
+                <strong className="text-white">What this does in simple words:</strong> Runs{" "}
+                <strong>automatically every day</strong>. Grounded on{" "}
                 <span className="text-emerald-300">GKToday</span>,{" "}
-                <span className="text-emerald-300">PYQArena (The Hindu)</span>, and{" "}
-                <span className="text-emerald-300">PIB</span>, collects{" "}
-                <strong>12 important WBPSC exam topics</strong> for today&apos;s date (
-                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>), translates them into English &amp; Bengali, and saves them to the database automatically.
+                <span className="text-emerald-300">PYQArena (The Hindu)</span>,{" "}
+                <span className="text-emerald-300">PIB</span>, and{" "}
+                <span className="text-emerald-300">WB State Gazette</span>, it collects{" "}
+                <strong>12 PSCWB exam-oriented topics</strong> for today&apos;s date (
+                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>) including West Bengal schemes, GI tags, Constitutional articles, and Static GK links.
               </p>
             </div>
 
@@ -1160,44 +1255,73 @@ export default function DailyCurrentAffairsTab({
             </div>
           </div>
 
-          {/* CARD 2: Past-Days Automatic Backfill Agent */}
+          {/* CARD 2: Month-Wise Batch Historical Backfill Agent */}
           <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
                   <CalendarIcon className="w-4 h-4" />
-                  2. Past-Days Automatic Backfill Agent
+                  2. Month-Wise Batch Historical Backfill Agent
                 </span>
                 <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
-                  No Manual Effort Needed
+                  Continuous Batching (Zero Gaps)
                 </span>
               </div>
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">Why were some past days empty &amp; how this fixes it:</strong> Previously, if the server was not running on a past day, that date remained empty unless clicked manually. Now, this{" "}
-                <strong>Past-Days Auto-Backfill Agent</strong> automatically fills in missing past dates and ensures all 12 past months (Nov 2025 – Oct 2026) have complete topics without you having to generate past days one by one.
+                <strong className="text-white">How Batch Backfilling works:</strong> Generating 365 days × 12 topics (4,380 cards) all at once would overload memory. Instead, October 2026 is already 100% pre-filled (all 31 days including 27 Oct), and for any earlier month you can populate continuous batches (<em>Days 1–10, Days 11–20, Days 21–End, or Full 30/31 Days</em>) and watch the Month Card progress bar update live!
               </p>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <span className="text-[11px] text-slate-400">
-                Strictly fills only past &amp; present dates (≤ {todayIso}).
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={backfillMonthKey}
+                  onChange={(e) => setBackfillMonthKey(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white cursor-pointer"
+                >
+                  {availableMonthKeys.map((mk) => (
+                    <option key={mk} value={mk}>
+                      {formatReadableMonth(mk, lang)} ({mk})
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={backfillBatchRange}
+                  onChange={(e) =>
+                    setBackfillBatchRange(
+                      e.target.value as
+                        | "days-1-10"
+                        | "days-11-20"
+                        | "days-21-end"
+                        | "full-month"
+                    )
+                  }
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-sky-300 cursor-pointer"
+                >
+                  <option value="full-month">Full Month (All 30/31 Days)</option>
+                  <option value="days-1-10">Batch 1: Days 01 – 10</option>
+                  <option value="days-11-20">Batch 2: Days 11 – 20</option>
+                  <option value="days-21-end">Batch 3: Days 21 – End of Month</option>
+                </select>
+              </div>
+
               <button
                 type="button"
                 disabled={backfillBusy}
-                onClick={() => void handleAutoBackfillPastDays()}
+                onClick={() => void handleAutoBackfillPastDays(backfillMonthKey, backfillBatchRange)}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-sky-400 hover:bg-sky-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
               >
                 {backfillBusy ? (
                   <>
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Auto-Filling Past Days...
+                    Running Batch Backfill...
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-3.5 h-3.5" />
-                    Auto-Fill Any Missing Past Days Now
+                    Run Batch Backfill
                   </>
                 )}
               </button>
@@ -1213,12 +1337,12 @@ export default function DailyCurrentAffairsTab({
                   3. Monthly Category Classifier &amp; Capsule Agent
                 </span>
                 <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                  10 Exam Categories
+                  10 WBPSC Categories
                 </span>
               </div>
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does in simple words:</strong> Selects any past/current month, collects 12 high-probability exam events for that month, and classifies every topic into separate buckets: <em>Sports, Awards, Science &amp; Tech, Polity, Economy, West Bengal Special, Defence, Environment, and Indices</em> for the Monthly PDF Capsule.
+                <strong className="text-white">What this does in simple words:</strong> Selects any past/current month, synthesizes high-probability PSCWB exam events (with extra weight on <em>West Bengal Special, Polity, Economy, Science, GI Tags, Sports &amp; Awards</em>), and organizes them into 10 subject buckets for the Monthly PDF Capsule.
               </p>
             </div>
 
@@ -1256,21 +1380,21 @@ export default function DailyCurrentAffairsTab({
             </div>
           </div>
 
-          {/* CARD 4: Specific Past Date Collector (With Future-Date Lock) */}
+          {/* CARD 4: Specific Past Date Manual Recovery Agent (With Future-Date Lock) */}
           <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
                   <HelpCircle className="w-4 h-4" />
-                  4. Collect for a Specific Past Date (Optional)
+                  4. Single-Date Manual Recovery Agent (Fallback)
                 </span>
                 <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                  Future Dates Locked
+                  Manual Retry · Future Locked
                 </span>
               </div>
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does in simple words:</strong> If you want the AI Agent to collect or refresh 12 Current Affairs topics for any specific past date (for example, <em>02 September 2026</em> or <em>15 October 2026</em>), pick the date below and click Collect.
+                <strong className="text-white">When to use this manual option:</strong> If an automatic collection ever fails for a specific date or you want to re-generate a particular date with fresh PSCWB topics (for example, <em>27 October 2026</em> or <em>15 September 2026</em>), pick that date here or inside the Calendar Modal and click Collect.
               </p>
             </div>
 
@@ -1293,7 +1417,7 @@ export default function DailyCurrentAffairsTab({
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
               >
                 <Bot className="w-3.5 h-3.5" />
-                Collect 12 Topics for {formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")}
+                Collect / Retry {formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")}
               </button>
             </div>
           </div>
@@ -1864,24 +1988,41 @@ export default function DailyCurrentAffairsTab({
                     Previous Topic
                   </button>
 
-                  {/* Interactive Card Number Dots */}
-                  <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-md">
-                    {modalDeckCards.map((c, idx) => (
-                      <button
-                        key={`${c.topic.id}-${idx}`}
-                        type="button"
-                        onClick={() => setFloatingCardIdx(idx)}
-                        className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer ${
-                          idx === floatingCardIdx
-                            ? "bg-emerald-500 text-slate-950 scale-110"
-                            : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
-                        }`}
-                        title={`${formatReadableDate(c.editionDate, "en")}: ${c.topic.headlineEn}`}
+                  {/* Interactive Card Number Dots / Compact Selector for 30/31-Day Months */}
+                  {modalDeckCards.length <= 16 ? (
+                    <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-md">
+                      {modalDeckCards.map((c, idx) => (
+                        <button
+                          key={`${c.topic.id}-${idx}`}
+                          type="button"
+                          onClick={() => setFloatingCardIdx(idx)}
+                          className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                            idx === floatingCardIdx
+                              ? "bg-emerald-500 text-slate-950 scale-110"
+                              : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
+                          }`}
+                          title={`${formatReadableDate(c.editionDate, "en")}: ${c.topic.headlineEn}`}
+                        >
+                          {idx + 1}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-400 font-mono">Jump to Card:</span>
+                      <select
+                        value={floatingCardIdx}
+                        onChange={(e) => setFloatingCardIdx(Number(e.target.value))}
+                        className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-emerald-300 max-w-[260px] cursor-pointer"
                       >
-                        {idx + 1}
-                      </button>
-                    ))}
-                  </div>
+                        {modalDeckCards.map((c, idx) => (
+                          <option key={`${c.topic.id}-${idx}`} value={idx}>
+                            #{idx + 1} · {c.editionDate} · {c.topic.headlineEn.slice(0, 32)}...
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   <button
                     type="button"
