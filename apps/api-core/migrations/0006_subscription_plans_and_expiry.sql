@@ -19,6 +19,13 @@ ALTER TABLE student_subscriptions
   ALTER COLUMN plan_tier TYPE varchar(80) USING plan_tier::text,
   ALTER COLUMN plan_tier SET DEFAULT 'pro_prelims';
 
+ALTER TABLE student_subscriptions
+  ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS student_subscriptions_status_idx
+  ON student_subscriptions (payment_status);
+
+
 -- 2. Create subscription_plans table for Admin to add, modify, and delete plans
 CREATE TABLE IF NOT EXISTS subscription_plans (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),

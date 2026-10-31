@@ -25,7 +25,12 @@ export async function api<T>(
       method: init?.method ?? "GET",
       credentials: "include",
       headers: init?.body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
+      body:
+        init?.body !== undefined
+          ? typeof init.body === "string"
+            ? init.body
+            : JSON.stringify(init.body)
+          : undefined,
     });
   } catch {
     throw new ApiError(

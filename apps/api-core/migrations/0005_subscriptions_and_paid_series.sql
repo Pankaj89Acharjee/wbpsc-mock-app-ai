@@ -30,9 +30,14 @@ CREATE TABLE IF NOT EXISTS student_subscriptions (
   notes text,
   starts_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS student_subscriptions_user_idx
   ON student_subscriptions (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS student_subscriptions_status_idx
+  ON student_subscriptions (payment_status);
+

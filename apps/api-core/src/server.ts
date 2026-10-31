@@ -2,7 +2,7 @@ import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import { authRoutes, ensureAdminAccount } from "./routes/auth";
-import { meRoutes } from "./routes/me";
+import { meRoutes, ensureSubscriptionSchemaReady } from "./routes/me";
 import { aiRoutes } from "./routes/ai";
 import { adminRoutes } from "./routes/admin";
 import { examRoutes } from "./routes/exam";
@@ -20,6 +20,7 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
   if (pending.length > 0 || process.env.DB_MIGRATE_ON_START === "true") {
     await runMigrations(queryClient);
   }
+  await ensureSubscriptionSchemaReady().catch(() => {});
 
   // Heal WBPSC Clerkship total_questions if it was previously overwritten to 300 or seeded as 20
   await queryClient`

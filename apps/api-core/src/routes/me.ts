@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { and, asc, desc, eq } from "drizzle-orm";
-import { db } from "../db/index";
+import { db, queryClient } from "../db/index";
 import {
   attemptAnswers,
   examSeries,
@@ -36,6 +36,100 @@ type AttemptRow = typeof testAttempts.$inferSelect;
 type ExamRow = typeof exams.$inferSelect;
 type SubscriptionPlanRow = typeof subscriptionPlans.$inferSelect;
 
+let subscriptionSchemaVerified = false;
+
+/**
+ * Self-healing schema guard that ensures `student_subscriptions` (including `created_by`),
+ * `subscription_plans`, and user billing columns exist in PostgreSQL even if migrations
+ * were skipped or partially applied on an earlier DB snapshot.
+ */
+export async function ensureSubscriptionSchemaReady(): Promise<void> {
+  if (subscriptionSchemaVerified) return;
+  await queryClient.unsafe(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS payment_due_inr numeric(8, 2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS total_paid_inr numeric(8, 2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS billing_notes text,
+      ADD COLUMN IF NOT EXISTS subscription_expires_at timestamptz;
+
+    ALTER TABLE users
+      ALTER COLUMN subscription_tier DROP DEFAULT,
+      ALTER COLUMN subscription_tier TYPE varchar(80) USING subscription_tier::text,
+      ALTER COLUMN subscription_tier SET DEFAULT 'free';
+
+    ALTER TABLE exam_series
+      ADD COLUMN IF NOT EXISTS access_type varchar(16) NOT NULL DEFAULT 'free',
+      ADD COLUMN IF NOT EXISTS required_tier varchar(80) NOT NULL DEFAULT 'free',
+      ADD COLUMN IF NOT EXISTS price_inr numeric(8, 2) NOT NULL DEFAULT 0.00;
+
+    ALTER TABLE exam_series
+      ALTER COLUMN required_tier DROP DEFAULT,
+      ALTER COLUMN required_tier TYPE varchar(80) USING required_tier::text,
+      ALTER COLUMN required_tier SET DEFAULT 'free';
+
+    CREATE TABLE IF NOT EXISTS subscription_plans (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tier varchar(80) NOT NULL UNIQUE,
+      short_label varchar(80) NOT NULL,
+      label_en varchar(200) NOT NULL,
+      label_bn varchar(200) NOT NULL DEFAULT '',
+      price_inr numeric(8, 2) NOT NULL DEFAULT 0.00,
+      billing_cycle varchar(32) NOT NULL DEFAULT 'yearly',
+      duration_days integer NOT NULL DEFAULT 365,
+      description_en text NOT NULL DEFAULT '',
+      description_bn text NOT NULL DEFAULT '',
+      features jsonb NOT NULL DEFAULT '[]'::jsonb,
+      is_active boolean NOT NULL DEFAULT true,
+      display_order integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS subscription_plans_order_idx
+      ON subscription_plans (display_order, created_at);
+
+    CREATE TABLE IF NOT EXISTS student_subscriptions (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      plan_tier varchar(80) NOT NULL DEFAULT 'pro_prelims',
+      plan_name varchar(160) NOT NULL,
+      billing_cycle varchar(32) NOT NULL DEFAULT 'yearly',
+      plan_price_inr numeric(8, 2) NOT NULL DEFAULT 0.00,
+      amount_paid_inr numeric(8, 2) NOT NULL DEFAULT 0.00,
+      amount_due_inr numeric(8, 2) NOT NULL DEFAULT 0.00,
+      payment_status varchar(32) NOT NULL DEFAULT 'paid',
+      payment_mode varchar(64) NOT NULL DEFAULT 'test_payment',
+      transaction_ref varchar(120),
+      notes text,
+      starts_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz,
+      created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    ALTER TABLE student_subscriptions
+      ALTER COLUMN plan_tier DROP DEFAULT,
+      ALTER COLUMN plan_tier TYPE varchar(80) USING plan_tier::text,
+      ALTER COLUMN plan_tier SET DEFAULT 'pro_prelims';
+
+    ALTER TABLE student_subscriptions
+      ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS transaction_ref varchar(120),
+      ADD COLUMN IF NOT EXISTS notes text,
+      ADD COLUMN IF NOT EXISTS starts_at timestamptz NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS expires_at timestamptz,
+      ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+    CREATE INDEX IF NOT EXISTS student_subscriptions_user_idx
+      ON student_subscriptions (user_id, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS student_subscriptions_status_idx
+      ON student_subscriptions (payment_status);
+  `);
+  subscriptionSchemaVerified = true;
+}
+
 export function toSubscriptionPlanDto(p: SubscriptionPlanRow): SubscriptionPlanDto {
   return {
     id: p.id,
@@ -58,6 +152,7 @@ export function toSubscriptionPlanDto(p: SubscriptionPlanRow): SubscriptionPlanD
 
 /** Ensures the default 5 subscription plans exist in PostgreSQL. */
 export async function ensureSubscriptionPlansSeeded(): Promise<SubscriptionPlanDto[]> {
+  await ensureSubscriptionSchemaReady();
   let rows = await db
     .select()
     .from(subscriptionPlans)
@@ -362,6 +457,7 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
 
   /** 7. GET /me/subscriptions — student's own subscription & test payment history */
   fastify.get("/subscriptions", async (request) => {
+    await ensureSubscriptionSchemaReady();
     const rows = await db
       .select()
       .from(studentSubscriptions)
@@ -397,10 +493,12 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
    */
   const PurchaseSubscriptionBodySchema = z.object({
     planTier: SubscriptionTierSchema,
-    testPaidAmountInr: z.coerce.number().min(0).max(50_000),
-    billingCycle: z.enum(["monthly", "quarterly", "yearly"]).default("yearly"),
-    payExistingDueOnly: z.boolean().default(false),
-    notes: z.string().trim().max(500).optional(),
+    testPaidAmountInr: z.coerce.number().min(0).max(500_000).default(0),
+    billingCycle: z
+      .enum(["monthly", "quarterly", "yearly", "annual", "lifetime"])
+      .default("yearly"),
+    payExistingDueOnly: z.coerce.boolean().default(false),
+    notes: z.string().trim().max(500).nullable().optional(),
   });
 
   fastify.post("/subscriptions/purchase", async (request, reply) => {
@@ -409,7 +507,19 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
         error: "Admins manage subscription plans and do not purchase aspirant plans.",
       });
     }
-    const parsed = PurchaseSubscriptionBodySchema.safeParse(request.body);
+
+    await ensureSubscriptionSchemaReady();
+
+    let rawBody: unknown = request.body;
+    if (typeof rawBody === "string") {
+      try {
+        rawBody = JSON.parse(rawBody);
+      } catch {
+        rawBody = {};
+      }
+    }
+
+    const parsed = PurchaseSubscriptionBodySchema.safeParse(rawBody ?? {});
     if (!parsed.success) {
       return reply.status(400).send({ error: formatIssues(parsed.error.issues) });
     }
@@ -446,8 +556,10 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
       const paymentStatus: StudentSubscriptionDto["paymentStatus"] =
         newDue <= 0 ? "paid" : paidNow > 0 ? "partial_due" : "pending_due";
 
-      const expiresAt = new Date();
-      if (body.billingCycle === "monthly") {
+      let expiresAt: Date | null = new Date();
+      if (body.billingCycle === "lifetime" || body.planTier === "free") {
+        expiresAt = null;
+      } else if (body.billingCycle === "monthly") {
         expiresAt.setMonth(expiresAt.getMonth() + 1);
       } else if (body.billingCycle === "quarterly") {
         expiresAt.setMonth(expiresAt.getMonth() + 3);
@@ -465,7 +577,7 @@ export const meRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => 
           planName: body.payExistingDueOnly
             ? `Due Clearance (${planMeta.shortLabel})`
             : planMeta.labelEn,
-          billingCycle: body.billingCycle,
+          billingCycle: body.billingCycle === "annual" ? "yearly" : body.billingCycle,
           planPriceInr: String(planPrice),
           amountPaidInr: String(paidNow),
           amountDueInr: String(newDue),
