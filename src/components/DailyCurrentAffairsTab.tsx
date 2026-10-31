@@ -431,10 +431,22 @@ export default function DailyCurrentAffairsTab({
         : storedEditionsInModalMonth.filter((e) => e.editionDate === modalDateFilter);
 
     const list: DeckCardEntry[] = [];
+    const seenHeadlineKeys = new Set<string>();
     for (const ed of targetEditions) {
       for (const t of ed.topics) {
         if (modalCategoryFilter !== "all" && t.category !== modalCategoryFilter) {
           continue;
+        }
+        const normKey = String(t.headlineEn || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (normKey && seenHeadlineKeys.has(normKey)) {
+          continue;
+        }
+        if (normKey) {
+          seenHeadlineKeys.add(normKey);
         }
         list.push({
           topic: t,
@@ -1269,7 +1281,7 @@ export default function DailyCurrentAffairsTab({
               </div>
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">How Batch Backfilling works:</strong> Generating 365 days × 12 topics (4,380 cards) all at once would overload memory. Instead, October 2026 is already 100% pre-filled (all 31 days including 27 Oct), and for any earlier month you can populate continuous batches (<em>Days 1–10, Days 11–20, Days 21–End, or Full 30/31 Days</em>) and watch the Month Card progress bar update live!
+                <strong className="text-white">How 2-Level Nested Crawling &amp; Zero-Duplicate Backfilling works:</strong> Instead of shallow top-page scraping or repeating topics across dates, our crawler follows nested <code className="text-sky-300">&lt;a href&gt;</code> sub-pages on GKToday &amp; PYQArena alongside Google Search Grounding for that exact date, and passes all previously stored headlines into a strict <strong>3-Layer Anti-Duplication Filter</strong> so no two dates ever share the same Current Affairs topic!
               </p>
             </div>
 
