@@ -6,14 +6,15 @@ import {
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
+  Clock,
   Download,
-  ExternalLink,
   FileDown,
   Filter,
-  Globe,
+  HelpCircle,
   Layers,
   Maximize2,
-  Printer,
+  Play,
+  Power,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -106,6 +107,16 @@ export interface CaDashboardStats {
   categoryCounts: Record<string, number>;
 }
 
+export interface CaAutoSchedulerStatus {
+  enabled: boolean;
+  scheduleCronLabel: string;
+  targetTopicsPerDay: number;
+  lastAutoRunAt: string;
+  lastAutoCollectedDate: string;
+  pastDaysAutoBackfilled: boolean;
+  totalAutoRunsCount: number;
+}
+
 interface DailyCurrentAffairsTabProps {
   user?: UserDto;
   lang: SupportedLang;
@@ -128,6 +139,99 @@ const ORDERED_CATEGORIES = [
   "Ranks, Reports & Indices",
   "National & International",
 ];
+
+const MONTH_NAMES_EN = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+const MONTH_NAMES_BN = [
+  "জানুয়ারি",
+  "ফেব্রুয়ারি",
+  "মার্চ",
+  "এপ্রিল",
+  "মে",
+  "জুন",
+  "জুলাই",
+  "আগস্ট",
+  "সেপ্টেম্বর",
+  "অক্টোবর",
+  "নভেম্বর",
+  "ডিসেম্বর",
+];
+
+const WEEKDAYS_FULL_EN = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+const BENGALI_DIGITS = ["০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯"];
+
+function toBnDigits(val: string | number): string {
+  return String(val).replace(/\d/g, (d) => BENGALI_DIGITS[Number(d)] ?? d);
+}
+
+/**
+ * Formats an ISO date ("2026-09-02") into an unmistakable human-readable string:
+ * e.g. "02 September 2026 (Wednesday)" or "০২ সেপ্টেম্বর ২০২৬"
+ * so users never confuse YYYY-MM-DD with YYYY-DD-MM.
+ */
+export function formatReadableDate(isoDate: string | undefined, lang: SupportedLang): string {
+  if (!isoDate) return "";
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate.trim());
+  if (!match) return isoDate;
+  const year = Number(match[1]);
+  const monthIdx = Math.max(0, Math.min(11, Number(match[2]) - 1));
+  const day = Number(match[3]);
+  const dayPadded = String(day).padStart(2, "0");
+
+  const dObj = new Date(Date.UTC(year, monthIdx, day));
+  const weekdayEn = WEEKDAYS_FULL_EN[dObj.getUTCDay()] || "";
+
+  if (lang === "bn") {
+    return `${toBnDigits(dayPadded)} ${MONTH_NAMES_BN[monthIdx]} ${toBnDigits(year)}`;
+  }
+  return `${dayPadded} ${MONTH_NAMES_EN[monthIdx]} ${year} (${weekdayEn.slice(0, 3)})`;
+}
+
+export function formatReadableMonth(monthKey: string, lang: SupportedLang): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey.trim());
+  if (!match) return monthKey;
+  const year = match[1];
+  const monthIdx = Math.max(0, Math.min(11, Number(match[2]) - 1));
+  if (lang === "bn") {
+    return `${MONTH_NAMES_BN[monthIdx]} ${toBnDigits(year)}`;
+  }
+  return `${MONTH_NAMES_EN[monthIdx]} ${year}`;
+}
+
+function getDaysInMonthCount(monthKey: string, todayIso: string): number {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) return 30;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const totalInMonth = new Date(year, month, 0).getDate();
+  if (monthKey === todayIso.slice(0, 7)) {
+    const todayDay = Number(todayIso.slice(8, 10)) || totalInMonth;
+    return Math.min(totalInMonth, todayDay);
+  }
+  return totalInMonth;
+}
 
 function buildCalendarDays(monthKey: string): Array<{
   dayNumber: number | null;
@@ -154,6 +258,17 @@ function buildCalendarDays(monthKey: string): Array<{
   return cells;
 }
 
+export interface DeckCardEntry {
+  topic: CaTopicItem;
+  editionId: string;
+  editionDate: string;
+  editionTitleEn: string;
+  editionTitleBn: string;
+  monthKey: string;
+  monthLabelEn: string;
+  monthLabelBn: string;
+}
+
 export default function DailyCurrentAffairsTab({
   user,
   lang,
@@ -163,39 +278,57 @@ export default function DailyCurrentAffairsTab({
   const isAdmin = user?.role === "admin";
 
   const [loading, setLoading] = useState<boolean>(true);
+  const [todayIso, setTodayIso] = useState<string>(() =>
+    new Date().toISOString().slice(0, 10)
+  );
+  const [scheduler, setScheduler] = useState<CaAutoSchedulerStatus | null>(null);
   const [stats, setStats] = useState<CaDashboardStats | null>(null);
   const [monthsArchive, setMonthsArchive] = useState<CaMonthArchiveSummary[]>([]);
   const [editions, setEditions] = useState<CaEditionDto[]>([]);
 
-  // Selection, Calendar & Filters
-  const [selectedMonthKey, setSelectedMonthKey] = useState<string>("all");
-  const [calendarMonthKey, setCalendarMonthKey] = useState<string>("2026-09");
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
+  // Global Category & Search filter
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [activeEditionId, setActiveEditionId] = useState<string | null>(null);
-  const [activeViewMode, setActiveViewMode] = useState<
-    "notes" | "categorized-month" | "mcqs" | "agent-trace"
-  >("notes");
 
-  // Floating Animated Card Modal State
+  // =========================================================================
+  // FLOATING ANIMATED CARD DECK MODAL STATE (With Built-in Month & Calendar)
+  // =========================================================================
   const [floatingModalOpen, setFloatingModalOpen] = useState<boolean>(false);
+  const [modalMonthKey, setModalMonthKey] = useState<string>("2026-10");
+  // "all" means render ALL stored dates in `modalMonthKey` by default;
+  // or a specific "YYYY-MM-DD" string when the user clicks a date on the calendar.
+  const [modalDateFilter, setModalDateFilter] = useState<string>("all");
+  const [modalCategoryFilter, setModalCategoryFilter] = useState<string>("all");
+  const [showModalCalendar, setShowModalCalendar] = useState<boolean>(true);
   const [floatingCardIdx, setFloatingCardIdx] = useState<number>(0);
   const [cardAnimDirection, setCardAnimDirection] = useState<"next" | "prev">("next");
 
-  // Autonomous Agent Runner Form State
-  const [showAgentPanel, setShowAgentPanel] = useState<boolean>(false);
+  // =========================================================================
+  // AGENT MANAGEMENT CONSOLE STATE
+  // =========================================================================
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [backfillBusy, setBackfillBusy] = useState<boolean>(false);
+  const [backfillMonthKey, setBackfillMonthKey] = useState<string>("2026-09");
+  const [backfillBatchRange, setBackfillBatchRange] = useState<
+    "days-1-10" | "days-11-20" | "days-21-end" | "full-month"
+  >("full-month");
+  const [toggleSchedulerBusy, setToggleSchedulerBusy] = useState<boolean>(false);
   const [classifierBusyMonth, setClassifierBusyMonth] = useState<string | null>(null);
-  const [agentEditionDate, setAgentEditionDate] = useState<string>("2026-09-02");
+  const [classifierSelectedMonth, setClassifierSelectedMonth] = useState<string>("2026-10");
+  const [agentEditionDate, setAgentEditionDate] = useState<string>(() =>
+    new Date().toISOString().slice(0, 10)
+  );
   const [agentSourceUrl, setAgentSourceUrl] = useState<string>(
-    "https://www.pyqarena.com/current-affairs-from-the-hindu-2nd-september-2026/"
+    "https://www.gktoday.in/current-affairs/"
   );
   const [agentFocusTopics, setAgentFocusTopics] = useState<string>(
-    "GKToday + PYQArena (The Hindu) + PIB: Collect 12 high-yield PSCWB topics across Sports, Awards, Science & Tech, Polity, Economy, West Bengal Special, Defence, Environment & Indices"
+    "GKToday + PYQArena (The Hindu) + PIB + WB Gazette: Collect 12 high-yield PSCWB topics across West Bengal Special, Polity, Economy, Science & Tech, Sports, Awards, Defence, Environment & Indices"
   );
 
-  // Interactive MCQ Practice State
+  // =========================================================================
+  // INTERACTIVE MCQ PRACTICE QUIZ STATE
+  // =========================================================================
+  const [quizMonthKey, setQuizMonthKey] = useState<string>("all");
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, OptionKey>>({});
   const [quizSubmitted, setQuizSubmitted] = useState<boolean>(false);
 
@@ -203,20 +336,37 @@ export default function DailyCurrentAffairsTab({
     setLoading(true);
     try {
       const res = await api<{
+        todayIso?: string;
+        scheduler?: CaAutoSchedulerStatus;
         stats: CaDashboardStats;
         monthsArchive: CaMonthArchiveSummary[];
         editions: CaEditionDto[];
       }>("/current-affairs");
+      const serverToday = res.todayIso || new Date().toISOString().slice(0, 10);
+      setTodayIso(serverToday);
+      if (res.scheduler) setScheduler(res.scheduler);
       setStats(res.stats);
-      setMonthsArchive(res.monthsArchive || []);
-      setEditions(res.editions || []);
-      if (res.editions?.length > 0) {
-        const sept2 = res.editions.find((e) => e.editionDate === "2026-09-02");
-        const defaultEd = sept2 || res.editions[0];
-        setActiveEditionId((prev) =>
-          prev && res.editions.some((e) => e.id === prev) ? prev : defaultEd.id
+
+      // Strictly filter out any future editions on client side as well
+      const validEditions = (res.editions || []).filter(
+        (e) => e.editionDate <= serverToday
+      );
+      const validMonths = (res.monthsArchive || []).filter(
+        (m) => m.monthKey <= serverToday.slice(0, 7)
+      );
+
+      setEditions(validEditions);
+      setMonthsArchive(validMonths);
+
+      if (validMonths.length > 0) {
+        setModalMonthKey((prev) =>
+          validMonths.some((m) => m.monthKey === prev) ? prev : validMonths[0].monthKey
+        );
+        setClassifierSelectedMonth((prev) =>
+          validMonths.some((m) => m.monthKey === prev) ? prev : validMonths[0].monthKey
         );
       }
+      setAgentEditionDate((prev) => (prev > serverToday ? serverToday : prev));
     } catch (err) {
       onError(err, "Failed to load Current Affairs archive.");
     } finally {
@@ -232,107 +382,104 @@ export default function DailyCurrentAffairsTab({
   const editionsByDate = useMemo(() => {
     const map = new Map<string, CaEditionDto>();
     for (const ed of editions) {
-      map.set(ed.editionDate, ed);
+      if (ed.editionDate <= todayIso) {
+        map.set(ed.editionDate, ed);
+      }
     }
     return map;
-  }, [editions]);
+  }, [editions, todayIso]);
 
-  const filteredEditions = useMemo(() => {
-    return editions.filter((ed) => {
-      if (selectedMonthKey !== "all" && ed.monthKey !== selectedMonthKey) {
-        return false;
-      }
-      if (selectedCategory !== "all") {
-        const hasCat = ed.topics.some((t) => t.category === selectedCategory);
-        if (!hasCat) return false;
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const inTitle =
-          ed.titleEn.toLowerCase().includes(q) || ed.titleBn.toLowerCase().includes(q);
-        const inTopics = ed.topics.some(
-          (t) =>
-            t.headlineEn.toLowerCase().includes(q) ||
-            t.headlineBn.toLowerCase().includes(q) ||
-            t.staticGkLinkEn.toLowerCase().includes(q) ||
-            t.examPointsEn.some((p) => p.toLowerCase().includes(q))
-        );
-        if (!inTitle && !inTopics) return false;
-      }
-      return true;
-    });
-  }, [editions, selectedMonthKey, selectedCategory, searchQuery]);
+  // Available months (strictly <= current month, sorted newest first)
+  const availableMonthKeys = useMemo(() => {
+    const currentMonthKey = todayIso.slice(0, 7);
+    const keys = new Set<string>([
+      "2026-10",
+      "2026-09",
+      "2026-08",
+      "2026-07",
+      "2026-06",
+      "2026-05",
+      "2026-04",
+      "2026-03",
+      "2026-02",
+      "2026-01",
+      "2025-12",
+      "2025-11",
+    ]);
+    for (const m of monthsArchive) {
+      if (m.monthKey <= currentMonthKey) keys.add(m.monthKey);
+    }
+    return Array.from(keys)
+      .filter((k) => k <= currentMonthKey)
+      .sort((a, b) => b.localeCompare(a));
+  }, [monthsArchive, todayIso]);
 
-  const activeEdition = useMemo(() => {
-    return (
-      filteredEditions.find((e) => e.id === activeEditionId) ||
-      filteredEditions[0] ||
-      editions.find((e) => e.id === activeEditionId) ||
-      editions[0] ||
-      null
-    );
-  }, [filteredEditions, editions, activeEditionId]);
+  // Stored dates inside `modalMonthKey`
+  const storedEditionsInModalMonth = useMemo(() => {
+    return editions
+      .filter((e) => e.monthKey === modalMonthKey && e.editionDate <= todayIso)
+      .sort((a, b) => b.editionDate.localeCompare(a.editionDate));
+  }, [editions, modalMonthKey, todayIso]);
 
-  const filteredTopicsInActiveEdition = useMemo(() => {
-    if (!activeEdition) return [];
-    return activeEdition.topics.filter((t) => {
-      if (selectedCategory !== "all" && t.category !== selectedCategory) return false;
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        return (
-          t.headlineEn.toLowerCase().includes(q) ||
-          t.headlineBn.toLowerCase().includes(q) ||
-          t.staticGkLinkEn.toLowerCase().includes(q) ||
-          t.examPointsEn.some((p) => p.toLowerCase().includes(q))
-        );
-      }
-      return true;
-    });
-  }, [activeEdition, selectedCategory, searchQuery]);
+  // Build the flat list of cards for the Floating Animated Card Deck Modal
+  // By default (`modalDateFilter === "all"`), it loads ALL stored dates of `modalMonthKey`!
+  // If user selects a specific date on the modal calendar, it filters to that specific date.
+  const modalDeckCards = useMemo<DeckCardEntry[]>(() => {
+    const targetEditions =
+      modalDateFilter === "all"
+        ? storedEditionsInModalMonth
+        : storedEditionsInModalMonth.filter((e) => e.editionDate === modalDateFilter);
 
-  // All topics for the active month (or all months) grouped by Category for the Classifier Agent view
-  const categorizedTopicsForSelectedScope = useMemo(() => {
-    const scopeEditions =
-      selectedMonthKey === "all"
-        ? activeEdition
-          ? editions.filter((e) => e.monthKey === activeEdition.monthKey)
-          : editions
-        : editions.filter((e) => e.monthKey === selectedMonthKey);
-
-    const grouped: Record<string, Array<{ topic: CaTopicItem; editionDate: string }>> = {};
-    for (const ed of scopeEditions) {
+    const list: DeckCardEntry[] = [];
+    const seenHeadlineKeys = new Set<string>();
+    for (const ed of targetEditions) {
       for (const t of ed.topics) {
-        if (selectedCategory !== "all" && t.category !== selectedCategory) continue;
-        const cat = t.category || "National & International";
-        if (!grouped[cat]) grouped[cat] = [];
-        grouped[cat].push({ topic: t, editionDate: ed.editionDate });
+        if (modalCategoryFilter !== "all" && t.category !== modalCategoryFilter) {
+          continue;
+        }
+        const normKey = String(t.headlineEn || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (normKey && seenHeadlineKeys.has(normKey)) {
+          continue;
+        }
+        if (normKey) {
+          seenHeadlineKeys.add(normKey);
+        }
+        list.push({
+          topic: t,
+          editionId: ed.id,
+          editionDate: ed.editionDate,
+          editionTitleEn: ed.titleEn,
+          editionTitleBn: ed.titleBn,
+          monthKey: ed.monthKey,
+          monthLabelEn: ed.monthLabelEn,
+          monthLabelBn: ed.monthLabelBn,
+        });
       }
     }
-    return grouped;
-  }, [editions, selectedMonthKey, activeEdition, selectedCategory]);
+    return list;
+  }, [storedEditionsInModalMonth, modalDateFilter, modalCategoryFilter]);
 
-  // Keyboard navigation for the Floating Animated Flashcard Modal
-  const modalDeckTopics = useMemo(() => {
-    return filteredTopicsInActiveEdition.length > 0
-      ? filteredTopicsInActiveEdition
-      : activeEdition?.topics || [];
-  }, [filteredTopicsInActiveEdition, activeEdition]);
+  const activeModalCard = modalDeckCards[floatingCardIdx] || modalDeckCards[0] || null;
 
   const goPrevCard = useCallback(() => {
-    if (modalDeckTopics.length === 0) return;
+    if (modalDeckCards.length === 0) return;
     setCardAnimDirection("prev");
     setFloatingCardIdx((prev) =>
-      prev <= 0 ? modalDeckTopics.length - 1 : prev - 1
+      prev <= 0 ? modalDeckCards.length - 1 : prev - 1
     );
-  }, [modalDeckTopics.length]);
+  }, [modalDeckCards.length]);
 
   const goNextCard = useCallback(() => {
-    if (modalDeckTopics.length === 0) return;
+    if (modalDeckCards.length === 0) return;
     setCardAnimDirection("next");
     setFloatingCardIdx((prev) =>
-      prev >= modalDeckTopics.length - 1 ? 0 : prev + 1
+      prev >= modalDeckCards.length - 1 ? 0 : prev + 1
     );
-  }, [modalDeckTopics.length]);
+  }, [modalDeckCards.length]);
 
   useEffect(() => {
     if (!floatingModalOpen) return;
@@ -351,8 +498,89 @@ export default function DailyCurrentAffairsTab({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [floatingModalOpen, goPrevCard, goNextCard]);
 
-  const handleRunAgent = async (e: React.FormEvent) => {
-    e.preventDefault();
+  /**
+   * Helper to open the Floating Animated Card Modal for a given month (and optional date).
+   * By default (`dateFilter = "all"`), it loads the WHOLE month's Current Affairs into the modal!
+   */
+  const openFloatingDeckForMonth = (monthKey: string, dateFilter: string = "all") => {
+    setModalMonthKey(monthKey);
+    setModalDateFilter(dateFilter);
+    setModalCategoryFilter("all");
+    setFloatingCardIdx(0);
+    setFloatingModalOpen(true);
+  };
+
+  // =========================================================================
+  // AGENT ACTIONS
+  // =========================================================================
+
+  const handleToggleAutoScheduler = async () => {
+    setToggleSchedulerBusy(true);
+    try {
+      const res = await api<{ scheduler: CaAutoSchedulerStatus }>(
+        "/current-affairs/scheduler-toggle",
+        {
+          method: "POST",
+          body: JSON.stringify({ enabled: !scheduler?.enabled }),
+        }
+      );
+      setScheduler(res.scheduler);
+      onNotify?.(
+        "success",
+        res.scheduler.enabled
+          ? "Daily Auto-Collection Scheduler is now ON (collects 12 topics automatically every day)."
+          : "Daily Auto-Collection Scheduler is paused."
+      );
+    } catch (err) {
+      onError(err, "Failed to update scheduler state.");
+    } finally {
+      setToggleSchedulerBusy(false);
+    }
+  };
+
+  const handleAutoBackfillPastDays = async (
+    customMonthKey?: string,
+    customBatchRange?: "days-1-10" | "days-11-20" | "days-21-end" | "full-month"
+  ) => {
+    const targetMonth = customMonthKey || backfillMonthKey;
+    const targetRange = customBatchRange || backfillBatchRange;
+    setBackfillBusy(true);
+    try {
+      const res = await api<{
+        backfilledDates: string[];
+        monthKey?: string;
+        batchRange?: string;
+        todayIso: string;
+        scheduler: CaAutoSchedulerStatus;
+      }>("/current-affairs/auto-backfill", {
+        method: "POST",
+        body: JSON.stringify({
+          monthKey: targetMonth,
+          batchRange: targetRange,
+        }),
+      });
+      setScheduler(res.scheduler);
+      await loadArchive();
+      openFloatingDeckForMonth(targetMonth, "all");
+      onNotify?.(
+        "success",
+        `Batch Historical Backfill Agent populated ${res.backfilledDates.length} continuous dates for ${formatReadableMonth(targetMonth, "en")} (${targetRange}) and refreshed the UI!`
+      );
+    } catch (err) {
+      onError(err, "Failed to batch-backfill past days.");
+    } finally {
+      setBackfillBusy(false);
+    }
+  };
+
+  const handleRunAgentForDate = async (targetDate: string) => {
+    if (targetDate > todayIso) {
+      onNotify?.(
+        "error",
+        `Cannot collect Current Affairs for a future date (${targetDate}). Please pick Today (${todayIso}) or a past date.`
+      );
+      return;
+    }
     setAgentBusy(true);
     try {
       const res = await api<{
@@ -363,20 +591,17 @@ export default function DailyCurrentAffairsTab({
       }>("/current-affairs/agent-run", {
         method: "POST",
         body: JSON.stringify({
-          editionDate: agentEditionDate,
+          editionDate: targetDate,
           sourceUrl: agentSourceUrl,
           focusTopics: agentFocusTopics,
           targetTopicCount: 12,
         }),
       });
       await loadArchive();
-      setActiveEditionId(res.editionId);
-      setCalendarMonthKey(res.editionDate.slice(0, 7));
-      setSelectedCalendarDate(res.editionDate);
-      setShowAgentPanel(false);
+      openFloatingDeckForMonth(res.editionDate.slice(0, 7), res.editionDate);
       onNotify?.(
         "success",
-        `CA Agent harvested & classified ${res.topicsCount} exam-oriented topics & ${res.mcqsCount} MCQs for ${res.editionDate}.`
+        `Agent collected & classified ${res.topicsCount} topics and ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
       );
     } catch (err) {
       onError(err, "Autonomous Current Affairs Agent execution failed.");
@@ -400,12 +625,10 @@ export default function DailyCurrentAffairsTab({
         body: JSON.stringify({ monthKey }),
       });
       await loadArchive();
-      setActiveEditionId(res.editionId);
-      setSelectedMonthKey(monthKey);
-      setActiveViewMode("categorized-month");
+      openFloatingDeckForMonth(monthKey, "all");
       onNotify?.(
         "success",
-        `Classifier Agent compiled ${res.topicsCount} categorized topics for ${res.monthLabelEn}!`
+        `Monthly Category Classifier Agent organized ${res.topicsCount} topics across Sports, Awards, Science, Polity, Economy & WB Special for ${res.monthLabelEn}!`
       );
     } catch (err) {
       onError(err, "Monthly Category Classifier Agent failed.");
@@ -419,7 +642,7 @@ export default function DailyCurrentAffairsTab({
     try {
       await api(`/current-affairs/${editionId}`, { method: "DELETE" });
       await loadArchive();
-      onNotify?.("info", `Deleted Current Affairs edition (${editionDate}).`);
+      onNotify?.("info", `Deleted Current Affairs edition (${formatReadableDate(editionDate, "en")}).`);
     } catch (err) {
       onError(err, "Failed to delete edition.");
     }
@@ -453,7 +676,6 @@ export default function DailyCurrentAffairsTab({
     if (targetEditions.length === 0) return;
     await recordDownload(targetEditions[0].id);
 
-    // Group all topics across targetEditions by category
     const byCategory: Record<
       string,
       Array<{ topic: CaTopicItem; editionDate: string }>
@@ -483,7 +705,7 @@ export default function DailyCurrentAffairsTab({
           .map(
             ({ topic: t, editionDate }, idx) => `
           <div class="topic-card">
-            <div class="topic-meta">${cat} · Date: ${editionDate} · Source: ${t.sourceTag}</div>
+            <div class="topic-meta">${cat} · Date: ${formatReadableDate(editionDate, "en")} (${editionDate}) · Source: ${t.sourceTag}</div>
             <h3>${idx + 1}. ${t.headlineEn}</h3>
             <div class="bn-title">${t.headlineBn}</div>
             <p class="why-news"><strong>Why in News:</strong> ${t.whyInNewsEn}<br/><span class="bn-text">${t.whyInNewsBn}</span></p>
@@ -522,7 +744,7 @@ export default function DailyCurrentAffairsTab({
       .map(
         ({ mcq: m, editionDate }, idx) => `
       <div class="mcq-card">
-        <p><strong>Q${idx + 1} [${m.category} · ${editionDate}]:</strong> ${m.stem.en}<br/><span class="bn-text">${m.stem.bn}</span></p>
+        <p><strong>Q${idx + 1} [${m.category} · ${formatReadableDate(editionDate, "en")}]:</strong> ${m.stem.en}<br/><span class="bn-text">${m.stem.bn}</span></p>
         <p class="options">
           (A) ${m.options.A.en} / ${m.options.A.bn} &nbsp;&nbsp;
           (B) ${m.options.B.en} / ${m.options.B.bn}<br/>
@@ -601,43 +823,40 @@ export default function DailyCurrentAffairsTab({
     );
   };
 
-  // Calendar navigation helpers
-  const availableMonthKeys = useMemo(() => {
-    const keys = new Set<string>([
-      "2026-11",
-      "2026-10",
-      "2026-09",
-      "2026-08",
-      "2026-07",
-      "2026-06",
-      "2026-05",
-      "2026-04",
-      "2026-03",
-      "2026-02",
-      "2026-01",
-      "2025-12",
-    ]);
-    for (const m of monthsArchive) keys.add(m.monthKey);
-    return Array.from(keys).sort((a, b) => b.localeCompare(a));
-  }, [monthsArchive]);
-
-  const calendarCells = useMemo(
-    () => buildCalendarDays(calendarMonthKey),
-    [calendarMonthKey]
+  const modalCalendarCells = useMemo(
+    () => buildCalendarDays(modalMonthKey),
+    [modalMonthKey]
   );
 
-  const stepCalendarMonth = (delta: number) => {
-    const idx = availableMonthKeys.indexOf(calendarMonthKey);
+  const stepModalMonth = (delta: number) => {
+    const idx = availableMonthKeys.indexOf(modalMonthKey);
     if (idx === -1) return;
     const nextIdx = Math.max(0, Math.min(availableMonthKeys.length - 1, idx + delta));
-    setCalendarMonthKey(availableMonthKeys[nextIdx]);
+    setModalMonthKey(availableMonthKeys[nextIdx]);
+    setModalDateFilter("all");
+    setFloatingCardIdx(0);
   };
+
+  // Filtered MCQs for the clean practice quiz section
+  const quizMcqs = useMemo(() => {
+    const targetEds =
+      quizMonthKey === "all"
+        ? editions.slice(0, 3)
+        : editions.filter((e) => e.monthKey === quizMonthKey);
+    const list: Array<{ mcq: CaMcqItem; editionDate: string }> = [];
+    for (const ed of targetEds) {
+      for (const m of ed.mcqs) {
+        list.push({ mcq: m, editionDate: ed.editionDate });
+      }
+    }
+    return list;
+  }, [editions, quizMonthKey]);
 
   if (loading) {
     return (
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-10 text-center text-sm text-slate-400">
-        Loading 1-Year Categorized Current Affairs Archive (Dec 2025 – Nov 2026) &amp;
-        Classifier Agent...
+        Loading Previous 1-Year Current Affairs Archive (Nov 2025 – Oct 2026) &amp;
+        Autonomous Agents...
       </div>
     );
   }
@@ -646,341 +865,258 @@ export default function DailyCurrentAffairsTab({
     (a, b) => b[1] - a[1]
   );
 
-  const activeFloatingTopic = modalDeckTopics[floatingCardIdx] || modalDeckTopics[0] || null;
+  const todayEdition = editionsByDate.get(todayIso) || editions[0] || null;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* ====================================================================
-          1. TOP HEADER & 1-YEAR CLERKSHIP CATEGORIZED CAPSULE BAR
+          SECTION 1: TOP OVERVIEW BANNER + TODAY'S CURRENT AFFAIRS QUICK LAUNCH
       ==================================================================== */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-1 max-w-3xl">
-            <div className="flex items-center gap-2 text-xs text-emerald-400 font-semibold">
-              <Bot className="w-4 h-4" />
-              <span>
-                Multi-Agent Current Affairs Suite · Grounded on GKToday, PYQArena (The
-                Hindu), PIB &amp; WB Gazette
+          <div className="space-y-1.5 max-w-3xl">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {isAdmin ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold">
+                  <Bot className="w-3.5 h-3.5" />
+                  {scheduler?.enabled ? "Daily Auto-Collector: ACTIVE" : "Daily Auto-Collector: PAUSED"}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold">
+                  <BookOpen className="w-3.5 h-3.5" />
+                  WBPSC Exam-Ready Current Affairs Capsule
+                </span>
+              )}
+              <span className="text-slate-400 font-mono">
+                Today: <strong className="text-white">{formatReadableDate(todayIso, lang)}</strong>
               </span>
             </div>
+
             <h1 className="text-xl font-bold text-white">
               {lang === "bn"
-                ? "ডিসেম্বর ২০২৬ ক্লার্কশিপ ১-বছরের ক্যাটাগরিভিত্তিক কারেন্ট অ্যাফেয়ার্স ও এজেন্ট ড্যাশবোর্ড"
-                : "1-Year Categorized Current Affairs Archive (Dec 2025 – Nov 2026) & Classifier Agent"}
+                ? "কারেন্ট অ্যাফেয়ার্স আর্কাইভ (বিগত ১ বছর: নভেম্বর ২০২৫ – অক্টোবর ২০২৬)"
+                : "Daily & Previous 1-Year Current Affairs Archive (Nov 2025 – Oct 2026)"}
             </h1>
             <p className="text-xs text-slate-400 leading-relaxed">
               {lang === "bn"
-                ? "প্রতিটি সংস্করণে ১০–১২টি গুরুত্বপূর্ণ পরীক্ষা-কেন্দ্রিক টপিক, ফ্লোটিং অ্যানিমেটেড কার্ড ভিউ, ইন্টারেক্টিভ মাসিক ক্যালেন্ডার এবং ক্রীড়া, পুরস্কার, বিজ্ঞান ও প্রযুক্তি সহ ক্যাটাগরিভিত্তিক মাসিক PDF ক্যাপসুল।"
-                : "Collects 10–12 high-yield WBPSC topics per edition, classifies them automatically into Sports, Awards, Science & Tech, Polity, Economy & West Bengal Special, and compiles downloadable Monthly & 1-Year Categorized PDF Capsules for the December 2026 Clerkship Exam."}
+                ? "যেকোনো মাসের কার্ডে ক্লিক করলে সেই মাসের সম্পূর্ণ কারেন্ট অ্যাফেয়ার্স ফ্লোটিং অ্যানিমেটেড কার্ড মোডালে খুলে যাবে। মোডালের ভেতরে থাকা ক্যালেন্ডার থেকে আপনি নির্দিষ্ট যেকোনো তারিখের কারেন্ট অ্যাফেয়ার্সও দেখতে পারবেন।"
+                : "Click any Month Card below to open that entire month's Current Affairs inside the Floating Animated Card Deck Modal. Inside the modal, use the built-in Calendar to view all dates of that month or pick any specific date."}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Button 1: Open Today's / Current Month's Floating Animated Card Deck */}
             <button
               type="button"
-              onClick={() => {
-                setFloatingCardIdx(0);
-                setFloatingModalOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-lg transition-colors cursor-pointer shadow-sm"
+              onClick={() =>
+                openFloatingDeckForMonth(
+                  todayEdition?.monthKey || todayIso.slice(0, 7),
+                  "all"
+                )
+              }
+              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-md"
             >
-              <Maximize2 className="w-3.5 h-3.5" />
-              Floating Animated Card Deck ({modalDeckTopics.length} Cards)
+              <Maximize2 className="w-4 h-4" />
+              Open Floating Card Deck (With Calendar)
             </button>
 
-            <button
-              type="button"
-              onClick={() => setShowAgentPanel((prev) => !prev)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg transition-colors cursor-pointer shadow-sm"
-            >
-              <Bot className="w-4 h-4" />
-              {showAgentPanel ? "Close Agent Studio" : "Run 12-Topic CA Agent"}
-            </button>
-
+            {/* Button 2: Download Full 1-Year Categorized Clerkship Mega-Capsule PDF */}
             <button
               type="button"
               onClick={() =>
                 void handleDownloadCategorizedCapsulePdf(
                   editions,
-                  `1-Year WBPSC Clerkship Dec 2026 Categorized Mega-Capsule (${stats?.monthsStoredCount ?? 12} Months)`,
-                  `WBPSC-Clerkship-1Year-Categorized-CA-2025-2026`
+                  `Previous 1-Year WBPSC Clerkship Categorized Mega-Capsule (${monthsArchive.length} Months: Nov 2025 – Oct 2026)`,
+                  `WBPSC-Clerkship-1Year-Categorized-CA-Nov2025-Oct2026`
                 )
               }
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-lg transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-sm"
             >
-              <FileDown className="w-3.5 h-3.5 text-sky-400" />
-              1-Year Clerkship PDF ({stats?.monthsStoredCount ?? 0} Months)
+              <FileDown className="w-4 h-4" />
+              Download 1-Year Categorized PDF ({monthsArchive.length} Months)
             </button>
           </div>
         </div>
 
-        {/* ====================================================================
-            2. FOUR STATUS & STATISTICS CARDS
-        ==================================================================== */}
+        {/* 4 Summary Metrics Cards */}
         {stats && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 pt-1">
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>1-Year Clerkship Coverage</span>
+                <span>Past 1-Year Archive (No Future Dates)</span>
                 <CalendarIcon className="w-4 h-4 text-emerald-400" />
               </div>
               <div className="text-xl font-bold font-mono text-white">
-                {stats.monthsStoredCount} Months Stored
+                {monthsArchive.length} Months Ready
               </div>
               <div className="text-[11px] text-slate-400">
-                <span className="text-emerald-400 font-mono">
-                  {stats.earliestDate?.slice(0, 7)} → {stats.latestDate?.slice(0, 7)}
+                <span className="text-emerald-400 font-semibold">
+                  Nov 2025 → Oct 2026
                 </span>
                 <span aria-hidden="true"> · </span>
-                <span>{stats.totalEditionsCount} Editions</span>
+                <span>{stats.totalEditionsCount} Stored Dates</span>
               </div>
             </div>
 
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Classified Exam Topics &amp; Bullets</span>
+                <span>Classified Exam Topics</span>
                 <Layers className="w-4 h-4 text-sky-400" />
               </div>
               <div className="text-xl font-bold font-mono text-sky-300">
                 {stats.totalTopicsCount} Exam Topics
               </div>
               <div className="text-[11px] text-slate-400">
-                <span>{stats.totalExamPointersCount} Concise Pointers</span>
+                <span>{stats.totalExamPointersCount} Bullet Pointers</span>
                 <span aria-hidden="true"> · </span>
-                <span className="text-sky-400">
-                  {Object.keys(stats.categoryCounts).length} Categories
+                <span className="text-sky-400">10 WBPSC Categories</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>{isAdmin ? "Daily Auto-Collector Status" : "PYQ-Pattern Practice MCQs"}</span>
+                <Clock className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="text-xl font-bold font-mono text-amber-300">
+                {isAdmin ? "12 Topics / Day" : `${stats.totalMcqsCount} Practice MCQs`}
+              </div>
+              <div className="text-[11px] text-slate-400">
+                <span>Latest Edition: </span>
+                <span className="text-emerald-300 font-semibold">
+                  {formatReadableDate(stats.latestDate || todayIso, "en")}
                 </span>
               </div>
             </div>
 
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Static GK Hooks &amp; PYQ MCQs</span>
-                <BookOpen className="w-4 h-4 text-amber-400" />
-              </div>
-              <div className="text-xl font-bold font-mono text-amber-300">
-                {stats.totalMcqsCount} Bilingual MCQs
-              </div>
-              <div className="text-[11px] text-slate-400">
-                <span>{stats.totalTopicsCount} Static GK Links</span>
-                <span aria-hidden="true"> · </span>
-                <span className="text-amber-300">EN + বাংলা</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Grounded Portals &amp; PDF Downloads</span>
+                <span>Grounded Sources &amp; Downloads</span>
                 <Download className="w-4 h-4 text-purple-400" />
               </div>
               <div className="text-xl font-bold font-mono text-white">
-                {stats.totalDownloadsCount} Downloads
+                {stats.totalDownloadsCount} PDF Downloads
               </div>
-              <div className="text-[11px] text-slate-400">
-                <span className="text-purple-300">GKToday · PYQArena · The Hindu · PIB</span>
+              <div className="text-[11px] text-purple-300">
+                GKToday · PYQArena (The Hindu) · PIB
               </div>
             </div>
           </div>
-        )}
-
-        {/* ====================================================================
-            3. AUTONOMOUS 12-TOPIC HARVESTER + CLASSIFIER AGENT STUDIO
-        ==================================================================== */}
-        {showAgentPanel && (
-          <form
-            onSubmit={handleRunAgent}
-            className="bg-slate-950 border border-emerald-500/40 rounded-xl p-4 space-y-3.5"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
-              <div>
-                <h2 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
-                  <Sparkles className="w-4 h-4" />
-                  Autonomous 10–12 Topic Harvester &amp; Category Classifier Agent
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Grounds on GKToday (`gktoday.in`), PYQArena (`pyqarena.com`), The Hindu &amp;
-                  PIB to collect 10–12 high-yield WBPSC topics and classify them by category.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAgentEditionDate("2026-09-02");
-                    setAgentSourceUrl(
-                      "https://www.pyqarena.com/current-affairs-from-the-hindu-2nd-september-2026/"
-                    );
-                    setAgentFocusTopics(
-                      "PYQArena (The Hindu 2nd Sept 2026) + GKToday: Collect 12 top WBPSC topics across Polity, WB Special, Economy, Science, Sports, Awards, Defence & Indices"
-                    );
-                  }}
-                  className="px-2.5 py-1 text-[11px] font-medium bg-slate-900 hover:bg-slate-800 text-emerald-300 border border-slate-700 rounded-md cursor-pointer"
-                >
-                  Preset: PYQArena + GKToday (2 Sept)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAgentEditionDate(new Date().toISOString().slice(0, 10));
-                    setAgentSourceUrl("https://www.gktoday.in/current-affairs/");
-                    setAgentFocusTopics(
-                      "GKToday + The Hindu + PIB: Collect 12 important PSCWB exam-oriented topics across Sports, Awards, Science & Tech, Polity, Economy & West Bengal"
-                    );
-                  }}
-                  className="px-2.5 py-1 text-[11px] font-medium bg-slate-900 hover:bg-slate-800 text-sky-300 border border-slate-700 rounded-md cursor-pointer"
-                >
-                  Preset: GKToday Daily 12-Topic Set
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Target Date *
-                </label>
-                <input
-                  type="date"
-                  required
-                  value={agentEditionDate}
-                  onChange={(e) => setAgentEditionDate(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white font-mono"
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Grounding Source URL (GKToday / PYQArena / The Hindu / PIB)
-                </label>
-                <input
-                  type="url"
-                  value={agentSourceUrl}
-                  onChange={(e) => setAgentSourceUrl(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white font-mono"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Category &amp; Syllabus Focus Instructions for Agent
-              </label>
-              <input
-                type="text"
-                value={agentFocusTopics}
-                onChange={(e) => setAgentFocusTopics(e.target.value)}
-                className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-white"
-              />
-            </div>
-
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-[11px] text-slate-400">
-                Collects 10–12 exam-oriented topics, classifies them into categories, and enables
-                the Floating Animated Card Deck &amp; Monthly PDF.
-              </span>
-              <button
-                type="submit"
-                disabled={agentBusy}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer shrink-0"
-              >
-                {agentBusy ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Scouting GKToday &amp; PYQArena (12 Topics)...
-                  </>
-                ) : (
-                  <>
-                    <Bot className="w-4 h-4" />
-                    Synthesize 12 Topics &amp; Save
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
         )}
       </div>
 
       {/* ====================================================================
-          4. 1-YEAR (12-MONTH) CATEGORIZED CAPSULES STRIP (SCROLLABLE)
+          SECTION 2: PREVIOUS 1-YEAR CURRENT AFFAIRS BY MONTH (Nov 2025 – Oct 2026)
+          Clicking ANY Month Card opens the Floating Animated Modal with the
+          WHOLE MONTH's Current Affairs loaded by default + in-modal Date Picker!
       ==================================================================== */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <div>
-            <h2 className="text-sm font-bold text-white">
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <CalendarIcon className="w-4 h-4 text-emerald-400" />
               {lang === "bn"
-                ? `ডিসেম্বর ২০২৬ ক্লার্কশিপ: বিগত ১ বছরের মাসিক ক্যাটাগরিভিত্তিক ক্যাপসুল (${monthsArchive.length} মাস)`
-                : `1-Year Categorized Monthly Capsules for Dec 2026 Clerkship (${monthsArchive.length} Months Ready)`}
+                ? `বিগত ১ বছরের মাসিক কারেন্ট অ্যাফেয়ার্স ক্যাপসুল (${monthsArchive.length} মাস: নভেম্বর ২০২৫ – অক্টোবর ২০২৬)`
+                : `Previous 1-Year Current Affairs by Month (${monthsArchive.length} Months: Nov 2025 – Oct 2026)`}
             </h2>
-            <p className="text-xs text-slate-400">
-              Click any month to filter by month, run the End-of-Month Classifier Agent, or
-              download that month&apos;s Categorized PDF Capsule.
+            <p className="text-xs text-slate-400 mt-0.5">
+              <strong>Click on any Month Card below</strong> to open that whole month&apos;s Current Affairs in the{" "}
+              <span className="text-amber-300 font-semibold">Floating Animated Card Modal</span>. Inside the modal, you can view the entire month or pick any individual date on the calendar.
             </p>
           </div>
-          {selectedMonthKey !== "all" && (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedMonthKey("all");
-                setSelectedCalendarDate(null);
-              }}
-              className="text-xs font-semibold text-emerald-400 hover:underline cursor-pointer"
-            >
-              Reset Month Filter (Show All {editions.length} Editions)
-            </button>
-          )}
         </div>
 
-        {/* Fixed-height horizontal/grid scrollable 12-month archive cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 max-h-[210px] overflow-y-auto pr-1">
+        {/* 12-Month Grid (Fixed Max Height with Vertical Scrollbar for responsiveness) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 max-h-[360px] overflow-y-auto pr-1">
           {monthsArchive.map((m) => {
-            const isSelected = selectedMonthKey === m.monthKey;
             const monthEditions = editions.filter((e) => e.monthKey === m.monthKey);
-            const isClassifying = classifierBusyMonth === m.monthKey;
+            const totalDaysPossible = getDaysInMonthCount(m.monthKey, todayIso);
+            const storedDaysCount = monthEditions.length;
+            const coveragePct = Math.min(
+              100,
+              Math.round((storedDaysCount / Math.max(1, totalDaysPossible)) * 100)
+            );
+            const isFullMonthStored = storedDaysCount >= totalDaysPossible;
+
             return (
               <div
                 key={m.monthKey}
-                onClick={() => {
-                  setSelectedMonthKey(isSelected ? "all" : m.monthKey);
-                  setCalendarMonthKey(m.monthKey);
-                  if (!isSelected && monthEditions[0]) {
-                    setActiveEditionId(monthEditions[0].id);
-                  }
-                }}
-                className={`rounded-xl p-3 border transition-all cursor-pointer ${
-                  isSelected
-                    ? "bg-emerald-500/15 border-emerald-500/50"
-                    : "bg-slate-950/80 border-slate-800 hover:border-slate-700"
-                }`}
+                onClick={() => openFloatingDeckForMonth(m.monthKey, "all")}
+                className="rounded-xl p-4 border bg-slate-950/90 border-slate-800 hover:border-amber-400/60 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-bold text-xs text-white">
-                    {lang === "bn" ? m.monthLabelBn : m.monthLabelEn}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-sm text-white group-hover:text-amber-300 transition-colors">
+                      {lang === "bn" ? m.monthLabelBn : m.monthLabelEn}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      {m.topicsCount} Topics
+                    </span>
                   </div>
-                  <span className="text-[11px] font-mono text-emerald-400">
-                    {m.topicsCount} Topics
+
+                  <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-1.5">
+                    <span className="font-semibold text-slate-200">
+                      {storedDaysCount} / {totalDaysPossible} Days Available
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span>{m.mcqsCount} MCQs</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{m.downloadsCount} DLs</span>
+                  </div>
+
+                  {/* Clean Monthly Daily Coverage Progress Bar */}
+                  <div className="bg-slate-900/90 border border-slate-800/90 rounded-lg p-2 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span
+                        className={
+                          isFullMonthStored
+                            ? "text-emerald-300 font-bold"
+                            : "text-sky-300 font-semibold"
+                        }
+                      >
+                        {isFullMonthStored
+                          ? `✓ All ${totalDaysPossible} Days Stored (100%)`
+                          : `📅 ${storedDaysCount} of ${totalDaysPossible} Days (${coveragePct}%)`}
+                      </span>
+
+                      {isAdmin && !isFullMonthStored ? (
+                        <button
+                          type="button"
+                          disabled={backfillBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBackfillMonthKey(m.monthKey);
+                            setBackfillBatchRange("full-month");
+                            void handleAutoBackfillPastDays(m.monthKey, "full-month");
+                          }}
+                          className="px-1.5 py-0.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold cursor-pointer"
+                          title={`Batch-fill unpopulated days of ${m.monthLabelEn}`}
+                        >
+                          + Batch Fill {totalDaysPossible}d
+                        </button>
+                      ) : (
+                        <span className="text-slate-400 font-mono">
+                          {isFullMonthStored ? `1st–${totalDaysPossible}st` : `${storedDaysCount}d ready`}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          isFullMonthStored ? "bg-emerald-400" : "bg-sky-400"
+                        }`}
+                        style={{ width: `${Math.max(10, coveragePct)}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-2.5 border-t border-slate-800/90 flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-300 group-hover:underline">
+                    <Maximize2 className="w-3 h-3" />
+                    Open Calendar &amp; Cards
                   </span>
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  <span>{m.editionsCount} Ed.</span>
-                  <span aria-hidden="true"> · </span>
-                  <span>{m.mcqsCount} MCQs</span>
-                  <span aria-hidden="true"> · </span>
-                  <span>{m.downloadsCount} DLs</span>
-                </div>
-                <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    disabled={isClassifying}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleRunMonthlyClassifierAgent(m.monthKey);
-                    }}
-                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-300 hover:text-emerald-200 cursor-pointer"
-                    title="Run Classifier Agent to compile 12 categorized topics for this month"
-                  >
-                    <Bot className="w-3 h-3" />
-                    {isClassifying ? "Classifying..." : "Classifier Agent"}
-                  </button>
 
                   <button
                     type="button"
@@ -992,747 +1128,517 @@ export default function DailyCurrentAffairsTab({
                         `WBPSC-CA-Categorized-${m.monthKey}`
                       );
                     }}
-                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-300 hover:text-sky-200 cursor-pointer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-sky-500/15 hover:bg-sky-500/25 text-[10px] font-semibold text-sky-300 border border-sky-500/30 cursor-pointer"
+                    title="Download Categorized Monthly Capsule PDF"
                   >
                     <Download className="w-3 h-3" />
-                    Monthly PDF
+                    Download PDF
                   </button>
                 </div>
               </div>
             );
           })}
         </div>
-
-        {/* Category Filter & Search Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-slate-400 inline-flex items-center gap-1 mr-1">
-              <Filter className="w-3.5 h-3.5" />
-              Category:
-            </span>
-            <button
-              type="button"
-              onClick={() => setSelectedCategory("all")}
-              className={`px-2.5 py-1 text-xs rounded-md transition-colors cursor-pointer ${
-                selectedCategory === "all"
-                  ? "bg-slate-200 text-slate-950 font-semibold"
-                  : "bg-slate-950 text-slate-400 hover:text-white border border-slate-800"
-              }`}
-            >
-              All ({stats?.totalTopicsCount ?? 0})
-            </button>
-            {categoryEntries.map(([cat, count]) => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setSelectedCategory(selectedCategory === cat ? "all" : cat)}
-                className={`px-2.5 py-1 text-xs rounded-md transition-colors cursor-pointer ${
-                  selectedCategory === cat
-                    ? "bg-emerald-500 text-slate-950 font-semibold"
-                    : "bg-slate-950 text-slate-400 hover:text-white border border-slate-800"
-                }`}
-              >
-                {cat} ({count})
-              </button>
-            ))}
-          </div>
-
-          <div className="relative min-w-[220px]">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search topic, Sports, Awards, ISRO..."
-              className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white"
-            />
-          </div>
-        </div>
       </div>
 
       {/* ====================================================================
-          5. MAIN FIXED-HEIGHT RESPONSIVE WORKSPACE:
-             - LEFT (4 Cols): INTERACTIVE MONTHLY CALENDAR + STORED EDITIONS LIST
-             - RIGHT (8 Cols): FIXED-HEIGHT SCROLLABLE CONTAINER + FLOATING CARD LAUNCHER
+          SECTION 3: CLEAN, PLAIN-ENGLISH AGENT MANAGEMENT CONSOLE (ADMIN ONLY)
+          Aspirants ONLY consume generated Current Affairs and never see Agent controls.
       ==================================================================== */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-        {/* LEFT COLUMN: Interactive Monthly Calendar + Editions List (Fixed Height + Scroll) */}
-        <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col h-[660px]">
-          {/* Interactive Monthly Calendar */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 mb-3 shrink-0">
-            <div className="flex items-center justify-between gap-2 mb-2.5">
+      {isAdmin && (
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-wider">
+              <Sparkles className="w-4 h-4" />
+              Autonomous Current Affairs Agent Management Console (5 Specialized Agents)
+            </div>
+            <h2 className="text-base font-bold text-white">
+              Complete 5-Agent Architecture &amp; Batch Controls (PSCWB Exam-Oriented)
+            </h2>
+            <p className="text-xs text-slate-400">
+              There are <strong className="text-white">5 Specialized Agents</strong> powering Current Affairs: <strong className="text-emerald-300">4 Actionable Orchestrator Agents</strong> (managed below) and <strong className="text-amber-300">1 Automatic Internal Sub-Agent</strong> (Bilingual Fact-Critic, Trap-Detector &amp; MCQ Generator) that runs automatically inside every collection run so you don&apos;t need to manage it separately.
+            </p>
+          </div>
+        </div>
+
+        {/* 5-Agent Inventory Summary Strip */}
+        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 grid grid-cols-1 md:grid-cols-5 gap-2.5 text-xs">
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-emerald-500/30">
+            <div className="font-bold text-emerald-300">Agent 1: Daily Collector</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Auto-runs daily for Today ({todayIso}) · Has Pause &amp; Manual Refresh below.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-sky-500/30">
+            <div className="font-bold text-sky-300">Agent 2: Batch Backfiller</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Fills continuous 10-day batches or all 30/31 days of any month with zero gaps.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-amber-500/30">
+            <div className="font-bold text-amber-300">Agent 3: Month Classifier</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Groups topics into 10 WBPSC categories &amp; compiles Monthly PDF Capsules.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-purple-500/30">
+            <div className="font-bold text-purple-300">Agent 4: Date Recovery</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Manual fallback if an automatic run ever fails on a specific past date.
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-700">
+            <div className="font-bold text-slate-200">Agent 5: Bilingual Critic &amp; MCQ</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              <span className="text-emerald-400 font-semibold">100% Automatic Internal Pipeline</span> — adds Static GK, Traps &amp; বাংলা অনুবাদ.
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* CARD 1: Daily Automatic Collection Scheduler */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Clock className="w-4 h-4" />
+                  1. Daily Automatic 12-Topic Collector Agent
+                </span>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                    scheduler?.enabled
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                      : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  }`}
+                >
+                  {scheduler?.enabled ? "AUTO-RUN: ON (Everyday)" : "AUTO-RUN: PAUSED"}
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                <strong className="text-white">What this does in simple words:</strong> Runs{" "}
+                <strong>automatically every day</strong>. Grounded on{" "}
+                <span className="text-emerald-300">GKToday</span>,{" "}
+                <span className="text-emerald-300">PYQArena (The Hindu)</span>,{" "}
+                <span className="text-emerald-300">PIB</span>, and{" "}
+                <span className="text-emerald-300">WB State Gazette</span>, it collects{" "}
+                <strong>12 PSCWB exam-oriented topics</strong> for today&apos;s date (
+                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>) including West Bengal schemes, GI tags, Constitutional articles, and Static GK links.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
               <button
                 type="button"
-                onClick={() => stepCalendarMonth(1)}
-                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 cursor-pointer"
-                title="Previous Month"
+                disabled={toggleSchedulerBusy}
+                onClick={() => void handleToggleAutoScheduler()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
               >
-                <ChevronLeft className="w-4 h-4" />
+                <Power className="w-3.5 h-3.5 text-emerald-400" />
+                {scheduler?.enabled ? "Pause Daily Auto-Run" : "Turn ON Daily Auto-Run"}
               </button>
-              <div className="flex items-center gap-1.5">
-                <CalendarIcon className="w-3.5 h-3.5 text-emerald-400" />
+
+              <button
+                type="button"
+                disabled={agentBusy}
+                onClick={() => void handleRunAgentForDate(todayIso)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+              >
+                {agentBusy ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Collecting Today&apos;s 12 Topics...
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5" />
+                    Refresh Today&apos;s 12 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* CARD 2: Month-Wise Batch Historical Backfill Agent */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <CalendarIcon className="w-4 h-4" />
+                  2. Month-Wise Batch Historical Backfill Agent
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                  Continuous Batching (Zero Gaps)
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                <strong className="text-white">How 2-Level Nested Crawling &amp; Zero-Duplicate Backfilling works:</strong> Instead of shallow top-page scraping or repeating topics across dates, our crawler follows nested <code className="text-sky-300">&lt;a href&gt;</code> sub-pages on GKToday &amp; PYQArena alongside Google Search Grounding for that exact date, and passes all previously stored headlines into a strict <strong>3-Layer Anti-Duplication Filter</strong> so no two dates ever share the same Current Affairs topic!
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+              <div className="flex flex-wrap items-center gap-2">
                 <select
-                  value={calendarMonthKey}
-                  onChange={(e) => setCalendarMonthKey(e.target.value)}
-                  className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 text-xs font-bold text-white cursor-pointer"
+                  value={backfillMonthKey}
+                  onChange={(e) => setBackfillMonthKey(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white cursor-pointer"
                 >
                   {availableMonthKeys.map((mk) => (
                     <option key={mk} value={mk}>
-                      {mk}
+                      {formatReadableMonth(mk, lang)} ({mk})
                     </option>
                   ))}
                 </select>
+
+                <select
+                  value={backfillBatchRange}
+                  onChange={(e) =>
+                    setBackfillBatchRange(
+                      e.target.value as
+                        | "days-1-10"
+                        | "days-11-20"
+                        | "days-21-end"
+                        | "full-month"
+                    )
+                  }
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-sky-300 cursor-pointer"
+                >
+                  <option value="full-month">Full Month (All 30/31 Days)</option>
+                  <option value="days-1-10">Batch 1: Days 01 – 10</option>
+                  <option value="days-11-20">Batch 2: Days 11 – 20</option>
+                  <option value="days-21-end">Batch 3: Days 21 – End of Month</option>
+                </select>
               </div>
+
               <button
                 type="button"
-                onClick={() => stepCalendarMonth(-1)}
-                className="p-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 cursor-pointer"
-                title="Next Month"
+                disabled={backfillBusy}
+                onClick={() => void handleAutoBackfillPastDays(backfillMonthKey, backfillBatchRange)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-sky-400 hover:bg-sky-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
               >
-                <ChevronRight className="w-4 h-4" />
+                {backfillBusy ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Running Batch Backfill...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Run Batch Backfill
+                  </>
+                )}
               </button>
             </div>
+          </div>
 
-            <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-semibold text-slate-500 mb-1">
-              {WEEKDAYS.map((wd) => (
-                <div key={wd}>{wd}</div>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-7 gap-1">
-              {calendarCells.map((cell, idx) => {
-                if (!cell.dayNumber || !cell.dateStr) {
-                  return <div key={`empty-${idx}`} className="h-7" />;
-                }
-                const matchingEdition = editionsByDate.get(cell.dateStr);
-                const isSelectedDate =
-                  activeEdition?.editionDate === cell.dateStr ||
-                  selectedCalendarDate === cell.dateStr;
-
-                return (
-                  <button
-                    key={cell.dateStr}
-                    type="button"
-                    onClick={() => {
-                      setSelectedCalendarDate(cell.dateStr);
-                      if (matchingEdition) {
-                        setActiveEditionId(matchingEdition.id);
-                        setSelectedMonthKey("all");
-                      } else {
-                        setAgentEditionDate(cell.dateStr!);
-                      }
-                    }}
-                    title={
-                      matchingEdition
-                        ? `${cell.dateStr}: ${matchingEdition.topics.length} Topics stored`
-                        : `${cell.dateStr}: Click to synthesize with CA Agent`
-                    }
-                    className={`h-7 rounded-md text-[11px] font-mono transition-all flex flex-col items-center justify-center relative cursor-pointer ${
-                      isSelectedDate
-                        ? "bg-emerald-500 text-slate-950 font-bold shadow-sm"
-                        : matchingEdition
-                          ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-200 font-bold hover:bg-emerald-500/30"
-                          : "bg-slate-900/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                    }`}
-                  >
-                    <span>{cell.dayNumber}</span>
-                    {matchingEdition && !isSelectedDate && (
-                      <span className="w-1 h-1 rounded-full bg-emerald-400 absolute bottom-0.5" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* If user clicked a date on the calendar that doesn't have an edition yet, offer 1-click Agent synthesis */}
-            {selectedCalendarDate && !editionsByDate.has(selectedCalendarDate) && (
-              <div className="mt-2.5 pt-2.5 border-t border-slate-800 flex items-center justify-between gap-2 text-[11px]">
-                <span className="text-slate-300">
-                  No digest stored for{" "}
-                  <strong className="font-mono text-amber-300">
-                    {selectedCalendarDate}
-                  </strong>
+          {/* CARD 3: End-of-Month Category Classifier & Monthly PDF Agent */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Layers className="w-4 h-4" />
+                  3. Monthly Category Classifier &amp; Capsule Agent
                 </span>
-                <button
-                  type="button"
-                  disabled={agentBusy}
-                  onClick={() => {
-                    setAgentEditionDate(selectedCalendarDate);
-                    setShowAgentPanel(true);
-                  }}
-                  className="px-2.5 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer shrink-0"
-                >
-                  Collect 12 Topics →
-                </button>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  10 WBPSC Categories
+                </span>
               </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                <strong className="text-white">What this does in simple words:</strong> Selects any past/current month, synthesizes high-probability PSCWB exam events (with extra weight on <em>West Bengal Special, Polity, Economy, Science, GI Tags, Sports &amp; Awards</em>), and organizes them into 10 subject buckets for the Monthly PDF Capsule.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+              <select
+                value={classifierSelectedMonth}
+                onChange={(e) => setClassifierSelectedMonth(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-white cursor-pointer"
+              >
+                {availableMonthKeys.map((mk) => (
+                  <option key={mk} value={mk}>
+                    {formatReadableMonth(mk, lang)} ({mk})
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                disabled={classifierBusyMonth !== null}
+                onClick={() => void handleRunMonthlyClassifierAgent(classifierSelectedMonth)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+              >
+                {classifierBusyMonth === classifierSelectedMonth ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Classifying {formatReadableMonth(classifierSelectedMonth, "en")}...
+                  </>
+                ) : (
+                  <>
+                    <Bot className="w-3.5 h-3.5" />
+                    Build 12-Topic Monthly Capsule
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* CARD 4: Specific Past Date Manual Recovery Agent (With Future-Date Lock) */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <HelpCircle className="w-4 h-4" />
+                  4. Single-Date Manual Recovery Agent (Fallback)
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                  Manual Retry · Future Locked
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                <strong className="text-white">When to use this manual option:</strong> If an automatic collection ever fails for a specific date or you want to re-generate a particular date with fresh PSCWB topics (for example, <em>27 October 2026</em> or <em>15 September 2026</em>), pick that date here or inside the Calendar Modal and click Collect.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+              <input
+                type="date"
+                max={todayIso}
+                value={agentEditionDate}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setAgentEditionDate(val > todayIso ? todayIso : val);
+                }}
+                className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+              />
+
+              <button
+                type="button"
+                disabled={agentBusy}
+                onClick={() => void handleRunAgentForDate(agentEditionDate)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+              >
+                <Bot className="w-3.5 h-3.5" />
+                Collect / Retry {formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* ====================================================================
+          SECTION 4: CLEAN INTERACTIVE CURRENT AFFAIRS MCQ PRACTICE QUIZ
+      ==================================================================== */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-amber-400" />
+              {lang === "bn"
+                ? "কারেন্ট অ্যাফেয়ার্স প্র্যাকটিস কুইজ (PYQ-ধাঁচের প্রশ্ন)"
+                : "Current Affairs Self-Check MCQ Quiz"}
+            </h2>
+            <p className="text-xs text-slate-400">
+              Test your memory on the collected Current Affairs topics. Select an answer for each question and click{" "}
+              <strong className="text-emerald-300">Verify Answers</strong>.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={quizMonthKey}
+              onChange={(e) => {
+                setQuizMonthKey(e.target.value);
+                setSelectedAnswers({});
+                setQuizSubmitted(false);
+              }}
+              className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-bold text-white cursor-pointer"
+            >
+              <option value="all">Recent Months Combined</option>
+              {availableMonthKeys.map((mk) => (
+                <option key={mk} value={mk}>
+                  {formatReadableMonth(mk, lang)}
+                </option>
+              ))}
+            </select>
+
+            {quizSubmitted && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedAnswers({});
+                  setQuizSubmitted(false);
+                }}
+                className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+              >
+                Reset Quiz
+              </button>
             )}
-          </div>
 
-          {/* Stored Editions List (Scrollable flex-1 inside fixed-height left card) */}
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2 shrink-0">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-              Stored Editions ({filteredEditions.length})
-            </h3>
-            <span className="text-[11px] text-slate-400">Scrollable</span>
-          </div>
-
-          <div className="space-y-2 flex-1 overflow-y-auto pr-1">
-            {filteredEditions.map((ed) => {
-              const isSelected = activeEdition?.id === ed.id;
-              return (
-                <div
-                  key={ed.id}
-                  onClick={() => {
-                    setActiveEditionId(ed.id);
-                    setCalendarMonthKey(ed.monthKey);
-                    setSelectedCalendarDate(ed.editionDate);
-                    setSelectedAnswers({});
-                    setQuizSubmitted(false);
-                  }}
-                  className={`p-3 rounded-xl border transition-all cursor-pointer ${
-                    isSelected
-                      ? "bg-emerald-500/15 border-emerald-500/50"
-                      : "bg-slate-950/70 border-slate-800/90 hover:border-slate-700"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
-                    <span className="font-mono font-semibold text-emerald-400">
-                      {ed.editionDate}
-                    </span>
-                    <span>
-                      {ed.topics.length} Topics · {ed.mcqs.length} MCQs
-                    </span>
-                  </div>
-                  <div className="text-xs font-bold text-white mt-1 leading-snug line-clamp-2">
-                    {lang === "bn" ? ed.titleBn : ed.titleEn}
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1 flex items-center justify-between">
-                    <span>{lang === "bn" ? ed.monthLabelBn : ed.monthLabelEn}</span>
-                    <span>{ed.downloadCount} DLs</span>
-                  </div>
-                </div>
-              );
-            })}
+            <button
+              type="button"
+              onClick={() => setQuizSubmitted(true)}
+              className="px-4 py-1.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg cursor-pointer"
+            >
+              Verify Answers
+            </button>
           </div>
         </div>
 
-        {/* RIGHT COLUMN: Fixed-Height Responsive Reader with Vertical Scrollbar & Floating Card Deck Trigger */}
-        <div className="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col h-[660px]">
-          {!activeEdition ? (
-            <div className="m-auto text-center text-sm text-slate-400">
-              No Current Affairs edition matches the current filter.
-            </div>
-          ) : (
-            <>
-              {/* Fixed Top Header inside Right Container */}
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5 shrink-0">
-                <div className="space-y-1 max-w-xl">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                    <span className="font-mono font-bold text-emerald-400">
-                      {activeEdition.editionDate}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span>
-                      {lang === "bn"
-                        ? activeEdition.monthLabelBn
-                        : activeEdition.monthLabelEn}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span>{activeEdition.topics.length} Classified Topics</span>
-                  </div>
-                  <h2 className="text-base lg:text-lg font-bold text-white leading-snug">
-                    {lang === "bn" ? activeEdition.titleBn : activeEdition.titleEn}
-                  </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 max-h-[420px] overflow-y-auto pr-1">
+          {quizMcqs.map(({ mcq, editionDate }, idx) => {
+            const picked = selectedAnswers[mcq.id];
+            const isCorrect = picked === mcq.correctOption;
+            return (
+              <div
+                key={`${mcq.id}-${idx}`}
+                className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3"
+              >
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-emerald-400 font-semibold">
+                    Q{idx + 1} · {mcq.category}
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    📅 {formatReadableDate(editionDate, lang)}
+                  </span>
                 </div>
 
-                {/* Action Buttons: Launch Floating Card Modal + Download Categorized PDF */}
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFloatingCardIdx(0);
-                      setFloatingModalOpen(true);
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-lg cursor-pointer shadow-sm"
-                  >
-                    <Maximize2 className="w-3.5 h-3.5" />
-                    Floating Card View ({modalDeckTopics.length})
-                  </button>
+                <p className="text-xs lg:text-sm font-semibold text-white leading-relaxed">
+                  {lang === "bn" ? mcq.stem.bn : mcq.stem.en}
+                </p>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void handleDownloadCategorizedCapsulePdf(
-                        [activeEdition],
-                        activeEdition.titleEn,
-                        `WBPSC-CA-Categorized-${activeEdition.editionDate}`
-                      )
-                    }
-                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    Categorized PDF
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void recordDownload(activeEdition.id);
-                      window.print();
-                    }}
-                    className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-                    title="Print / Save as PDF"
-                  >
-                    <Printer className="w-3.5 h-3.5" />
-                  </button>
-
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void handleDeleteEdition(
-                          activeEdition.id,
-                          activeEdition.editionDate
-                        )
+                <div className="grid grid-cols-1 gap-1.5">
+                  {OPTION_KEYS.map((optKey) => {
+                    const isPicked = picked === optKey;
+                    const isRightOpt = mcq.correctOption === optKey;
+                    let btnStyle =
+                      "bg-slate-900 border-slate-800 text-slate-200 hover:border-slate-700";
+                    if (quizSubmitted) {
+                      if (isRightOpt) {
+                        btnStyle =
+                          "bg-emerald-500/20 border-emerald-500/50 text-emerald-200 font-semibold";
+                      } else if (isPicked && !isRightOpt) {
+                        btnStyle =
+                          "bg-rose-500/20 border-rose-500/50 text-rose-200";
                       }
-                      className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-medium bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 rounded-lg cursor-pointer"
-                      title="Delete Edition (Admin)"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
+                    } else if (isPicked) {
+                      btnStyle =
+                        "bg-sky-500/20 border-sky-500/50 text-sky-200 font-semibold";
+                    }
 
-              {/* View Mode Tabs Bar (Fixed below header) */}
-              <div className="flex flex-wrap items-center justify-between gap-2 py-2.5 border-b border-slate-800/80 shrink-0">
-                <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl">
-                  <button
-                    type="button"
-                    onClick={() => setActiveViewMode("notes")}
-                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                      activeViewMode === "notes"
-                        ? "bg-emerald-500 text-slate-950"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    Edition Topics ({filteredTopicsInActiveEdition.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveViewMode("categorized-month")}
-                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                      activeViewMode === "categorized-month"
-                        ? "bg-emerald-500 text-slate-950"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    By Category (Monthly Capsule)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveViewMode("mcqs")}
-                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                      activeViewMode === "mcqs"
-                        ? "bg-emerald-500 text-slate-950"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    Practice MCQs ({activeEdition.mcqs.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveViewMode("agent-trace")}
-                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                      activeViewMode === "agent-trace"
-                        ? "bg-emerald-500 text-slate-950"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    Agent Trace ({activeEdition.agentTrace.length})
-                  </button>
-                </div>
-
-                {/* Grounded Sources inline */}
-                <div className="hidden xl:flex items-center gap-1.5 text-[11px] text-slate-400">
-                  <Globe className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Grounded: GKToday · PYQArena · The Hindu · PIB</span>
-                </div>
-              </div>
-
-              {/* SCROLLABLE CONTENT BODY INSIDE FIXED-HEIGHT RIGHT CONTAINER */}
-              <div className="flex-1 overflow-y-auto pr-1.5 pt-3 space-y-4">
-                {/* Quick Revision Mnemonics Callout */}
-                {(activeEdition.mnemonicsEn || activeEdition.mnemonicsBn) && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-xs text-emerald-200 leading-relaxed">
-                    <strong className="text-emerald-300 uppercase tracking-wider block mb-0.5">
-                      {lang === "bn"
-                        ? "এক-নজরে পরীক্ষার মেমরি হুক (Quick Revision Hooks):"
-                        : "One-Glance Exam Memory Hooks:"}
-                    </strong>
-                    {lang === "bn"
-                      ? activeEdition.mnemonicsBn || activeEdition.mnemonicsEn
-                      : activeEdition.mnemonicsEn}
-                  </div>
-                )}
-
-                {/* VIEW 1: EDITION TOPICS LIST (Click any card to open in Floating Animated Modal) */}
-                {activeViewMode === "notes" && (
-                  <div className="space-y-3.5">
-                    {filteredTopicsInActiveEdition.map((topic, idx) => {
-                      const points =
-                        lang === "bn" && topic.examPointsBn?.length
-                          ? topic.examPointsBn
-                          : topic.examPointsEn;
-                      return (
-                        <article
-                          key={topic.id}
-                          className="bg-slate-950/90 border border-slate-800 hover:border-slate-700 rounded-xl p-4 space-y-3 transition-colors"
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div className="space-y-0.5 flex-1">
-                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                                <span className="font-bold text-sky-400">
-                                  Topic {String(idx + 1).padStart(2, "0")}/
-                                  { String(filteredTopicsInActiveEdition.length).padStart(2, "0")}
-                                </span>
-                                <span aria-hidden="true">·</span>
-                                <span className="font-semibold text-emerald-400">
-                                  {topic.category}
-                                </span>
-                                <span aria-hidden="true">·</span>
-                                <span>{topic.sourceTag}</span>
-                              </div>
-                              <h3 className="text-sm lg:text-base font-bold text-white leading-snug">
-                                {lang === "bn" ? topic.headlineBn : topic.headlineEn}
-                              </h3>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFloatingCardIdx(idx);
-                                setFloatingModalOpen(true);
-                              }}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/30 rounded-lg cursor-pointer shrink-0"
-                            >
-                              <Maximize2 className="w-3 h-3" />
-                              Card View
-                            </button>
-                          </div>
-
-                          <div className="text-xs text-slate-300 bg-slate-900/90 border border-slate-800/80 rounded-lg p-2.5 leading-relaxed">
-                            <strong className="text-slate-100">
-                              {lang === "bn" ? "সংবাদে কেন: " : "Why in News: "}
-                            </strong>
-                            {lang === "bn" ? topic.whyInNewsBn : topic.whyInNewsEn}
-                          </div>
-
-                          <div className="space-y-1">
-                            <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
-                              {lang === "bn"
-                                ? "পরীক্ষা-কেন্দ্রিক মূল তথ্য (To-The-Point Exam Facts)"
-                                : "To-The-Point Exam Facts (WBPSC Prelims & Mains)"}
-                            </h4>
-                            <ul className="space-y-1.5 text-xs text-slate-200 leading-relaxed pl-4 list-disc marker:text-emerald-400">
-                              {points.map((pt, pIdx) => (
-                                <li key={pIdx}>{pt}</li>
-                              ))}
-                            </ul>
-                          </div>
-
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1">
-                            <div className="bg-sky-500/10 border border-sky-500/30 rounded-lg p-2.5 text-xs text-sky-100 leading-relaxed">
-                              <div className="font-bold text-sky-300 mb-0.5 flex items-center gap-1.5">
-                                <BookOpen className="w-3.5 h-3.5" />
-                                {lang === "bn"
-                                  ? "স্ট্যাটিক জিকে সিলেবাস সংযোগ"
-                                  : "Static GK Syllabus Hook"}
-                              </div>
-                              {lang === "bn"
-                                ? topic.staticGkLinkBn
-                                : topic.staticGkLinkEn}
-                            </div>
-
-                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-xs text-amber-100 leading-relaxed">
-                              <div className="font-bold text-amber-300 mb-0.5 flex items-center gap-1.5">
-                                <ShieldAlert className="w-3.5 h-3.5" />
-                                {lang === "bn"
-                                  ? "পরীক্ষার হলে সম্ভাব্য ভুল (Exam Trap)"
-                                  : "Exam Hall Confuser / Trap"}
-                              </div>
-                              {lang === "bn" ? topic.examTrapBn : topic.examTrapEn}
-                            </div>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* VIEW 2: CATEGORIZED MONTHLY CAPSULE VIEW (Grouped by Sports, Awards, Science & Tech, etc.) */}
-                {activeViewMode === "categorized-month" && (
-                  <div className="space-y-4">
-                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <h3 className="text-xs font-bold text-emerald-300 uppercase tracking-wider">
-                          Classifier Agent Categorized View (Sports, Awards, Science &amp; Tech,
-                          Polity, WB Special)
-                        </h3>
-                        <p className="text-xs text-slate-400">
-                          Topics grouped into dedicated exam categories for end-of-month
-                          revision.
-                        </p>
-                      </div>
+                    return (
                       <button
+                        key={optKey}
                         type="button"
-                        onClick={() => {
-                          const targetMonth =
-                            selectedMonthKey === "all"
-                              ? activeEdition.monthKey
-                              : selectedMonthKey;
-                          const monthEds = editions.filter(
-                            (e) => e.monthKey === targetMonth
-                          );
-                          void handleDownloadCategorizedCapsulePdf(
-                            monthEds,
-                            `${activeEdition.monthLabelEn} Categorized Capsule`,
-                            `WBPSC-CA-Categorized-${targetMonth}`
-                          );
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg cursor-pointer"
+                        disabled={quizSubmitted}
+                        onClick={() =>
+                          setSelectedAnswers((prev) => ({
+                            ...prev,
+                            [mcq.id]: optKey,
+                          }))
+                        }
+                        className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors flex items-start gap-2 cursor-pointer ${btnStyle}`}
                       >
-                        <Download className="w-3.5 h-3.5" />
-                        Download This Month&apos;s Categorized PDF
-                      </button>
-                    </div>
-
-                    {Object.entries(categorizedTopicsForSelectedScope).map(
-                      ([cat, items]) => (
-                        <div
-                          key={cat}
-                          className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3"
-                        >
-                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                            <h4 className="text-sm font-bold text-emerald-400">
-                              {cat}
-                            </h4>
-                            <span className="text-xs font-mono text-slate-400">
-                              {items.length} {items.length === 1 ? "Topic" : "Topics"}
-                            </span>
-                          </div>
-                          <div className="space-y-2.5">
-                            {items.map(({ topic, editionDate }, i) => (
-                              <div
-                                key={`${topic.id}-${i}`}
-                                className="p-3 rounded-lg bg-slate-900/90 border border-slate-800/80 space-y-1.5"
-                              >
-                                <div className="flex items-center justify-between text-[11px] text-slate-400">
-                                  <span className="font-mono text-sky-400">
-                                    {editionDate}
-                                  </span>
-                                  <span>{topic.sourceTag}</span>
-                                </div>
-                                <div className="text-xs font-bold text-white">
-                                  {lang === "bn" ? topic.headlineBn : topic.headlineEn}
-                                </div>
-                                <ul className="space-y-1 text-xs text-slate-300 pl-4 list-disc marker:text-emerald-400">
-                                  {(lang === "bn" && topic.examPointsBn?.length
-                                    ? topic.examPointsBn
-                                    : topic.examPointsEn
-                                  ).map((p, pIdx) => (
-                                    <li key={pIdx}>{p}</li>
-                                  ))}
-                                </ul>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    )}
-                  </div>
-                )}
-
-                {/* VIEW 3: INTERACTIVE PYQ-GRADE PRACTICE MCQS */}
-                {activeViewMode === "mcqs" && (
-                  <div className="space-y-3.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-xl p-3.5">
-                      <div>
-                        <h3 className="text-sm font-bold text-white">
+                        <span className="font-mono font-bold">{optKey}.</span>
+                        <span className="flex-1">
                           {lang === "bn"
-                            ? "কারেন্ট অ্যাফেয়ার্স প্র্যাকটিস কুইজ"
-                            : "Edition Current Affairs Practice Quiz"}
-                        </h3>
-                        <p className="text-xs text-slate-400">
-                          Select options below and click Verify Answers to test your recall.
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {quizSubmitted && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedAnswers({});
-                              setQuizSubmitted(false);
-                            }}
-                            className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-                          >
-                            Reset Quiz
-                          </button>
+                            ? mcq.options[optKey].bn
+                            : mcq.options[optKey].en}
+                        </span>
+                        {quizSubmitted && isRightOpt && (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                         )}
-                        <button
-                          type="button"
-                          onClick={() => setQuizSubmitted(true)}
-                          className="px-4 py-1.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg cursor-pointer"
-                        >
-                          Verify Answers
-                        </button>
-                      </div>
-                    </div>
+                        {quizSubmitted && isPicked && !isRightOpt && (
+                          <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
 
-                    {activeEdition.mcqs.map((mcq, idx) => {
-                      const picked = selectedAnswers[mcq.id];
-                      const isCorrect = picked === mcq.correctOption;
-                      return (
-                        <div
-                          key={mcq.id}
-                          className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3"
-                        >
-                          <div className="text-xs text-emerald-400 font-semibold">
-                            Question {idx + 1} · {mcq.category}
-                          </div>
-                          <p className="text-sm font-semibold text-white leading-relaxed">
-                            {lang === "bn" ? mcq.stem.bn : mcq.stem.en}
-                          </p>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            {OPTION_KEYS.map((optKey) => {
-                              const isPicked = picked === optKey;
-                              const isRightOpt = mcq.correctOption === optKey;
-                              let btnStyle =
-                                "bg-slate-900 border-slate-800 text-slate-200 hover:border-slate-700";
-                              if (quizSubmitted) {
-                                if (isRightOpt) {
-                                  btnStyle =
-                                    "bg-emerald-500/20 border-emerald-500/50 text-emerald-200 font-semibold";
-                                } else if (isPicked && !isRightOpt) {
-                                  btnStyle =
-                                    "bg-rose-500/20 border-rose-500/50 text-rose-200";
-                                }
-                              } else if (isPicked) {
-                                btnStyle =
-                                  "bg-sky-500/20 border-sky-500/50 text-sky-200 font-semibold";
-                              }
-
-                              return (
-                                <button
-                                  key={optKey}
-                                  type="button"
-                                  disabled={quizSubmitted}
-                                  onClick={() =>
-                                    setSelectedAnswers((prev) => ({
-                                      ...prev,
-                                      [mcq.id]: optKey,
-                                    }))
-                                  }
-                                  className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors flex items-start gap-2 cursor-pointer ${btnStyle}`}
-                                >
-                                  <span className="font-mono font-bold">{optKey}.</span>
-                                  <span className="flex-1">
-                                    {lang === "bn"
-                                      ? mcq.options[optKey].bn
-                                      : mcq.options[optKey].en}
-                                  </span>
-                                  {quizSubmitted && isRightOpt && (
-                                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                                  )}
-                                  {quizSubmitted && isPicked && !isRightOpt && (
-                                    <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-
-                          {quizSubmitted && (
-                            <div
-                              className={`p-3 rounded-lg border text-xs leading-relaxed ${
-                                isCorrect
-                                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-200"
-                                  : "bg-slate-900 border-slate-800 text-slate-300"
-                              }`}
-                            >
-                              <strong className="text-emerald-300">
-                                Correct Option ({mcq.correctOption}):{" "}
-                              </strong>
-                              {lang === "bn" ? mcq.explanation.bn : mcq.explanation.en}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* VIEW 4: AGENT EXECUTION TRACE */}
-                {activeViewMode === "agent-trace" && (
-                  <div className="space-y-3">
-                    {activeEdition.agentTrace.map((step) => (
-                      <div
-                        key={step.stepNumber}
-                        className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-1.5"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-bold text-emerald-400">
-                            Step {step.stepNumber}: {step.agentRole}
-                          </span>
-                          <span className="text-[11px] font-mono text-slate-400">
-                            {step.durationMs} ms · {step.status.toUpperCase()}
-                          </span>
-                        </div>
-                        <div className="text-sm font-semibold text-white">
-                          {step.actionSummary}
-                        </div>
-                        <p className="text-xs text-slate-400">{step.details}</p>
-                      </div>
-                    ))}
+                {quizSubmitted && (
+                  <div
+                    className={`p-2.5 rounded-lg border text-xs leading-relaxed ${
+                      isCorrect
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-200"
+                        : "bg-slate-900 border-slate-800 text-slate-300"
+                    }`}
+                  >
+                    <strong className="text-emerald-300">
+                      Answer ({mcq.correctOption}):{" "}
+                    </strong>
+                    {lang === "bn" ? mcq.explanation.bn : mcq.explanation.en}
                   </div>
                 )}
               </div>
-            </>
-          )}
+            );
+          })}
         </div>
       </div>
 
       {/* ====================================================================
-          6. FLOATING ANIMATED FLASHCARD MODAL (WITH NEXT & PREVIOUS BUTTONS)
+          SECTION 5: FLOATING ANIMATED FLASHCARD MODAL
+          - Includes Built-in Month Selector + Interactive Calendar inside Modal!
+          - By default loads ALL stored dates of the selected Month ("Whole Month")
+          - Clicking any date in the modal calendar filters to that specific date's cards
+          - Clearly displays human-readable Date Badge on every card!
       ==================================================================== */}
-      {floatingModalOpen && activeFloatingTopic && (
+      {floatingModalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-3 sm:p-5"
           onClick={() => setFloatingModalOpen(false)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-4xl bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh] transition-all duration-300"
+            className="relative w-full max-w-6xl bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] transition-all duration-300"
           >
             {/* Modal Top Header Bar */}
-            <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-800 bg-slate-950/90 shrink-0">
-              <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-800 bg-slate-950 shrink-0">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <span className="px-3 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-mono font-bold text-emerald-300">
-                  Card {floatingCardIdx + 1} of {modalDeckTopics.length}
+                  {modalDeckCards.length > 0
+                    ? `Card ${floatingCardIdx + 1} of ${modalDeckCards.length}`
+                    : "0 Cards"}
                 </span>
-                <div>
-                  <div className="text-xs font-bold text-sky-400 uppercase tracking-wider">
-                    {activeFloatingTopic.category}
-                  </div>
-                  <div className="text-[11px] text-slate-400">
-                    {activeEdition?.editionDate} · {activeFloatingTopic.sourceTag}
-                  </div>
-                </div>
+
+                {/* Prominent Human-Readable Month & Date Indicator */}
+                <span className="px-3 py-1 rounded-lg bg-amber-500/15 border border-amber-500/40 text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                  <CalendarIcon className="w-3.5 h-3.5" />
+                  {modalDateFilter === "all"
+                    ? `Showing Whole Month: ${formatReadableMonth(modalMonthKey, lang)} (${storedEditionsInModalMonth.length} Stored ${storedEditionsInModalMonth.length === 1 ? "Date" : "Dates"})`
+                    : `Showing Selected Date: ${formatReadableDate(modalDateFilter, lang)}`}
+                </span>
               </div>
 
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowModalCalendar((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 cursor-pointer border border-slate-700"
+                >
+                  <CalendarIcon className="w-3.5 h-3.5 text-emerald-400" />
+                  {showModalCalendar ? "Hide Calendar Sidebar" : "Show Month & Date Calendar"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleDownloadCategorizedCapsulePdf(
+                      storedEditionsInModalMonth,
+                      `${formatReadableMonth(modalMonthKey, "en")} — Categorized Monthly Capsule`,
+                      `WBPSC-CA-Categorized-${modalMonthKey}`
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-slate-950 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download {formatReadableMonth(modalMonthKey, "en")} PDF
+                </button>
+
                 <button
                   type="button"
                   onClick={() => setFloatingModalOpen(false)}
@@ -1744,116 +1650,401 @@ export default function DailyCurrentAffairsTab({
               </div>
             </div>
 
-            {/* Animated Floating Card Body (Fixed Height with Vertical Scrollbar) */}
-            <div
-              key={`${activeFloatingTopic.id}-${cardAnimDirection}`}
-              className="p-6 overflow-y-auto space-y-4 flex-1 transition-all duration-300 ease-out"
-            >
-              <div className="space-y-1">
-                <h2 className="text-lg lg:text-xl font-bold text-white leading-snug">
-                  {lang === "bn"
-                    ? activeFloatingTopic.headlineBn
-                    : activeFloatingTopic.headlineEn}
-                </h2>
-                {lang === "bn" && (
-                  <div className="text-xs text-slate-400">
-                    {activeFloatingTopic.headlineEn}
+            {/* Modal Main Body: Left Calendar/Month Picker + Right Animated Card Deck */}
+            <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-12">
+              {/* LEFT SIDEBAR INSIDE MODAL: Month Selector + Interactive Date Calendar */}
+              {showModalCalendar && (
+                <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-slate-800 bg-slate-950/80 p-4 overflow-y-auto space-y-4">
+                  {/* Step 1: Select Month */}
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      1. Select Month (Past 1 Year)
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => stepModalMonth(1)}
+                        className="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 cursor-pointer"
+                        title="Previous Month"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+
+                      <select
+                        value={modalMonthKey}
+                        onChange={(e) => {
+                          setModalMonthKey(e.target.value);
+                          setModalDateFilter("all");
+                          setFloatingCardIdx(0);
+                        }}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-white cursor-pointer"
+                      >
+                        {availableMonthKeys.map((mk) => (
+                          <option key={mk} value={mk}>
+                            {formatReadableMonth(mk, lang)} ({mk})
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={() => stepModalMonth(-1)}
+                        className="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 cursor-pointer"
+                        title="Next Month"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Step 2: Whole Month (Default) vs Specific Date Calendar */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        2. Pick Date or Whole Month
+                      </label>
+                    </div>
+
+                    {/* Default Option: Show All Stored Dates in Selected Month */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModalDateFilter("all");
+                        setFloatingCardIdx(0);
+                      }}
+                      className={`w-full py-2 px-3 rounded-lg text-xs font-bold border transition-all flex items-center justify-between cursor-pointer ${
+                        modalDateFilter === "all"
+                          ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm"
+                          : "bg-slate-900 text-slate-200 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <span>All Stored Dates in {formatReadableMonth(modalMonthKey, "en")}</span>
+                      <span className="font-mono text-[11px]">
+                        ({storedEditionsInModalMonth.reduce((a, e) => a + e.topics.length, 0)} Cards)
+                      </span>
+                    </button>
+
+                    {/* Interactive Calendar Grid inside Modal */}
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-semibold text-slate-500 mb-1.5">
+                        {WEEKDAYS.map((wd) => (
+                          <div key={wd}>{wd}</div>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-7 gap-1">
+                        {modalCalendarCells.map((cell, idx) => {
+                          if (!cell.dayNumber || !cell.dateStr) {
+                            return <div key={`empty-${idx}`} className="h-7" />;
+                          }
+                          const isFutureDate = cell.dateStr > todayIso;
+                          const matchingEdition = !isFutureDate
+                            ? editionsByDate.get(cell.dateStr)
+                            : undefined;
+                          const isSelectedSingleDate = modalDateFilter === cell.dateStr;
+
+                          return (
+                            <button
+                              key={cell.dateStr}
+                              type="button"
+                              disabled={isFutureDate}
+                              onClick={() => {
+                                if (isFutureDate) return;
+                                setModalDateFilter(cell.dateStr!);
+                                setFloatingCardIdx(0);
+                              }}
+                              title={
+                                isFutureDate
+                                  ? `${formatReadableDate(cell.dateStr, "en")}: Future date (not yet occurred)`
+                                  : matchingEdition
+                                    ? `${formatReadableDate(cell.dateStr, "en")}: ${matchingEdition.topics.length} Topics stored — Click to view`
+                                    : isAdmin
+                                      ? `${formatReadableDate(cell.dateStr, "en")}: Click to collect topics for this date`
+                                      : `${formatReadableDate(cell.dateStr, "en")}: No Current Affairs published for this date`
+                              }
+                              className={`h-7 rounded-md text-[11px] font-mono transition-all flex flex-col items-center justify-center relative ${
+                                isFutureDate
+                                  ? "opacity-25 cursor-not-allowed bg-slate-950 text-slate-600"
+                                  : isSelectedSingleDate
+                                    ? "bg-amber-400 text-slate-950 font-bold shadow-sm cursor-pointer"
+                                    : matchingEdition
+                                      ? "bg-emerald-500/25 border border-emerald-500/60 text-emerald-200 font-bold hover:bg-emerald-500/40 cursor-pointer"
+                                      : "bg-slate-950/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200 cursor-pointer"
+                              }`}
+                            >
+                              <span>{cell.dayNumber}</span>
+                              {matchingEdition && !isSelectedSingleDate && (
+                                <span className="w-1 h-1 rounded-full bg-emerald-400 absolute bottom-0.5" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="mt-2 pt-2 border-t border-slate-800 flex items-center justify-between text-[10px] text-slate-400">
+                        <span className="inline-flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                          Stored Date
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-amber-400" />
+                          Selected Date
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quick List of Stored Dates in This Month */}
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      Stored Dates in {formatReadableMonth(modalMonthKey, "en")}
+                    </div>
+                    <div className="space-y-1.5 max-h-[150px] overflow-y-auto pr-1">
+                      {storedEditionsInModalMonth.map((ed) => (
+                        <button
+                          key={ed.id}
+                          type="button"
+                          onClick={() => {
+                            setModalDateFilter(ed.editionDate);
+                            setFloatingCardIdx(0);
+                          }}
+                          className={`w-full text-left px-3 py-2 rounded-lg border text-xs transition-all flex items-center justify-between cursor-pointer ${
+                            modalDateFilter === ed.editionDate
+                              ? "bg-amber-400/20 border-amber-400/60 text-amber-200 font-bold"
+                              : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
+                          }`}
+                        >
+                          <span>📅 {formatReadableDate(ed.editionDate, lang)}</span>
+                          <span className="font-mono text-[11px] text-emerald-400">
+                            {ed.topics.length} Cards
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Step 3: Filter by Category inside Modal */}
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      3. Filter by Exam Category
+                    </label>
+                    <select
+                      value={modalCategoryFilter}
+                      onChange={(e) => {
+                        setModalCategoryFilter(e.target.value);
+                        setFloatingCardIdx(0);
+                      }}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white cursor-pointer"
+                    >
+                      <option value="all">All 10 Categories</option>
+                      {ORDERED_CATEGORIES.map((cat) => (
+                        <option key={cat} value={cat}>
+                          {cat}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* RIGHT AREA INSIDE MODAL: Animated Flashcard Content */}
+              <div
+                className={`${
+                  showModalCalendar ? "lg:col-span-8" : "lg:col-span-12"
+                } flex flex-col overflow-hidden`}
+              >
+                {!activeModalCard ? (
+                  <div className="p-10 m-auto text-center space-y-3 max-w-md">
+                    <CalendarIcon className="w-10 h-10 text-amber-400 mx-auto" />
+                    <h3 className="text-base font-bold text-white">
+                      {modalDateFilter !== "all"
+                        ? `No Stored Cards Yet for ${formatReadableDate(modalDateFilter, lang)}`
+                        : `No Cards Match This Category Filter`}
+                    </h3>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      {modalDateFilter !== "all"
+                        ? isAdmin
+                          ? "You can either view all stored dates in this month or click below to let the AI Agent collect exam topics for this exact past date."
+                          : "Current Affairs for this specific date has not been published yet. Click below to view all published Current Affairs cards for this month."
+                        : "Switch the category filter back to 'All 10 Categories' to see all cards."}
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setModalDateFilter("all");
+                          setModalCategoryFilter("all");
+                          setFloatingCardIdx(0);
+                        }}
+                        className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white cursor-pointer"
+                      >
+                        Show Whole Month ({formatReadableMonth(modalMonthKey, "en")})
+                      </button>
+
+                      {isAdmin && modalDateFilter !== "all" && modalDateFilter <= todayIso && (
+                        <button
+                          type="button"
+                          disabled={agentBusy}
+                          onClick={() => void handleRunAgentForDate(modalDateFilter)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-slate-950 cursor-pointer"
+                        >
+                          <Bot className="w-4 h-4" />
+                          {agentBusy
+                            ? "Collecting Topics..."
+                            : `Collect Topics for ${formatReadableDate(modalDateFilter, "en").replace(/\s*\(.*\)$/, "")}`}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    key={`${activeModalCard.topic.id}-${cardAnimDirection}`}
+                    className="p-6 overflow-y-auto space-y-4 flex-1 transition-all duration-300 ease-out"
+                  >
+                    {/* Top Metadata Bar on the Card: PROMINENT HUMAN-READABLE DATE + CATEGORY */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="px-3 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-bold text-emerald-300">
+                          📅 Date: {formatReadableDate(activeModalCard.editionDate, lang)}
+                        </span>
+                        <span className="px-3 py-1 rounded-lg bg-sky-500/20 border border-sky-500/40 text-xs font-bold text-sky-300 uppercase tracking-wider">
+                          {activeModalCard.topic.category}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        Source: {activeModalCard.topic.sourceTag}
+                      </span>
+                    </div>
+
+                    {/* Topic Headline */}
+                    <div className="space-y-1">
+                      <h2 className="text-lg lg:text-xl font-bold text-white leading-snug">
+                        {lang === "bn"
+                          ? activeModalCard.topic.headlineBn
+                          : activeModalCard.topic.headlineEn}
+                      </h2>
+                      {lang === "bn" && (
+                        <div className="text-xs text-slate-400">
+                          {activeModalCard.topic.headlineEn}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Why in News Box */}
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs lg:text-sm text-slate-200 leading-relaxed">
+                      <strong className="text-emerald-400">
+                        {lang === "bn" ? "সংবাদে কেন (Why in News): " : "Why in News: "}
+                      </strong>
+                      {lang === "bn"
+                        ? activeModalCard.topic.whyInNewsBn
+                        : activeModalCard.topic.whyInNewsEn}
+                    </div>
+
+                    {/* To-The-Point Exam Facts */}
+                    <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-5 space-y-2.5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                        {lang === "bn"
+                          ? "পরীক্ষা-কেন্দ্রিক মূল তথ্য (To-The-Point Exam Facts — WBPSC Prelims & Mains)"
+                          : "To-The-Point Exam Facts (WBPSC Prelims & Mains)"}
+                      </h3>
+                      <ul className="space-y-2.5 text-xs lg:text-sm text-slate-100 leading-relaxed pl-5 list-disc marker:text-emerald-400">
+                        {(lang === "bn" && activeModalCard.topic.examPointsBn?.length
+                          ? activeModalCard.topic.examPointsBn
+                          : activeModalCard.topic.examPointsEn
+                        ).map((pt, i) => (
+                          <li key={i}>{pt}</li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Static GK Hook & Exam Hall Trap */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-sky-500/10 border border-sky-500/30 rounded-xl p-4 text-xs lg:text-sm text-sky-100 leading-relaxed">
+                        <div className="font-bold text-sky-300 mb-1 flex items-center gap-1.5">
+                          <BookOpen className="w-4 h-4" />
+                          {lang === "bn"
+                            ? "স্ট্যাটিক জিকে সিলেবাস সংযোগ"
+                            : "Static GK Syllabus Hook"}
+                        </div>
+                        {lang === "bn"
+                          ? activeModalCard.topic.staticGkLinkBn
+                          : activeModalCard.topic.staticGkLinkEn}
+                      </div>
+
+                      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-xs lg:text-sm text-amber-100 leading-relaxed">
+                        <div className="font-bold text-amber-300 mb-1 flex items-center gap-1.5">
+                          <ShieldAlert className="w-4 h-4" />
+                          {lang === "bn"
+                            ? "পরীক্ষার হলে সম্ভাব্য ভুল (Exam Hall Trap)"
+                            : "Exam Hall Confuser / Trap"}
+                        </div>
+                        {lang === "bn"
+                          ? activeModalCard.topic.examTrapBn
+                          : activeModalCard.topic.examTrapEn}
+                      </div>
+                    </div>
                   </div>
                 )}
-              </div>
 
-              {/* Why in News Box */}
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs lg:text-sm text-slate-200 leading-relaxed">
-                <strong className="text-emerald-400">
-                  {lang === "bn" ? "সংবাদে কেন (Why in News): " : "Why in News: "}
-                </strong>
-                {lang === "bn"
-                  ? activeFloatingTopic.whyInNewsBn
-                  : activeFloatingTopic.whyInNewsEn}
-              </div>
-
-              {/* To-The-Point Exam Facts */}
-              <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-5 space-y-2.5">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                  {lang === "bn"
-                    ? "পরীক্ষা-কেন্দ্রিক মূল তথ্য (To-The-Point Exam Facts — WBPSC Prelims & Mains)"
-                    : "To-The-Point Exam Facts (WBPSC Prelims & Mains)"}
-                </h3>
-                <ul className="space-y-2.5 text-xs lg:text-sm text-slate-100 leading-relaxed pl-5 list-disc marker:text-emerald-400">
-                  {(lang === "bn" && activeFloatingTopic.examPointsBn?.length
-                    ? activeFloatingTopic.examPointsBn
-                    : activeFloatingTopic.examPointsEn
-                  ).map((pt, i) => (
-                    <li key={i}>{pt}</li>
-                  ))}
-                </ul>
-              </div>
-
-              {/* Static GK Hook & Exam Hall Trap */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-sky-500/10 border border-sky-500/30 rounded-xl p-4 text-xs lg:text-sm text-sky-100 leading-relaxed">
-                  <div className="font-bold text-sky-300 mb-1 flex items-center gap-1.5">
-                    <BookOpen className="w-4 h-4" />
-                    {lang === "bn"
-                      ? "স্ট্যাটিক জিকে সিলেবাস সংযোগ"
-                      : "Static GK Syllabus Hook"}
-                  </div>
-                  {lang === "bn"
-                    ? activeFloatingTopic.staticGkLinkBn
-                    : activeFloatingTopic.staticGkLinkEn}
-                </div>
-
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-xs lg:text-sm text-amber-100 leading-relaxed">
-                  <div className="font-bold text-amber-300 mb-1 flex items-center gap-1.5">
-                    <ShieldAlert className="w-4 h-4" />
-                    {lang === "bn"
-                      ? "পরীক্ষার হলে সম্ভাব্য ভুল (Exam Hall Trap)"
-                      : "Exam Hall Confuser / Trap"}
-                  </div>
-                  {lang === "bn"
-                    ? activeFloatingTopic.examTrapBn
-                    : activeFloatingTopic.examTrapEn}
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer: Previous / Progress Dots / Next Buttons */}
-            <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-t border-slate-800 bg-slate-950/90 shrink-0">
-              <button
-                type="button"
-                onClick={goPrevCard}
-                className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-xl transition-colors cursor-pointer"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                Previous Topic
-              </button>
-
-              {/* Interactive Card Number Dots */}
-              <div className="flex flex-wrap items-center justify-center gap-1.5">
-                {modalDeckTopics.map((t, idx) => (
+                {/* Modal Footer: Previous / Progress Dots / Next Buttons */}
+                <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-t border-slate-800 bg-slate-950/90 shrink-0">
                   <button
-                    key={t.id}
                     type="button"
-                    onClick={() => setFloatingCardIdx(idx)}
-                    className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer ${
-                      idx === floatingCardIdx
-                        ? "bg-emerald-500 text-slate-950 scale-110"
-                        : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
-                    }`}
+                    disabled={modalDeckCards.length === 0}
+                    onClick={goPrevCard}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 rounded-xl transition-colors cursor-pointer"
                   >
-                    {idx + 1}
+                    <ChevronLeft className="w-4 h-4" />
+                    Previous Topic
                   </button>
-                ))}
-              </div>
 
-              <button
-                type="button"
-                onClick={goNextCard}
-                className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl transition-colors cursor-pointer"
-              >
-                Next Topic
-                <ChevronRight className="w-4 h-4" />
-              </button>
+                  {/* Interactive Card Number Dots / Compact Selector for 30/31-Day Months */}
+                  {modalDeckCards.length <= 16 ? (
+                    <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-md">
+                      {modalDeckCards.map((c, idx) => (
+                        <button
+                          key={`${c.topic.id}-${idx}`}
+                          type="button"
+                          onClick={() => setFloatingCardIdx(idx)}
+                          className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                            idx === floatingCardIdx
+                              ? "bg-emerald-500 text-slate-950 scale-110"
+                              : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
+                          }`}
+                          title={`${formatReadableDate(c.editionDate, "en")}: ${c.topic.headlineEn}`}
+                        >
+                          {idx + 1}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-400 font-mono">Jump to Card:</span>
+                      <select
+                        value={floatingCardIdx}
+                        onChange={(e) => setFloatingCardIdx(Number(e.target.value))}
+                        className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-emerald-300 max-w-[260px] cursor-pointer"
+                      >
+                        {modalDeckCards.map((c, idx) => (
+                          <option key={`${c.topic.id}-${idx}`} value={idx}>
+                            #{idx + 1} · {c.editionDate} · {c.topic.headlineEn.slice(0, 32)}...
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={modalDeckCards.length === 0}
+                    onClick={goNextCard}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-sm"
+                  >
+                    Next Topic
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

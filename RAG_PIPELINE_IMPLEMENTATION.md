@@ -235,3 +235,60 @@ Splits descriptive grading into 3 specialized sub-agents (**Grammar & Orthograph
 | **3. Autonomous Paper Setter (Blueprint Architect) Agent** | Builds a balanced 100/200-question Mock Test Series from a 1M question bank from a natural-language Admin prompt (*"Create a high-difficulty Clerkship Mock focusing on 2024–25 pattern"*). | `query_question_distribution_sql`, `sample_stratified_questions`, `generate_missing_subtopic_mcqs`, `validate_paper_balance` | Checks if any subtopic is over-represented (e.g., 8 questions on the same Viceroy) and swaps redundant items automatically until the paper passes diversity constraints. |
 | **4. Daily Current Affairs Web-Scout & Exam-Mapper Agent** | Runs on a daily cron schedule, gathers West Bengal & National current events, maps each news item to static WBPSC syllabus topics, and drafts bilingual MCQs + PDF digests. | `google_search_grounding`, `map_to_wbpsc_syllabus_vector`, `generate_bilingual_ca_mcqs`, `compile_pdf_digest` | Filters out non-exam gossip/politics and retains only exam-relevant appointments, GI tags, awards, schemes, and constitutional updates. |
 | **5. Clerkship Part-II Multi-Agent Rubric Grader** | Uses a 3-agent panel (**Grammar Agent**, **Content & Structure Agent**, **Chief Examiner Aggregator**) to grade descriptive Bengali/English essays, precis, and translations. | `ocr_handwriting_vision`, `count_precis_words_deterministic`, `lookup_idiom_dictionary` | Uses deterministic word-count math (instead of LLM token guessing) for the 1/3rd Precis rule and reconciles score variance between sub-graders. |
+
+---
+
+## 7. Current Affairs 5-Agent System, Continuous Batch Backfilling & PSCWB Exam Orientation
+
+*(See the dedicated [`/CURRENT_AFFAIRS_AGENTS.md`](./CURRENT_AFFAIRS_AGENTS.md) document for full architectural diagrams and implementation details.)*
+
+The **Current Affairs & 1-Year Clerkship Archive** module (`/apps/api-core/src/routes/currentAffairs.ts` + `/src/components/DailyCurrentAffairsTab.tsx`) operates as a **5-Agent Pipeline** (**4 Actionable Orchestrator Agents** with UI Management Controls + **1 Automatic Internal Sub-Agent**):
+
+### 1. **Daily Automatic 12-Topic Collector Agent (`runAutonomousCurrentAffairsAgent` + Scheduler)**
+* **What it does:** Runs automatically every day for `Today` (`todayIso`). Scrapes live current affairs text from **GKToday (`https://www.gktoday.in/current-affairs/`)** and **PYQArena / The Hindu**, and enables Gemini's `tools: [{ googleSearch: {} }]` grounding to verify facts against **PIB** and **West Bengal State Gazette**.
+* **UI Management Controls:** Card 1 in the Agent Console allows pausing/resuming the daily auto-run or forcing a 1-click refresh for Today.
+
+### 2. **Month-Wise Batch Historical Backfill Agent (`POST /api/v1/current-affairs/auto-backfill` + `seedFullYearClerkshipArchive`)**
+* **What it does:** Solves both missing/scattered past dates and memory limits when populating a full year of daily Current Affairs:
+  1. **October 2026 Continuous 31-Day Coverage:** Automatically populates all **31 days of October 2026 (`2026-10-01` through `2026-10-31`, including `27 October 2026`)** with zero gaps.
+  2. **All 12 Past Months (`Nov 2025 – Oct 2026`) Upgraded to 12+ PSCWB Topics:** Upgrades every historical month in PostgreSQL via `ON CONFLICT (edition_date) DO UPDATE`.
+  3. **Continuous Range Batching (`days-1-10`, `days-11-20`, `days-21-end`, `full-month`):** Allows populating all 30/31 days of any earlier month in continuous 10-day or full-month batches without HTTP timeouts, automatically updating the **30/31-Day Monthly Coverage Progress Bar** on the Month Cards.
+
+### 3. **Monthly Category Classifier & Capsule Agent (`normalizeCategory` + `POST /api/v1/current-affairs/classify-month`)**
+* **What it does:** Classifies every topic and MCQ across a month into **10 standardized WBPSC exam categories**:
+  * *West Bengal Special*, *Polity & Governance*, *Economy & Banking*, *Science & Technology*, *Awards & Honours*, *Sports & Tournaments*, *Environment & GI Tags*, *Defence & Military Exercises*, *Ranks, Reports & Indices*, and *National & International*.
+* **Behind the scenes:** Powers print-ready **Categorized Monthly Capsule PDFs** and the **1-Year Clerkship Mega-Capsule PDF** (`handleDownloadCategorizedCapsulePdf`).
+
+### 4. **Single-Date Manual Recovery Agent (With Strict Future-Date Lock)**
+* **What it does:** Provides a manual retry option if an automatic run ever fails on a specific past date, while strictly blocking any future date (`editionDate > todayIso`) across the database startup audit, REST API, and UI date picker.
+
+### 5. **Bilingual Fact-Critic, Trap-Detector & PYQ MCQ Sub-Agent (100% Automatic Internal Pipeline)**
+* **What it does:** Runs automatically inside Agents 1–4 (requires no separate manual button). Formats every topic into **4–5 Prelims/Mains bullet facts** in **English (`en`)** and **Bengali (`bn`)**, attaches a **`staticGkLink`** (Constitutional Articles, Historical Acts, Headquarters) and an **`examTrap`** (common negative-marking confusers), and synthesizes **6 bilingual 4-option MCQs (`A, B, C, D`)** with explanations.
+* **PSCWB Exam Focus:** Prioritizes high-probability West Bengal PSC topics including *Deocha Pachami Coal Block (Birbhum)*, *West Bengal GI Tags (Tangail, Garad, Korial Sarees, Kalonunia Rice, Sundarban Honey)*, *Ghatal Master Plan & DVC*, *Classical Language Status for Bengali (Charyapada)*, *133rd Durand Cup in Kolkata*, and *16th Finance Commission (Art. 280)*.
+
+---
+
+## 8. Complete Application Feature Portfolio & Commercial Business Scope
+
+### A. Core Production Feature Matrix
+
+| Module | What We Have Built | Commercial Value Proposition |
+| :--- | :--- | :--- |
+| **1. Bilingual OMR Mock Test Engine & 1M-Scale Blueprint Assembler** | Timed WBPSC Prelims & Clerkship Part-I mock tests (`EN` + `বাংলা`), deterministic SQL grading (`₹0` AI cost), negative marking analytics, and Stratified Blueprint Sampling + Hybrid Search (`pg_trgm` + `pgvector` HNSW) for 1-Million Question Bank scale. | Core freemium-to-paid conversion engine; zero LLM cost per test attempt. |
+| **2. Exam-Oriented Revision Notes & Visual Concept Cards** | Admin-generated high-yield topic notes (e.g., *Viceroys of India*, *Sentence Transformation*) with AI-generated **Visual Concept Diagrams**, **Base Set of 30 Practice MCQs**, and **up to 2 Custom 30-MCQ Regenerations per Premium Aspirant** (`2/2` quota guardrail). | High-margin Premium Aspirant upsell with strictly bounded AI token cost. |
+| **3. 3-Tier Cached RAG Weakness Tutor** | SQL-driven weak sub-topic detection (`accuracy < 60%`) paired with `pgvector` syllabus retrieval and a **3-Tier Cache (`Redis` $\rightarrow$ `PostgreSQL` $\rightarrow$ `Gemini`)** in `apps/api-ai`. | Cuts recurring AI tutoring costs by **95%+** across thousands of concurrent students. |
+| **4. Clerkship Part-II Descriptive Answer Evaluator** | Automated bilingual rubric evaluation for **Report Writing, Précis Writing (deterministic 1/3rd word-count check), and Translation (`বাংলা` $\leftrightarrow$ `EN`)**. | Replaces expensive ₹2,000+ offline descriptive test-checking batches. |
+| **5. Daily & 1-Year Categorized Current Affairs (5-Agent Suite)** | Daily 12-topic auto-collection, Month-Wise Batch Backfilling (`Nov 2025 – Oct 2026`), 30/31-day progress bars, Floating Animated Card Deck Modal with 31-day Calendar, and Categorized Monthly / 1-Year PDF Capsules. | Daily organic traffic magnet (DAU driver) + downloadable PDF capsule upsell. |
+| **6. Admin PDF/Image OCR & Auto-Translation Question Bank Ingestor** | Multimodal Gemini OCR extracts Bengali/English questions from PDFs or images, auto-translates `বাংলা` $\leftrightarrow$ `English`, verifies historical facts, and inserts directly into the Question Bank. | Reduces content team typing and translation expenses by **80–99%**. |
+
+### B. Competitive Edge Over Conventional Apps (Testbook / Adda247 / Oliveboard) & Growth Roadmap
+
+1. **Native Bengali Orthography (`যুক্তাক্ষর`) & Deep West Bengal State Focus:** Unlike national apps that rely on awkward Hindi-to-Bengali machine translation and generic national current affairs, every module is built natively around **WBPSC Clerkship, WBCS, Miscellaneous, Food SI, and WBP** syllabi, West Bengal Gazette schemes, and `Noto Sans Bengali` typography.
+2. **Next-Phase Commercial Differentiators for High-Ticket Monetization:**
+   * **Camera-Based Handwritten Answer Sheet Grader (Gemini Vision):** Snap a photo of handwritten Bengali/English Part-II Précis, Reports, and Translations for instant rubric grading.
+   * **23-District West Bengal Explorer & State Budget Micro-Capsules:** District-wise rivers, GI tags, census stats, and schemes for WBPSC Miscellaneous & Interview rounds.
+   * **Ebbinghaus Spaced-Repetition "Mistake Vault" (1-3-7-21 Day Auto-Requeue):** Automatically re-tests wrong MCQs and *Exam Hall Traps* on Days 1, 3, 7, and 21 until mastered.
+   * **Exam-Hall "Negative-Marking Shield" Simulator:** Trains aspirants on closely confusing option pairs and measures their guessing risk index.
+   * **B2B White-Label OMR + QR-Code Paper Generator for Coaching Institutes (`₹3,999/month`):** Lets local West Bengal coaching centers generate branded bilingual PDF papers from the 1M Question Bank and grade students' physical OMR sheets via mobile camera.
+
+
