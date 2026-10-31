@@ -235,3 +235,37 @@ Splits descriptive grading into 3 specialized sub-agents (**Grammar & Orthograph
 | **3. Autonomous Paper Setter (Blueprint Architect) Agent** | Builds a balanced 100/200-question Mock Test Series from a 1M question bank from a natural-language Admin prompt (*"Create a high-difficulty Clerkship Mock focusing on 2024–25 pattern"*). | `query_question_distribution_sql`, `sample_stratified_questions`, `generate_missing_subtopic_mcqs`, `validate_paper_balance` | Checks if any subtopic is over-represented (e.g., 8 questions on the same Viceroy) and swaps redundant items automatically until the paper passes diversity constraints. |
 | **4. Daily Current Affairs Web-Scout & Exam-Mapper Agent** | Runs on a daily cron schedule, gathers West Bengal & National current events, maps each news item to static WBPSC syllabus topics, and drafts bilingual MCQs + PDF digests. | `google_search_grounding`, `map_to_wbpsc_syllabus_vector`, `generate_bilingual_ca_mcqs`, `compile_pdf_digest` | Filters out non-exam gossip/politics and retains only exam-relevant appointments, GI tags, awards, schemes, and constitutional updates. |
 | **5. Clerkship Part-II Multi-Agent Rubric Grader** | Uses a 3-agent panel (**Grammar Agent**, **Content & Structure Agent**, **Chief Examiner Aggregator**) to grade descriptive Bengali/English essays, precis, and translations. | `ocr_handwriting_vision`, `count_precis_words_deterministic`, `lookup_idiom_dictionary` | Uses deterministic word-count math (instead of LLM token guessing) for the 1/3rd Precis rule and reconciles score variance between sub-graders. |
+
+---
+
+## 7. Current Affairs Multi-Agent System (What Each Agent Is Doing Right Now)
+
+*(See also the standalone [`/CURRENT_AFFAIRS_AGENTS.md`](./CURRENT_AFFAIRS_AGENTS.md) document for full details.)*
+
+The **Current Affairs & 1-Year Clerkship Archive** module (`/apps/api-core/src/routes/currentAffairs.ts` + `/src/components/DailyCurrentAffairsTab.tsx`) operates as a **5-Agent Pipeline**:
+
+### 1. **Multi-Source Web-Scout & Portal Grounding Agent (`scrapePortalText` + Google Search Grounding)**
+* **What it does:** Scrapes live current affairs text from **GKToday (`https://www.gktoday.in/current-affairs/`)** and **PYQArena / The Hindu (`https://www.pyqarena.com/...`)** while enabling Gemini's native `tools: [{ googleSearch: {} }]` grounding to verify facts against **PIB** and **West Bengal Gazette** portals.
+* **Behind the scenes:** Strips HTML scripts/styles, extracts up to `10,000` characters of verified factual context from both portals, and records exact citation links (`source_links`) in PostgreSQL.
+
+### 2. **Bilingual Exam-Curator & Static-GK Mapper Agent (`runAutonomousCurrentAffairsAgent`)**
+* **What it does:** Synthesizes **10 to 12 high-yield WBPSC exam-oriented topics** per edition in both **English (`en`)** and **Bengali (`bn`)**.
+* **Behind the scenes:** For every topic, it produces a structured 4-part exam card:
+  1. **`whyInNews`:** 1–2 sentence context summary.
+  2. **`keyPoints`:** 4–5 Prelims & Mains bullet facts (dates, Articles, rankings, project costs).
+  3. **`staticGkLink`:** Connects breaking news to the static WBPSC syllabus (e.g., *Aparajita Bill* $\rightarrow$ *Articles 200 & 201*; *ISRO EOS-08* $\rightarrow$ *ISRO founded 15 Aug 1969, HQ Bengaluru*).
+  4. **`examTrapOrTip`:** Warns aspirants about common exam-hall confusers (e.g., *Shiv Shakti Point* vs *Tiranga Point* vs *Jawahar Point*).
+
+### 3. **Monthly Category Classifier Agent (`normalizeCategory` + `POST /api/v1/current-affairs/classify-month`)**
+* **What it does:** Classifies every daily topic and MCQ across a month into **10 standardized WBPSC exam categories**:
+  * *West Bengal Special*, *Polity & Governance*, *Economy & Banking*, *Science & Technology*, *Awards & Honours*, *Sports & Tournaments*, *Environment & GI Tags*, *Defence & Military Exercises*, *Ranks, Reports & Indices*, and *National & International*.
+* **Behind the scenes:** Combines LLM semantic classification with deterministic keyword normalization (`normalizeCategory`) and updates the entire month's JSONB records in PostgreSQL so end-of-month PDF capsules are cleanly organized section-by-section by category.
+
+### 4. **PYQ-Pattern Current Affairs MCQ Generator Agent**
+* **What it does:** Generates **5 to 6 bilingual (`en`/`bn`) 4-option MCQs (`A, B, C, D`)** with detailed explanations from the curated topics of each edition.
+* **Behind the scenes:** Powers both the interactive self-assessment quiz in the reader UI and the Answer Key table at the back of every downloaded capsule.
+
+### 5. **1-Year Clerkship Archive & Categorized PDF Capsule Compiler Agent (`seedFullYearClerkshipArchive` + `handleDownloadCategorizedCapsulePdf`)**
+* **What it does:** Maintains a complete **12-Month Archive (`December 2025 – November 2026`)** tailored for the **December 2026 WBPSC Clerkship Exam**, and compiles print-ready **Monthly Categorized Capsules** and a **1-Year Categorized Mega-Capsule PDF** for both **Aspirants and Admins**.
+* **Behind the scenes:** Groups all topics across the selected month (or all 12 months) by Category, builds a Category Table of Contents, renders bilingual cards using `Noto Sans Bengali` + `Inter`, and tracks download counts in PostgreSQL.
+
