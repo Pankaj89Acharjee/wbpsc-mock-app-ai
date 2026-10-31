@@ -2246,7 +2246,7 @@ export async function runAutonomousCurrentAffairsAgent(params: {
   try {
     const ai = getGenAIClient();
     const scoutResponse = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.8-flash",
       contents: `You are Step 1 (Deep Nested-Page Web-Scout & Date-Specific Harvester Agent) for WBPSC Civil Services & Clerkship.
 Target Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate})
 
@@ -2301,7 +2301,7 @@ Gather ${countGoal} COMPLETELY NEW, NON-DUPLICATE exam topics specific to ${dayI
   try {
     const ai = getGenAIClient();
     const synthesisResponse = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.8-flash",
       contents: `You are the WBPSC Classifier, Concise Current Affairs Synthesizer & Anti-Duplication Critic Agent.
 Synthesize an exam-oriented Bilingual (English + Bengali / বাংলা) Current Affairs Edition specifically for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}).
 

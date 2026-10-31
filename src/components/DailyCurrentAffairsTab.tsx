@@ -1151,13 +1151,13 @@ export default function DailyCurrentAffairsTab({
           <div className="space-y-1">
             <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-wider">
               <Sparkles className="w-4 h-4" />
-              Autonomous Current Affairs Agent Management Console (5 Specialized Agents)
+              Current Affairs Management Console
             </div>
             <h2 className="text-base font-bold text-white">
-              Complete 5-Agent Architecture &amp; Batch Controls (PSCWB Exam-Oriented)
+              Manage Your Assistant Agents (4 Manual + 1 Automatic)
             </h2>
             <p className="text-xs text-slate-400">
-              There are <strong className="text-white">5 Specialized Agents</strong> powering Current Affairs: <strong className="text-emerald-300">4 Actionable Orchestrator Agents</strong> (managed below) and <strong className="text-amber-300">1 Automatic Internal Sub-Agent</strong> (Bilingual Fact-Critic, Trap-Detector &amp; MCQ Generator) that runs automatically inside every collection run so you don&apos;t need to manage it separately.
+              <strong className="text-white">5 Agents</strong> for Current Affairs: <strong className="text-emerald-300">4 Manual Orchestrator Agents</strong> (managed below) and <strong className="text-amber-300">1 Autonomous Sub-Agent</strong>
             </p>
           </div>
         </div>
@@ -1167,7 +1167,7 @@ export default function DailyCurrentAffairsTab({
           <div className="p-2.5 rounded-lg bg-slate-900/90 border border-emerald-500/30">
             <div className="font-bold text-emerald-300">Agent 1: Daily Collector</div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              Auto-runs daily for Today ({todayIso}) · Has Pause &amp; Manual Refresh below.
+              Auto-runs daily for Today, i.e., ({todayIso}) · Has Pause &amp; Manual Refresh button below.
             </div>
           </div>
           <div className="p-2.5 rounded-lg bg-slate-900/90 border border-sky-500/30">
@@ -1189,7 +1189,7 @@ export default function DailyCurrentAffairsTab({
             </div>
           </div>
           <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-700">
-            <div className="font-bold text-slate-200">Agent 5: Bilingual Critic &amp; MCQ</div>
+            <div className="font-bold text-slate-200">Agent 5: Bilingual &amp; MCQ Generator</div>
             <div className="text-[11px] text-slate-400 mt-0.5">
               <span className="text-emerald-400 font-semibold">100% Automatic Internal Pipeline</span> — adds Static GK, Traps &amp; বাংলা অনুবাদ.
             </div>
@@ -1203,7 +1203,7 @@ export default function DailyCurrentAffairsTab({
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
                   <Clock className="w-4 h-4" />
-                  1. Daily Automatic 12-Topic Collector Agent
+                  1. Daily Collector Agent
                 </span>
                 <span
                   className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
@@ -1217,14 +1217,14 @@ export default function DailyCurrentAffairsTab({
               </div>
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does in simple words:</strong> Runs{" "}
+                <strong className="text-white">What this does:</strong> Runs{" "}
                 <strong>automatically every day</strong>. Grounded on{" "}
-                <span className="text-emerald-300">GKToday</span>,{" "}
+                <span className="text-emerald-300">GK Today</span>,{" "}
                 <span className="text-emerald-300">PYQArena (The Hindu)</span>,{" "}
                 <span className="text-emerald-300">PIB</span>, and{" "}
                 <span className="text-emerald-300">WB State Gazette</span>, it collects{" "}
                 <strong>12 PSCWB exam-oriented topics</strong> for today&apos;s date (
-                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>) including West Bengal schemes, GI tags, Constitutional articles, and Static GK links.
+                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>) including West Bengal schemes, GI tags, Constitutional articles, and Static GK.
               </p>
             </div>
 
@@ -1266,15 +1266,15 @@ export default function DailyCurrentAffairsTab({
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
                   <CalendarIcon className="w-4 h-4" />
-                  2. Month-Wise Batch Historical Backfill Agent
+                  2. Month-Wise Backfiller Agent
                 </span>
                 <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
-                  Continuous Batching (Zero Gaps)
+                  Continously Updates Previous Days
                 </span>
               </div>
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">How 2-Level Nested Crawling &amp; Zero-Duplicate Backfilling works:</strong> Instead of shallow top-page scraping or repeating topics across dates, our crawler follows nested <code className="text-sky-300">&lt;a href&gt;</code> sub-pages on GKToday &amp; PYQArena alongside Google Search Grounding for that exact date, and passes all previously stored headlines into a strict <strong>3-Layer Anti-Duplication Filter</strong> so no two dates ever share the same Current Affairs topic!
+                <strong className="text-white">How it works:</strong> Instead of shallow top-page scraping or repeating topics across dates, our crawler follows nested <code className="text-sky-300">&lt;a href&gt;</code> sub-pages on GKToday &amp; PYQArena alongside Google Search Grounding for that exact date, and passes all previously stored headlines into a strict <strong>3-Layer Anti-Duplication Filter</strong> so no two dates ever share the same Current Affairs topic!
               </p>
             </div>
 
