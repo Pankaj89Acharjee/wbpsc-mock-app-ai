@@ -277,10 +277,26 @@ export default function DailyCurrentAffairsTab({
 }: DailyCurrentAffairsTabProps) {
   const isAdmin = user?.role === "admin";
 
+  const getClientTodayIso = (): string => {
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(new Date());
+      const y = parts.find((p) => p.type === "year")?.value;
+      const m = parts.find((p) => p.type === "month")?.value;
+      const d = parts.find((p) => p.type === "day")?.value;
+      if (y && m && d) return `${y}-${m}-${d}`;
+    } catch {
+      // Fallback
+    }
+    return new Date().toISOString().slice(0, 10);
+  };
+
   const [loading, setLoading] = useState<boolean>(true);
-  const [todayIso, setTodayIso] = useState<string>(() =>
-    new Date().toISOString().slice(0, 10)
-  );
+  const [todayIso, setTodayIso] = useState<string>(() => getClientTodayIso());
   const [scheduler, setScheduler] = useState<CaAutoSchedulerStatus | null>(null);
   const [stats, setStats] = useState<CaDashboardStats | null>(null);
   const [monthsArchive, setMonthsArchive] = useState<CaMonthArchiveSummary[]>([]);
@@ -294,10 +310,14 @@ export default function DailyCurrentAffairsTab({
   // FLOATING ANIMATED CARD DECK MODAL STATE (With Built-in Month & Calendar)
   // =========================================================================
   const [floatingModalOpen, setFloatingModalOpen] = useState<boolean>(false);
-  const [modalMonthKey, setModalMonthKey] = useState<string>("2026-10");
+  const [modalMonthKey, setModalMonthKey] = useState<string>(() =>
+    getClientTodayIso().slice(0, 7)
+  );
   // "all" means render ALL stored dates in `modalMonthKey` by default;
   // or a specific "YYYY-MM-DD" string when the user clicks a date on the calendar.
-  const [modalDateFilter, setModalDateFilter] = useState<string>("all");
+  const [modalDateFilter, setModalDateFilter] = useState<string>(() =>
+    getClientTodayIso()
+  );
   const [modalCategoryFilter, setModalCategoryFilter] = useState<string>("all");
   const [showModalCalendar, setShowModalCalendar] = useState<boolean>(true);
   const [floatingCardIdx, setFloatingCardIdx] = useState<number>(0);
@@ -308,15 +328,17 @@ export default function DailyCurrentAffairsTab({
   // =========================================================================
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [backfillBusy, setBackfillBusy] = useState<boolean>(false);
-  const [backfillMonthKey, setBackfillMonthKey] = useState<string>("2026-09");
+  const [backfillMonthKey, setBackfillMonthKey] = useState<string>("2026-10");
   const [backfillBatchRange, setBackfillBatchRange] = useState<
     "days-1-10" | "days-11-20" | "days-21-end" | "full-month"
   >("full-month");
   const [toggleSchedulerBusy, setToggleSchedulerBusy] = useState<boolean>(false);
   const [classifierBusyMonth, setClassifierBusyMonth] = useState<string | null>(null);
-  const [classifierSelectedMonth, setClassifierSelectedMonth] = useState<string>("2026-10");
+  const [classifierSelectedMonth, setClassifierSelectedMonth] = useState<string>(() =>
+    getClientTodayIso().slice(0, 7)
+  );
   const [agentEditionDate, setAgentEditionDate] = useState<string>(() =>
-    new Date().toISOString().slice(0, 10)
+    getClientTodayIso()
   );
   const [agentSourceUrl, setAgentSourceUrl] = useState<string>(
     "https://www.gktoday.in/current-affairs/"
@@ -342,7 +364,8 @@ export default function DailyCurrentAffairsTab({
         monthsArchive: CaMonthArchiveSummary[];
         editions: CaEditionDto[];
       }>("/current-affairs");
-      const serverToday = res.todayIso || new Date().toISOString().slice(0, 10);
+      const serverToday = res.todayIso || getClientTodayIso();
+      const serverMonthKey = serverToday.slice(0, 7);
       setTodayIso(serverToday);
       if (res.scheduler) setScheduler(res.scheduler);
       setStats(res.stats);
@@ -352,7 +375,7 @@ export default function DailyCurrentAffairsTab({
         (e) => e.editionDate <= serverToday
       );
       const validMonths = (res.monthsArchive || []).filter(
-        (m) => m.monthKey <= serverToday.slice(0, 7)
+        (m) => m.monthKey <= serverMonthKey
       );
 
       setEditions(validEditions);
@@ -360,10 +383,10 @@ export default function DailyCurrentAffairsTab({
 
       if (validMonths.length > 0) {
         setModalMonthKey((prev) =>
-          validMonths.some((m) => m.monthKey === prev) ? prev : validMonths[0].monthKey
+          validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
         );
         setClassifierSelectedMonth((prev) =>
-          validMonths.some((m) => m.monthKey === prev) ? prev : validMonths[0].monthKey
+          validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
         );
       }
       setAgentEditionDate((prev) => (prev > serverToday ? serverToday : prev));
@@ -393,6 +416,8 @@ export default function DailyCurrentAffairsTab({
   const availableMonthKeys = useMemo(() => {
     const currentMonthKey = todayIso.slice(0, 7);
     const keys = new Set<string>([
+      currentMonthKey,
+      "2026-11",
       "2026-10",
       "2026-09",
       "2026-08",
@@ -431,8 +456,8 @@ export default function DailyCurrentAffairsTab({
         : storedEditionsInModalMonth.filter((e) => e.editionDate === modalDateFilter);
 
     const list: DeckCardEntry[] = [];
-    const seenHeadlineKeys = new Set<string>();
     for (const ed of targetEditions) {
+      const sameDateSeen = new Set<string>();
       for (const t of ed.topics) {
         if (modalCategoryFilter !== "all" && t.category !== modalCategoryFilter) {
           continue;
@@ -442,11 +467,11 @@ export default function DailyCurrentAffairsTab({
           .replace(/[^a-z0-9\s]/g, " ")
           .replace(/\s+/g, " ")
           .trim();
-        if (normKey && seenHeadlineKeys.has(normKey)) {
+        if (normKey && sameDateSeen.has(normKey)) {
           continue;
         }
         if (normKey) {
-          seenHeadlineKeys.add(normKey);
+          sameDateSeen.add(normKey);
         }
         list.push({
           topic: t,
@@ -885,7 +910,7 @@ export default function DailyCurrentAffairsTab({
   if (loading) {
     return (
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-10 text-center text-sm text-slate-400">
-        Loading Previous 1-Year Current Affairs Archive (Nov 2025 – Oct 2026) &amp;
+        Loading Current &amp; Previous 1-Year Current Affairs Archive (Nov 2025 – Nov 2026) &amp;
         Autonomous Agents...
       </div>
     );
@@ -918,14 +943,20 @@ export default function DailyCurrentAffairsTab({
                 </span>
               )}
               <span className="text-slate-400 font-mono">
-                Today: <strong className="text-white">{formatReadableDate(todayIso, lang)}</strong>
+                Present Date (Today):{" "}
+                <strong className="text-white">{formatReadableDate(todayIso, lang)}</strong>
+                {todayEdition ? (
+                  <span className="ml-2 text-emerald-400 font-semibold">
+                    ({todayEdition.topics.length}/12 Topics Stored)
+                  </span>
+                ) : null}
               </span>
             </div>
 
             <h1 className="text-xl font-bold text-white">
               {lang === "bn"
-                ? "কারেন্ট অ্যাফেয়ার্স আর্কাইভ (বিগত ১ বছর: নভেম্বর ২০২৫ – অক্টোবর ২০২৬)"
-                : "Daily & Previous 1-Year Current Affairs Archive (Nov 2025 – Oct 2026)"}
+                ? "কারেন্ট অ্যাফেয়ার্স আর্কাইভ (নভেম্বর ২০২৫ – নভেম্বর ২০২৬)"
+                : "Daily & Previous 1-Year Current Affairs Archive (Nov 2025 – Nov 2026)"}
             </h1>
             <p className="text-xs text-slate-400 leading-relaxed">
               {lang === "bn"
@@ -940,14 +971,14 @@ export default function DailyCurrentAffairsTab({
               type="button"
               onClick={() =>
                 openFloatingDeckForMonth(
-                  todayEdition?.monthKey || todayIso.slice(0, 7),
-                  "all"
+                  todayIso.slice(0, 7),
+                  editionsByDate.has(todayIso) ? todayIso : "all"
                 )
               }
               className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-md"
             >
               <Maximize2 className="w-4 h-4" />
-              Open Floating Card Deck (With Calendar)
+              Open Today&apos;s Floating Card Deck ({todayIso})
             </button>
 
             {/* Button 2: Download Full 1-Year Categorized Clerkship Mega-Capsule PDF */}
@@ -956,14 +987,14 @@ export default function DailyCurrentAffairsTab({
               onClick={() =>
                 void handleDownloadCategorizedCapsulePdf(
                   editions,
-                  `Previous 1-Year WBPSC Clerkship Categorized Mega-Capsule (${monthsArchive.length} Months: Nov 2025 – Oct 2026)`,
-                  `WBPSC-Clerkship-1Year-Categorized-CA-Nov2025-Oct2026`
+                  `WBPSC Clerkship Categorized Mega-Capsule (${monthsArchive.length} Months: Nov 2025 – Nov 2026)`,
+                  `WBPSC-Clerkship-Categorized-CA-Nov2025-Nov2026`
                 )
               }
               className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-sm"
             >
               <FileDown className="w-4 h-4" />
-              Download 1-Year Categorized PDF ({monthsArchive.length} Months)
+              Download Categorized PDF ({monthsArchive.length} Months)
             </button>
           </div>
         </div>
@@ -973,7 +1004,7 @@ export default function DailyCurrentAffairsTab({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 pt-1">
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Past 1-Year Archive (No Future Dates)</span>
+                <span>Current &amp; Past 1-Year Archive (No Future Dates)</span>
                 <CalendarIcon className="w-4 h-4 text-emerald-400" />
               </div>
               <div className="text-xl font-bold font-mono text-white">
@@ -981,7 +1012,7 @@ export default function DailyCurrentAffairsTab({
               </div>
               <div className="text-[11px] text-slate-400">
                 <span className="text-emerald-400 font-semibold">
-                  Nov 2025 → Oct 2026
+                  Nov 2025 → Nov 2026
                 </span>
                 <span aria-hidden="true"> · </span>
                 <span>{stats.totalEditionsCount} Stored Dates</span>
@@ -1036,7 +1067,7 @@ export default function DailyCurrentAffairsTab({
       </div>
 
       {/* ====================================================================
-          SECTION 2: PREVIOUS 1-YEAR CURRENT AFFAIRS BY MONTH (Nov 2025 – Oct 2026)
+          SECTION 2: CURRENT & PREVIOUS 1-YEAR CURRENT AFFAIRS BY MONTH (Nov 2025 – Nov 2026)
           Clicking ANY Month Card opens the Floating Animated Modal with the
           WHOLE MONTH's Current Affairs loaded by default + in-modal Date Picker!
       ==================================================================== */}
@@ -1046,8 +1077,8 @@ export default function DailyCurrentAffairsTab({
             <h2 className="text-base font-bold text-white flex items-center gap-2">
               <CalendarIcon className="w-4 h-4 text-emerald-400" />
               {lang === "bn"
-                ? `বিগত ১ বছরের মাসিক কারেন্ট অ্যাফেয়ার্স ক্যাপসুল (${monthsArchive.length} মাস: নভেম্বর ২০২৫ – অক্টোবর ২০২৬)`
-                : `Previous 1-Year Current Affairs by Month (${monthsArchive.length} Months: Nov 2025 – Oct 2026)`}
+                ? `মাসিক কারেন্ট অ্যাফেয়ার্স ক্যাপসুল (${monthsArchive.length} মাস: নভেম্বর ২০২৫ – নভেম্বর ২০২৬)`
+                : `Current & Previous 1-Year Current Affairs by Month (${monthsArchive.length} Months: Nov 2025 – Nov 2026)`}
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               <strong>Click on any Month Card below</strong> to open that whole month&apos;s Current Affairs in the{" "}
