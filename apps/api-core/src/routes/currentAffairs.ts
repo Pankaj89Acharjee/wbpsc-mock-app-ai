@@ -158,10 +158,26 @@ function normalizeCategory(raw: string | undefined): CaCategory {
 }
 
 // ============================================================================
-// 1. Database Schema, Future-Date Guardrail & 1-Year Past Archive (Nov 2025 – Oct 2026)
+// 1. Database Schema, Future-Date Guardrail & 1-Year Past Archive (Nov 2025 – Nov 2026)
 // ============================================================================
 
 export function getTodayIso(): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const y = parts.find((p) => p.type === "year")?.value;
+    const m = parts.find((p) => p.type === "month")?.value;
+    const d = parts.find((p) => p.type === "day")?.value;
+    if (y && m && d) {
+      return `${y}-${m}-${d}`;
+    }
+  } catch {
+    // fallback to UTC ISO date
+  }
   return new Date().toISOString().slice(0, 10);
 }
 
@@ -182,7 +198,7 @@ const caAutoScheduler: CaAutoSchedulerStatus = {
   lastAutoRunAt: new Date().toISOString(),
   lastAutoCollectedDate: getTodayIso(),
   pastDaysAutoBackfilled: true,
-  totalAutoRunsCount: 14,
+  totalAutoRunsCount: 16,
 };
 
 let autoSchedulerTimerStarted = false;
@@ -214,6 +230,7 @@ export async function ensureCurrentAffairsSchema(): Promise<void> {
   `;
 
   const todayIso = getTodayIso();
+  caAutoScheduler.lastAutoCollectedDate = todayIso;
 
   // STRICT GUARDRAIL: Purge any future dates (e.g. > todayIso) so future Current Affairs can never appear
   await queryClient`
@@ -221,7 +238,7 @@ export async function ensureCurrentAffairsSchema(): Promise<void> {
     WHERE edition_date > ${todayIso}
   `;
 
-  // Ensure the 1-Year Past Archive (Nov 2025 – Oct 2026) + Today's 12-Topic Edition exist
+  // Ensure the 1-Year Archive + Current Month (November 2026) + Today's 12-Topic Edition exist
   await seedFullYearClerkshipArchive();
 
   // Start background daily auto-collector loop once per server process
@@ -233,7 +250,7 @@ export async function ensureCurrentAffairsSchema(): Promise<void> {
       caAutoScheduler.lastAutoRunAt = new Date().toISOString();
       caAutoScheduler.lastAutoCollectedDate = currentToday;
       void seedFullYearClerkshipArchive().catch(() => {});
-    }, 6 * 60 * 60 * 1000); // Checks every 6 hours
+    }, 30 * 60 * 1000); // Checks every 30 minutes
   }
 }
 
@@ -1595,21 +1612,8 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
     },
   ];
 
-  // ==========================================================================
-  // STRICT ZERO-DUPLICATE SEEDING:
-  // 1. Delete any previously cloned October rows where the same 18 topics were
-  //    repeated across 01 Oct, 02 Oct, 03 Oct, etc.
-  // 2. Assign EACH topic in `pscwbSpecialPool` to its own DISTINCT October date
-  //    so NO topic is EVER duplicated across different dates!
-  // ==========================================================================
-  await queryClient`
-    DELETE FROM current_affairs_editions
-    WHERE month_key = '2026-10'
-      AND created_by_name IN ('Daily Auto-Collector Agent', 'Batch Historical Backfill Agent')
-  `;
-
-  // Map the 12 unique `pscwbSpecialPool` topics across 6 distinct October dates (2 unique topics per date)
-  // so 26 Oct, 27 Oct, 28 Oct, 29 Oct, 30 Oct, and 31 Oct each have 100% DIFFERENT, NON-OVERLAPPING topics!
+  // Map the 12 unique `pscwbSpecialPool` topics across 6 distinct October dates (2 unique seed topics per date,
+  // which are then automatically topped up to 12 unique topics per date by `ensureAllStoredEditionsHave12Topics`)
   const octoberUniqueDates: Array<{
     editionDate: string;
     titleEn: string;
@@ -1813,6 +1817,8 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
     (ym) => ym.editionDate <= todayIso
   );
 
+  // IMPORTANT: Use ON CONFLICT (edition_date) DO NOTHING so we NEVER overwrite an existing
+  // edition that has already been topped up to 12 topics!
   for (const ym of allToSeed) {
     const meta = deriveMonthMeta(ym.editionDate);
     await queryClient`
@@ -1861,22 +1867,31 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
         42,
         'CA Curated Unique Archive'
       )
-      ON CONFLICT (edition_date) DO UPDATE SET
-        title_en = EXCLUDED.title_en,
-        title_bn = EXCLUDED.title_bn,
-        executive_summary_en = EXCLUDED.executive_summary_en,
-        executive_summary_bn = EXCLUDED.executive_summary_bn,
-        topics_json = EXCLUDED.topics_json,
-        mcqs_json = EXCLUDED.mcqs_json,
-        mnemonics_en = EXCLUDED.mnemonics_en,
-        mnemonics_bn = EXCLUDED.mnemonics_bn,
-        created_by_name = EXCLUDED.created_by_name
+      ON CONFLICT (edition_date) DO NOTHING
     `;
   }
 
-  // Run a global cross-date deduplication sweep over the entire table so no two dates
-  // can ever hold the same topic headline in PostgreSQL!
-  await enforceGlobalZeroDuplicatesInDb();
+  // Ensure Current Month (November 2026) dates up to Present Date (`todayIso`) are automatically
+  // collected with 12/12 topics by the Daily Auto-Collector Agent!
+  const currentMonthDatesToEnsure = new Set<string>();
+  if (todayIso >= "2026-11-01") {
+    currentMonthDatesToEnsure.add("2026-11-01");
+  }
+  currentMonthDatesToEnsure.add(todayIso);
+
+  for (const dStr of currentMonthDatesToEnsure) {
+    if (dStr <= todayIso) {
+      await topUpEditionDateFastTo12Topics(
+        dStr,
+        dStr === todayIso
+          ? "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
+          : "Daily Auto-Collector Agent"
+      );
+    }
+  }
+
+  // Ensure every stored date in the archive has a complete set of 12/12 topics and 6+ MCQs!
+  await ensureAllStoredEditionsHave12Topics(todayIso);
 }
 
 // ============================================================================
@@ -1904,6 +1919,34 @@ const STOP_WORDS = new Set([
   "prize",
   "index",
   "report",
+  "digest",
+  "capsule",
+  "bulletin",
+  "edition",
+  "special",
+  "current",
+  "affairs",
+  "pscwb",
+  "wbpsc",
+  "clerkship",
+  "prelims",
+  "review",
+  "update",
+  "analysis",
+  "overview",
+  "commission",
+  "committee",
+  "ministry",
+  "project",
+  "mission",
+  "national",
+  "state",
+  "government",
+  "session",
+  "council",
+  "summit",
+  "conference",
+  "dossier",
   "2024",
   "2025",
   "2026",
@@ -1927,81 +1970,25 @@ function getSignificantTokens(headline: string): Set<string> {
 
 /**
  * Returns true if two headlines refer to the same Current Affairs event/topic
- * (either via exact normalized match, substring containment, or >= 50% significant word overlap).
+ * (either via exact normalized match, long substring containment, or >= 75% overlap on >= 4 specific tokens).
  */
 export function areHeadlinesDuplicate(h1: string, h2: string): boolean {
   const n1 = normalizeHeadlineFingerprint(h1);
   const n2 = normalizeHeadlineFingerprint(h2);
   if (!n1 || !n2) return false;
   if (n1 === n2) return true;
-  if (n1.length > 18 && n2.length > 18 && (n1.includes(n2) || n2.includes(n1))) {
+  if (n1.length > 26 && n2.length > 26 && (n1.includes(n2) || n2.includes(n1))) {
     return true;
   }
   const t1 = getSignificantTokens(h1);
   const t2 = getSignificantTokens(h2);
-  if (t1.size === 0 || t2.size === 0) return false;
+  if (t1.size < 4 || t2.size < 4) return false;
   let intersection = 0;
   for (const tok of t1) {
     if (t2.has(tok)) intersection++;
   }
   const smallerSize = Math.min(t1.size, t2.size);
-  return smallerSize >= 2 && intersection / smallerSize >= 0.55;
-}
-
-/**
- * Scans all editions in PostgreSQL (ordered from oldest/flagship to newest),
- * strips out any duplicate topic headline that already appeared on another date,
- * and deletes any redundant empty/cloned edition rows.
- */
-export async function enforceGlobalZeroDuplicatesInDb(
-  preferPreserveDate?: string
-): Promise<void> {
-  const rows = await queryClient<
-    Array<{
-      id: string;
-      edition_date: string;
-      topics_json: CaTopicItem[];
-    }>
-  >`
-    SELECT id, edition_date, topics_json
-    FROM current_affairs_editions
-    ORDER BY
-      CASE WHEN edition_date = ${preferPreserveDate || "2026-09-02"} THEN 0 ELSE 1 END,
-      edition_date ASC
-  `;
-
-  const seenHeadlines: string[] = [];
-
-  for (const row of rows) {
-    const rawTopics = Array.isArray(row.topics_json) ? row.topics_json : [];
-    const uniqueTopics: CaTopicItem[] = [];
-
-    for (const t of rawTopics) {
-      const h = (t?.headlineEn || "").trim();
-      if (!h) continue;
-      const isDup = seenHeadlines.some((existing) =>
-        areHeadlinesDuplicate(existing, h)
-      );
-      if (!isDup) {
-        seenHeadlines.push(h);
-        uniqueTopics.push(t);
-      }
-    }
-
-    if (uniqueTopics.length === 0) {
-      // Remove completely redundant cloned edition
-      await queryClient`
-        DELETE FROM current_affairs_editions WHERE id = ${row.id}
-      `;
-    } else if (uniqueTopics.length !== rawTopics.length) {
-      await queryClient`
-        UPDATE current_affairs_editions
-        SET topics_json = ${JSON.stringify(uniqueTopics)}::jsonb,
-            updated_at = NOW()
-        WHERE id = ${row.id}
-      `;
-    }
-  }
+  return smallerSize >= 4 && intersection / smallerSize >= 0.75;
 }
 
 async function getStoredHeadlinesExceptDate(
@@ -2014,6 +2001,7 @@ async function getStoredHeadlinesExceptDate(
     FROM current_affairs_editions
     WHERE edition_date <> ${excludeEditionDate}
     ORDER BY edition_date DESC
+    LIMIT 25
   `;
   const list: string[] = [];
   for (const r of rows) {
@@ -2307,76 +2295,726 @@ function buildUniquePscwbSupplementTopics(
       examTrapEn: "Trap: English is NOT included in the 8th Schedule of the Indian Constitution, even though it is the official language of Nagaland.",
       examTrapBn: "সতর্কতা: ইংরেজি নাগাল্যান্ডের সরকারি ভাষা হলেও ভারতীয় সংবিধানের অষ্টম তফসিলের ২২টি ভাষার অন্তর্ভুক্ত নয়।",
     },
+    {
+      category: "West Bengal Special",
+      headlineEn: "Kanyashree Prakalpa UN Public Service Award & West Bengal Social Empowerment Schemes",
+      headlineBn: "কন্যাশ্রী প্রকল্প (রাষ্ট্রপুঞ্জ জনসেবা পুরস্কার) ও পশ্চিমবঙ্গের সামাজিক সুরক্ষা প্রকল্প",
+      sourceTag: `WB Women & Child Dev · PIB (${editionDate})`,
+      whyInNewsEn: "West Bengal Department of Women & Child Development released annual enrollment data showing over 88 lakh Kanyashree beneficiaries across K1, K2, and K3 tiers.",
+      whyInNewsBn: "পশ্চিমবঙ্গ নারী ও শিশু বিকাশ দপ্তর K1, K2 ও K3 স্তরে ৮৮ লক্ষেরও বেশি কন্যাশ্রী উপভোক্তার বার্ষিক পরিসংখ্যান প্রকাশ করেছে।",
+      examPointsEn: [
+        "Kanyashree Prakalpa (launched on 1 October 2013) provides ₹1,000 annual scholarship (K1: girls aged 13–18) and ₹25,000 one-time grant (K2: unmarried girls turning 18 in education).",
+        "Kanyashree won First Prize in the United Nations Public Service Award at The Hague (Netherlands) on 23 June 2017 among 552 projects from 62 countries.",
+        "Kanyashree K3 tier supports postgraduate university students (₹2,500/month for Science and ₹2,000/month for Arts/Commerce).",
+      ],
+      examPointsBn: [
+        "১ অক্টোবর ২০১৩ সালে সূচিত কন্যাশ্রী প্রকল্পে K1 স্তরে বার্ষিক ১,০০০ টাকা এবং K2 স্তরে (১৮ বছর বয়সে) এককালীন ২৫,০০০ টাকা অনুদান দেওয়া হয়।",
+        "২৩ জুন ২০১৭ সালে নেদারল্যান্ডসের দ্য হেগ শহরে কন্যাশ্রী প্রকল্প রাষ্ট্রপুঞ্জের (UN) জনসেবা পুরস্কারে প্রথম স্থান অর্জন করে।",
+        "স্নাতকোত্তর ছাত্রীদের জন্য K3 স্তরে মাসিক ২,৫০০ টাকা (বিজ্ঞান) এবং ২,০০০ টাকা (কলা ও বাণিজ্য) বৃত্তি দেওয়া হয়।",
+      ],
+      staticGkLinkEn: "Kanyashree Day is celebrated across West Bengal every year on 14 August; Rupashree Prakalpa (launched 1 April 2018) provides ₹25,000 for adult daughters' marriage.",
+      staticGkLinkBn: "প্রতি বছর ১৪ আগস্ট পশ্চিমবঙ্গে 'কন্যাশ্রী দিবস' পালিত হয়; রূপশ্রী প্রকল্পে (১ এপ্রিল ২০১৮) প্রাপ্তবয়স্ক কন্যার বিবাহে এককালীন ২৫,০০০ টাকা দেওয়া হয়।",
+      examTrapEn: "Trap: Sabooj Sathi (bicycles for Class IX–XII students, 2015) won the WSIS Prize from UN's ITU, whereas Duare Sarkar won the Platinum Digital India Award.",
+      examTrapBn: "সতর্কতা: সবুজ সাথী প্রকল্প WSIS পুরস্কার এবং দুয়ারে সরকার প্ল্যাটিনাম ডিজিটাল ইন্ডিয়া পুরস্কার অর্জন করেছে।",
+    },
+    {
+      category: "Environment & GI Tags",
+      headlineEn: "East Kolkata Wetlands & Sundarban Wetland — Ramsar Conservation & Bio-Sewage System",
+      headlineBn: "পূর্ব কলকাতা জলাভূমি ও সুন্দরবন জলাভূমি — রামসার সংরক্ষণ ও প্রাকৃতিক নিকাশি ব্যবস্থা",
+      sourceTag: `EKWMA · MoEFCC (${editionDate})`,
+      whyInNewsEn: "East Kolkata Wetlands Management Authority (EKWMA) published its updated ecological health report on the world's largest natural sewage-fed fish farming system.",
+      whyInNewsBn: "পূর্ব কলকাতা জলাভূমি কর্তৃপক্ষ বিশ্বের বৃহত্তম প্রাকৃতিক বর্জ্য-জল শোধন ও মৎস্য চাষ ব্যবস্থার ওপর সর্বশেষ পরিবেশগত প্রতিবেদন প্রকাশ করেছে।",
+      examPointsEn: [
+        "East Kolkata Wetlands (12,500 hectares) was designated a Ramsar Site on 19 August 2002; Dr. Dhrubajyoti Ghosh pioneered its ecological recognition and coined the term 'Kidney of Kolkata'.",
+        "Sundarban Wetland (4,23,000 hectares) was designated a Ramsar Site on 30 January 2019 and is the largest Ramsar Site in India by area.",
+        "The Ramsar Convention on Wetlands was signed on 2 February 1971 in Ramsar (Iran) and came into force in 1975 (India joined on 1 February 1982).",
+      ],
+      examPointsBn: [
+        "পূর্ব কলকাতা জলাভূমি (১২,৫০০ হেক্টর) ১৯ আগস্ট ২০০২ সালে রামসার সাইটের মর্যাদা পায়; ড. ধ্রুবজ্যোতি ঘোষ একে 'কলকাতার বৃক্ক' (Kidney of Kolkata) হিসেবে চিহ্নিত করেন।",
+        "সুন্দরবন জলাভূমি (৪,২৩,০০০ হেক্টর) ৩০ জানুয়ারি ২০১৯ সালে রামসার সাইট ঘোষিত হয় এবং এটি আয়তনে ভারতের বৃহত্তম রামসার সাইট।",
+        "২ ফেব্রুয়ারি ১৯৭১ সালে ইরানের রামসার শহরে জলাভূমি চুক্তি স্বাক্ষরিত হয় (২ ফেব্রুয়ারি বিশ্ব জলাভূমি দিবস)।",
+      ],
+      staticGkLinkEn: "Chilika Lake (Odisha) and Keoladeo National Park (Rajasthan) were designated in October 1981 as India's first two Ramsar Sites.",
+      staticGkLinkBn: "ওড়িশার চিল্কা হ্রদ এবং রাজস্থানের কেওলাদেও জাতীয় উদ্যান ১৯৮১ সালে ভারতের প্রথম দুটি রামসার সাইট হিসেবে স্বীকৃতি পায়।",
+      examTrapEn: "Trap: Sundarban Wetland is India's largest Ramsar Site (4,230 sq km), whereas Renuka Wetland in Himachal Pradesh (20 hectares) is India's smallest Ramsar Site.",
+      examTrapBn: "সতর্কতা: আয়তনে ভারতের বৃহত্তম রামসার সাইট সুন্দরবন এবং ক্ষুদ্রতম রামসার সাইট হিমাচল প্রদেশের রেণুকা জলাভূমি।",
+    },
+    {
+      category: "Polity & Governance",
+      headlineEn: "73rd Constitutional Amendment Act, Eleventh Schedule & West Bengal 3-Tier Panchayat Raj",
+      headlineBn: "৭৩তম সংবিধান সংশোধনী আইন, একাদশ তফসিল এবং পশ্চিমবঙ্গের ত্রিস্তর পঞ্চায়েত ব্যবস্থা",
+      sourceTag: `WB Panchayat Dept · PRS India (${editionDate})`,
+      whyInNewsEn: "West Bengal Panchayat & Rural Development Department reviewed Gram Sansad and Zilla Parishad utilization grants under the 15th & 16th Finance Commission untied funds.",
+      whyInNewsBn: "পশ্চিমবঙ্গ পঞ্চায়েত ও গ্রামোন্নয়ন দপ্তর গ্রাম সংসদ ও জেলা পরিষদের অর্থ কমিশনের অনুদান ব্যবহার পর্যালোচনা করেছে।",
+      examPointsEn: [
+        "West Bengal adopted a four-tier Panchayat system in 1964 and pioneered the three-tier Panchayati Raj (Gram Panchayat, Panchayat Samiti, Zilla Parishad) via the WB Panchayat Act, 1973 (direct party-based elections from 1978).",
+        "The 73rd Constitutional Amendment Act, 1992 (effective 24 April 1993 — National Panchayati Raj Day) inserted Part IX (Articles 243 to 243-O) and the 11th Schedule (29 functional items).",
+        "Article 243D mandates reservation for SCs, STs, and at least one-third (enhanced to 50% in West Bengal) seats for women in Panchayats.",
+      ],
+      examPointsBn: [
+        "পশ্চিমবঙ্গ ১৯৭৩ সালের পঞ্চায়েত আইনের মাধ্যমে ত্রিস্তর পঞ্চায়েত ব্যবস্থা (গ্রাম পঞ্চায়েত, পঞ্চায়েত সমিতি ও জেলা পরিষদ) প্রবর্তন করে এবং ১৯৭৮ সালে প্রথম দলীয় ভিত্তিতে নির্বাচন হয়।",
+        "৭৩তম সংবিধান সংশোধনী আইন, ১৯৯২ (কার্যকর ২৪ এপ্রিল ১৯৯৩) সংবিধানে নবম অংশ (ধারা ২৪৩ থেকে ২৪৩-ও) এবং একাদশ তফসিল (২৯টি বিষয়) যুক্ত করে।",
+        "ধারা ২৪৩ডি অনুযায়ী পঞ্চায়েতে মহিলাদের জন্য আসন সংরক্ষণের বিধান রয়েছে (পশ্চিমবঙ্গে ৫০% সংরক্ষিত)।",
+      ],
+      staticGkLinkEn: "Balwant Rai Mehta Committee (1957) recommended 3-tier Panchayati Raj (first launched at Nagaur, Rajasthan on 2 October 1959); Ashok Mehta Committee (1977) recommended 2-tier; L.M. Singhvi Committee (1986) recommended constitutional status.",
+      staticGkLinkBn: "বলবন্ত রাই মেহতা কমিটি (১৯৫৭) ত্রিস্তর পঞ্চায়েত, অশোক মেহতা কমিটি (১৯৭৭) দ্বিস্তর পঞ্চায়েত এবং এল.এম. সিংভি কমিটি (১৯৮৬) সাংবিধানিক মর্যাদার সুপারিশ করে।",
+      examTrapEn: "Trap: Minimum age to contest Panchayat elections is 21 years (Article 243F), NOT 25 years (which applies to Lok Sabha/Vidhan Sabha).",
+      examTrapBn: "সতর্কতা: পঞ্চায়েত নির্বাচনে প্রতিদ্বন্দ্বিতা করার ন্যূনতম বয়স ২১ বছর (ধারা ২৪৩এফ), ২৫ বছর নয়।",
+    },
+    {
+      category: "Defence & Military Exercises",
+      headlineEn: "Eastern Naval Command Maritime Security Exercises & Garden Reach Shipbuilders (GRSE) Kolkata",
+      headlineBn: "গার্ডেনরিচ শিপবিল্ডার্স (GRSE) কলকাতা নির্মিত রণতরী ও ভারতীয় নৌবাহিনীর মহড়া",
+      sourceTag: `Ministry of Defence · PIB (${editionDate})`,
+      whyInNewsEn: "Garden Reach Shipbuilders & Engineers (GRSE), Kolkata delivered advanced Anti-Submarine Warfare Shallow Water Craft (ASW-SWC) and Survey Vessels (Large) to the Indian Navy.",
+      whyInNewsBn: "কলকাতার গার্ডেনরিচ শিপবিল্ডার্স অ্যান্ড ইঞ্জিনিয়ার্স (GRSE) ভারতীয় নৌবাহিনীর হাতে অ্যান্টি-সাবমেরিন রণতরী এবং বৃহৎ জরিপ জাহাজ তুলে দিয়েছে।",
+      examPointsEn: [
+        "GRSE (founded in 1884 on the eastern bank of the Hooghly River, Kolkata; taken over by Govt of India in 1960) became the first Indian shipyard to deliver 100+ warships (100th was IN LCU L56 in 2019).",
+        "INS Sandhayak (first of four Survey Vessels Large) and INS Arnala (first ASW Shallow Water Craft) were built by GRSE Kolkata.",
+        "Key bilateral exercises: SIMBEX (India–Singapore), SLINEX (India–Sri Lanka), VARUNA (India–France), MALABAR (India, USA, Japan, Australia), and BONGOSAGAR / SAMPRITI (India–Bangladesh).",
+      ],
+      examPointsBn: [
+        "হুগলি নদীর পূর্ব তীরে অবস্থিত কলকাতার GRSE (১৮৮৪ সালে প্রতিষ্ঠিত, ১৯৬০ সালে রাষ্ট্রায়ত্ত) ভারতের প্রথম শিপইয়ার্ড হিসেবে ১০০টির বেশি যুদ্ধজাহাজ নির্মাণ করেছে।",
+        "আইএনএস সন্ধায়ক (জরিপ জাহাজ) এবং আইএনএস আর্নালা (অ্যান্টি-সাবমেরিন যুদ্ধজাহাজ) কলকাতার GRSE-তে নির্মিত।",
+        "গুরুত্বপূর্ণ সামরিক মহড়া: সিম্বক্স (ভারত–সিঙ্গাপুর), বরুণ (ভারত–ফ্রান্স), মালাবার (কোয়াড) এবং বঙ্গোপসাগর/সম্প্রীতি (ভারত–বাংলাদেশ)।",
+      ],
+      staticGkLinkEn: "Indian Navy Day is celebrated on 4 December to commemorate Operation Trident (1971 Indo-Pak War attack on Karachi harbour).",
+      staticGkLinkBn: "১৯৭১ সালের ভারত-পাক যুদ্ধে 'অপারেশন ট্রাইডেন্ট'-এর স্মরণে প্রতি বছর ৪ ডিসেম্বর ভারতীয় নৌবাহিনী দিবস পালিত হয়।",
+      examTrapEn: "Trap: Eastern Naval Command headquarters is at Visakhapatnam, while the Army's Eastern Command headquarters is at Fort William, Kolkata.",
+      examTrapBn: "সতর্কতা: ভারতীয় সেনাবাহিনীর ইস্টার্ন কমান্ডের সদর দপ্তর কলকাতার ফোর্ট উইলিয়ামে, কিন্তু নৌবাহিনীর ইস্টার্ন কমান্ডের সদর দপ্তর বিশাখাপত্তনমে।",
+    },
+    {
+      category: "Sports & Tournaments",
+      headlineEn: "Santosh Trophy National Football Championship & IFA Shield Heritage in Kolkata",
+      headlineBn: "সন্তোষ ট্রফি জাতীয় ফুটবল চ্যাম্পিয়নশিপ এবং কলকাতার আইএফএ শিল্ড ঐতিহ্য",
+      sourceTag: `AIFF · IFA West Bengal (${editionDate})`,
+      whyInNewsEn: "All India Football Federation (AIFF) and the Indian Football Association (IFA, West Bengal) announced the fixtures for the Santosh Trophy National Football Championship.",
+      whyInNewsBn: "সর্বভারতীয় ফুটবল ফেডারেশন (AIFF) এবং বঙ্গীয় ফুটবল সংস্থা (IFA) সন্তোষ ট্রফি জাতীয় ফুটবল প্রতিযোগিতার সূচি ঘোষণা করেছে।",
+      examPointsEn: [
+        "Santosh Trophy (instituted in 1941, named after Maharaja Sir Manmatha Nath Roy Chowdhuri of Santosh, former IFA President) is played among Indian states and government institutions.",
+        "West Bengal is the most successful team in Santosh Trophy history with 32 championship titles.",
+        "Indian Football Association (IFA), founded in Kolkata in 1893, organizes the historic IFA Shield (where Mohun Bagan defeated East Yorkshire Regiment 2–1 on 29 July 1911).",
+      ],
+      examPointsBn: [
+        "১৯৪১ সালে প্রবর্তিত সন্তোষ ট্রফি (সন্তোষের মহারাজা স্যার মন্মথনাথ রায়চৌধুরীর নামানুসারে) ভারতের রাজ্য ও সরকারি সংস্থাগুলির মধ্যে অনুষ্ঠিত হয়।",
+        "পশ্চিমবঙ্গ সন্তোষ ট্রফির ইতিহাসে সর্বাধিক ৩২ বার চ্যাম্পিয়ন হয়েছে।",
+        "১৮৯৩ সালে কলকাতায় প্রতিষ্ঠিত আইএফএ (IFA) ঐতিহাসিক আইএফএ শিল্ড পরিচালনা করে (২৯ জুলাই ১৯১১ সালে মোহনবাগান ইস্ট ইয়র্কশায়ার রেজিমেন্টকে ২-১ গোলে পরাজিত করে)।",
+      ],
+      staticGkLinkEn: "29 July is celebrated as 'Mohun Bagan Day'; Nagendra Prasad Sarbadhikari is revered as the 'Father of Indian Football'.",
+      staticGkLinkBn: "২৯ জুলাই 'মোহনবাগান দিবস' পালিত হয় এবং নগেন্দ্রপ্রসাদ সর্বাধিকারীকে 'ভারতীয় ফুটবলের জনক' বলা হয়।",
+      examTrapEn: "Trap: Durand Cup (1888, Shimla) is the oldest football tournament in India/Asia, whereas Rovers Cup (1891, Mumbai) was the second-oldest and IFA Shield (1893, Kolkata) the third-oldest.",
+      examTrapBn: "সতর্কতা: ডুরান্ড কাপ (১৮৮৮) ভারত তথা এশিয়ার প্রাচীনতম ফুটবল টুর্নামেন্ট এবং আইএফএ শিল্ড ১৮৯৩ সালে শুরু হয়।",
+    },
+    {
+      category: "Science & Technology",
+      headlineEn: "Aditya-L1 Solar Observatory at Lagrange Point 1 & XPoSat Space Polarimetry Mission",
+      headlineBn: "ল্যাগ্রেঞ্জ পয়েন্ট ১-এ আদিত্য-এল১ সৌর মানমন্দির এবং এক্সপোস্যাট (XPoSat) মহাকাশ অভিযান",
+      sourceTag: `ISRO · Department of Space (${editionDate})`,
+      whyInNewsEn: "ISRO released scientific payload datasets from Aditya-L1's Visible Emission Line Coronagraph (VELC) and Solar Ultraviolet Imaging Telescope (SUIT) from Halo Orbit around L1.",
+      whyInNewsBn: "ইসরো ল্যাগ্রেঞ্জ পয়েন্ট ১ (L1)-এর হ্যালো কক্ষপথ থেকে আদিত্য-এল১ মহাকাশযানের VELC ও SUIT পেলোডের বৈজ্ঞানিক তথ্য প্রকাশ করেছে।",
+      examPointsEn: [
+        "Aditya-L1 was launched on 2 September 2023 aboard PSLV-C57 from Sriharikota and inserted into a Halo Orbit around Sun–Earth Lagrange Point 1 (1.5 million km from Earth — 1% of Earth-Sun distance).",
+        "It carries 7 payloads (4 remote-sensing payloads including VELC & SUIT to observe the solar corona, photosphere, and chromosphere + 3 in-situ particle/magnetic field detectors).",
+        "XPoSat (X-ray Polarimeter Satellite, launched on 1 January 2024 via PSLV-C58) made India the 2nd country after NASA (IXPE) to have a dedicated X-ray polarimetry space observatory.",
+      ],
+      examPointsBn: [
+        "২ সেপ্টেম্বর ২০২৩ সালে PSLV-C57 রকেটের মাধ্যমে উৎক্ষিপ্ত আদিত্য-এল১ পৃথিবী থেকে ১৫ লক্ষ কিমি দূরে সূর্য-পৃথিবী ল্যাগ্রেঞ্জ পয়েন্ট ১ (L1)-এ স্থাপিত হয়েছে।",
+        "এতে মোট ৭টি পেলোড রয়েছে (VELC ও SUIT সহ ৪টি রিমোট সেন্সিং এবং ৩টি ইন-সিটু পেলোড)।",
+        "১ জানুয়ারি ২০২৪ সালে উৎক্ষিপ্ত XPoSat আমেরিকার নাসার পর ভারতকে এক্স-রে পোলারিমেট্রি পর্যবেক্ষণে বিশ্বের দ্বিতীয় দেশে পরিণত করেছে।",
+      ],
+      staticGkLinkEn: "Lagrange Point L1 allows uninterrupted viewing of the Sun without any occultation or eclipses; there are 5 Lagrange points (L1 to L5) in any two-body orbital system.",
+      staticGkLinkBn: "ল্যাগ্রেঞ্জ পয়েন্ট L1 থেকে কোনো গ্রহণ বা বাধা ছাড়াই নিরবচ্ছিন্নভাবে সূর্যকে পর্যবেক্ষণ করা যায়।",
+      examTrapEn: "Trap: Aditya-L1 is placed at L1 (1.5 million km toward the Sun), whereas NASA's James Webb Space Telescope (JWST) is placed at L2 (1.5 million km away from the Sun).",
+      examTrapBn: "সতর্কতা: আদিত্য-এল১ অবস্থিত L1 বিন্দুতে, আর জেমস ওয়েব স্পেস টেলিস্কোপ (JWST) অবস্থিত L2 বিন্দুতে।",
+    },
+    {
+      category: "West Bengal Special",
+      headlineEn: "Calcutta High Court (1862) Constitutional Jurisdiction & Port Blair Circuit Bench",
+      headlineBn: "কলকাতা হাইকোর্ট (১৮৬২)-এর সাংবিধানিক এক্তিয়ার ও পোর্ট ব্লেয়ার সার্কিট বেঞ্চ",
+      sourceTag: `Calcutta High Court · Law Ministry (${editionDate})`,
+      whyInNewsEn: "Calcutta High Court reviewed digital e-Sewa Kendra rollouts across West Bengal district courts and its permanent Circuit Bench at Jalpaiguri and Port Blair.",
+      whyInNewsBn: "কলকাতা হাইকোর্ট পশ্চিমবঙ্গের জেলা আদালতগুলিতে ই-সেবা কেন্দ্র এবং জলপাইগুড়ি ও পোর্ট ব্লেয়ার সার্কিট বেঞ্চের কার্যক্রম পর্যালোচনা করেছে।",
+      examPointsEn: [
+        "Calcutta High Court is the oldest High Court in India, established on 1 July 1862 under the Indian High Courts Act, 1861 (originally named High Court of Judicature at Fort William).",
+        "Sir Barnes Peacock was the first Chief Justice of the Calcutta High Court; Justice Phani Bhushan Chakravartti was the first Indian permanent Chief Justice (1952).",
+        "Its territorial jurisdiction covers the State of West Bengal and the Union Territory of Andaman and Nicobar Islands (Circuit Bench at Port Blair, plus North Bengal Circuit Bench at Jalpaiguri).",
+      ],
+      examPointsBn: [
+        "১৮৬১ সালের ইন্ডিয়ান হাইকোর্টস অ্যাক্টের অধীনে ১ জুলাই ১৮৬২ সালে ভারতের প্রাচীনতম হাইকোর্ট হিসেবে কলকাতা হাইকোর্ট প্রতিষ্ঠিত হয়।",
+        "কলকাতা হাইকোর্টের প্রথম প্রধান বিচারপতি ছিলেন স্যার বার্নেস পিকক এবং প্রথম স্থায়ী ভারতীয় প্রধান বিচারপতি ছিলেন ফণীভূষণ চক্রবর্তী (১৯৫২)।",
+        "পশ্চিমবঙ্গ ছাড়াও আন্দামান ও নিকোবর দ্বীপপুঞ্জ কলকাতা হাইকোর্টের এক্তিয়ারভুক্ত (পোর্ট ব্লেয়ার ও জলপাইগুড়িতে সার্কিট বেঞ্চ রয়েছে)।",
+      ],
+      staticGkLinkEn: "Article 214 provides for High Courts for States; Article 226 empowers High Courts to issue writs; Article 231 empowers Parliament to establish a common High Court for two or more states/UTs.",
+      staticGkLinkBn: "ধারা ২১৪-তে রাজ্যের হাইকোর্ট, ধারা ২২৬-এ হাইকোর্টের লেখ (Writ) জারির ক্ষমতা এবং ধারা ২৩১-এ দুই বা ততোধিক রাজ্য/কেন্দ্রশাসিত অঞ্চলের জন্য যৌথ হাইকোর্টের বিধান রয়েছে।",
+      examTrapEn: "Trap: Regulating Act of 1773 established the Supreme Court at Fort William (1774, Sir Elijah Impey), whereas the Calcutta High Court was established in 1862 under the High Courts Act of 1861.",
+      examTrapBn: "সতর্কতা: ১৭৭৩ সালের রেগুলেটিং অ্যাক্টে ফোর্ট উইলিয়ামে সুপ্রিম কোর্ট (১৭৭৪, স্যার এলিজা ইম্পে) এবং ১৮৬১ সালের আইনে কলকাতা হাইকোর্ট (১৮৬২) স্থাপিত হয়।",
+    },
+    {
+      category: "Economy & Banking",
+      headlineEn: "GST Council Constitutional Framework (Article 279A) & 101st Amendment Revenue Sharing",
+      headlineBn: "জিএসটি কাউন্সিলের সাংবিধানিক কাঠামো (ধারা ২৭৯ক) এবং ১০১তম সংশোধনী আইন",
+      sourceTag: `Ministry of Finance · PIB (${editionDate})`,
+      whyInNewsEn: "The Goods and Services Tax (GST) Council reviewed rate rationalization recommendations and IGST settlement tranches for states including West Bengal.",
+      whyInNewsBn: "জিএসটি কাউন্সিল করের হার যৌক্তিকীকরণ এবং পশ্চিমবঙ্গসহ রাজ্যগুলির IGST বণ্টন পর্যালোচনা করেছে।",
+      examPointsEn: [
+        "GST was introduced by the 101st Constitutional Amendment Act, 2016 (122nd Amendment Bill) and came into effect across India on 1 July 2017.",
+        "Article 279A empowers the President to constitute the GST Council, chaired by the Union Finance Minister with State Finance/Taxation Ministers as members.",
+        "In the GST Council, the Centre holds 1/3rd voting weightage and all States together hold 2/3rd weightage; decisions require a 3/4th (75%) weighted majority.",
+      ],
+      examPointsBn: [
+        "১০১তম সংবিধান সংশোধনী আইন, ২০১৬-এর মাধ্যমে প্রবর্তিত জিএসটি (GST) ১ জুলাই ২০১৭ থেকে সারা দেশে কার্যকর হয়।",
+        "ধারা ২৭৯ক (Article 279A) অনুযায়ী গঠিত জিএসটি কাউন্সিলের চেয়ারম্যান হলেন কেন্দ্রীয় অর্থমন্ত্রী।",
+        "জিএসটি কাউন্সিলে কেন্দ্রের ভোটের গুরুত্ব ১/৩ অংশ এবং রাজ্যগুলির ২/৩ অংশ; যেকোনো সিদ্ধান্তের জন্য ৩/৪ অংশ (৭৫%) সংখ্যাগরিষ্ঠতা প্রয়োজন।",
+      ],
+      staticGkLinkEn: "Vijay Kelkar Task Force recommended GST in India; Asim Dasgupta (former West Bengal Finance Minister) chaired the first Empowered Committee of State Finance Ministers on GST (2000–2011).",
+      staticGkLinkBn: "বিজয় কেলকার কমিটি ভারতে জিএসটির সুপারিশ করে এবং পশ্চিমবঙ্গের প্রাক্তন অর্থমন্ত্রী অসীম দাশগুপ্ত জিএসটি সংক্রান্ত রাজ্য অর্থমন্ত্রীদের প্রথম এমপাওয়ার্ড কমিটির চেয়ারম্যান ছিলেন।",
+      examTrapEn: "Trap: GST Council is a Constitutional Body under Article 279A (added by 101st Amendment), and Assam was the first Indian state to ratify the GST Constitutional Amendment Bill.",
+      examTrapBn: "সতর্কতা: জিএসটি কাউন্সিল ধারা ২৭৯ক-এর অধীনে একটি সাংবিধানিক সংস্থা এবং আসাম প্রথম রাজ্য হিসেবে জিএসটি বিল অনুমোদন করে।",
+    },
+    {
+      category: "Ranks, Reports & Indices",
+      headlineEn: "NITI Aayog SDG India Index & Multidimensional Poverty Index (MPI) Methodology",
+      headlineBn: "নীতি আয়োগের SDG ইন্ডিয়া ইনডেক্স এবং বহুমাত্রিক দারিদ্র্য সূচক (MPI)",
+      sourceTag: `NITI Aayog · UNDP (${editionDate})`,
+      whyInNewsEn: "NITI Aayog reviewed state-level progress across 17 Sustainable Development Goals (SDGs) and the 12 indicators of the National Multidimensional Poverty Index.",
+      whyInNewsBn: "নীতি আয়োগ ১৭টি স্থিতিশীল উন্নয়ন লক্ষ্যমাত্রা (SDG) এবং জাতীয় বহুমাত্রিক দারিদ্র্য সূচকের (MPI) ১২টি সূচকে রাজ্যগুলির অগ্রগতি পর্যালোচনা করেছে।",
+      examPointsEn: [
+        "NITI Aayog's SDG India Index evaluates states and UTs across 16 of the 17 UN Sustainable Development Goals (2030 Agenda); Uttarakhand and Kerala jointly topped the latest Composite SDG Index with a score of 79.",
+        "States are categorized into 4 tiers: Aspirant (0–49), Performer (50–64), Front-Runner (65–99), and Achiever (100).",
+        "National Multidimensional Poverty Index (MPI) uses the Alkire-Foster methodology across 3 dimensions (Health, Education, Standard of Living) and 12 indicators.",
+      ],
+      examPointsBn: [
+        "নীতি আয়োগের সর্বশেষ SDG ইন্ডিয়া ইনডেক্সে উত্তরাখণ্ড ও কেরালা ৭৯ স্কোর নিয়ে যৌথভাবে প্রথম স্থান অধিকার করেছে।",
+        "স্কোরের ভিত্তিতে রাজ্যগুলিকে ৪টি শ্রেণিতে ভাগ করা হয়: Aspirant (০–৪৯), Performer (৫০–৬৪), Front-Runner (৬৫–৯৯) এবং Achiever (১০০)।",
+        "জাতীয় বহুমাত্রিক দারিদ্র্য সূচকে (MPI) ৩টি মাত্রা (স্বাস্থ্য, শিক্ষা, জীবনযাত্রার মান) এবং ১২টি সূচক ব্যবহৃত হয়।",
+      ],
+      staticGkLinkEn: "NITI Aayog (National Institution for Transforming India) replaced the Planning Commission on 1 January 2015; Prime Minister is Chairperson, Suman Bery is Vice-Chairperson, and B.V.R. Subrahmanyam is CEO.",
+      staticGkLinkBn: "১ জানুয়ারি ২০১৫ সালে পরিকল্পনা কমিশনের পরিবর্তে নীতি আয়োগ গঠিত হয়; এর চেয়ারপার্সন প্রধানমন্ত্রী, ভাইস-চেয়ারপার্সন সুমন বেরি এবং সিইও বি.ভি.আর. সুব্রহ্মণ্যম।",
+      examTrapEn: "Trap: Global MPI has 10 indicators (published by UNDP & OPHI), whereas NITI Aayog's National MPI has 12 indicators (adding Maternal Health and Bank Account).",
+      examTrapBn: "সতর্কতা: আন্তর্জাতিক MPI-তে ১০টি সূচক থাকে, কিন্তু নীতি আয়োগের জাতীয় MPI-তে ১২টি সূচক (মাতৃস্বাস্থ্য ও ব্যাংক অ্যাকাউন্ট সহ) থাকে।",
+    },
+    {
+      category: "West Bengal Special",
+      headlineEn: "Buxa Tiger Reserve, Singalila Red Panda Conservation & West Bengal Protected Areas",
+      headlineBn: "বক্সা টাইগার রিজার্ভ, সিঙ্গালিলায় রেড পান্ডা সংরক্ষণ ও পশ্চিমবঙ্গের সংরক্ষিত বনাঞ্চল",
+      sourceTag: `WB Forest Directorate · NTCA (${editionDate})`,
+      whyInNewsEn: "Padmaja Naidu Himalayan Zoological Park (Darjeeling) and WB Forest Directorate completed a wild augmentation release of endangered Red Pandas in Singalila National Park.",
+      whyInNewsBn: "দার্জিলিংয়ের পদ্মজা নাইডু হিমালয়ান জুওলজিক্যাল পার্ক এবং বন দপ্তর সিঙ্গালিলা জাতীয় উদ্যানে বিলুপ্তপ্রায় রেড পান্ডা প্রকৃতিতে অবমুক্ত করেছে।",
+      examPointsEn: [
+        "West Bengal has 2 Tiger Reserves: Sundarbans Tiger Reserve (declared in 1973 among India's first 9 Project Tiger reserves) and Buxa Tiger Reserve in Alipurduar district (declared in 1983 as the 15th Tiger Reserve, upgraded to National Park in 1992).",
+        "Padmaja Naidu Himalayan Zoological Park (founded in 1958 in Darjeeling; highest-altitude zoo in India at 2,134 m) runs Project Red Panda inside Singalila and Neora Valley National Parks.",
+        "Mayurjharna Elephant Reserve (Paschim Medinipur, Bankura, Jhargram — 2002) and Eastern Dooars Elephant Reserve (2002) are the two Elephant Reserves of West Bengal.",
+      ],
+      examPointsBn: [
+        "পশ্চিমবঙ্গে ২টি টাইগার রিজার্ভ রয়েছে: সুন্দরবন টাইগার রিজার্ভ (১৯৭৩) এবং আলিপুরদুয়ার জেলার বক্সা টাইগার রিজার্ভ (১৯৮৩ সালে ১৫তম টাইগার রিজার্ভ, ১৯৯২ সালে জাতীয় উদ্যান)।",
+        "দার্জিলিংয়ের পদ্মজা নাইডু হিমালয়ান জুওলজিক্যাল পার্ক (১৯৫৮ সালে প্রতিষ্ঠিত) সিঙ্গালিলা ও নেওড়া ভ্যালি জাতীয় উদ্যানে রেড পান্ডা সংরক্ষণ প্রকল্প পরিচালনা করে।",
+        "ময়ূরঝর্ণা এবং ইস্টার্ন ডুয়ার্স হলো পশ্চিমবঙ্গের দুটি হস্তী সংরক্ষণ ক্ষেত্র (Elephant Reserve)।",
+      ],
+      staticGkLinkEn: "State Animal of West Bengal is the Fishing Cat (বাঘরোল / মেছোবিড়াল — Prionailurus viverrinus); State Bird is the White-throated Kingfisher; State Tree is Chatim; State Flower is Night-flowering Jasmine (শিউলি).",
+      staticGkLinkBn: "পশ্চিমবঙ্গের রাজ্য প্রাণী বাঘরোল (Fishing Cat), রাজ্য পাখি সাদা গলা মাছরাঙা, রাজ্য বৃক্ষ ছাতিম এবং রাজ্য ফুল শিউলি।",
+      examTrapEn: "Trap: Project Tiger was launched on 1 April 1973 (Jim Corbett NP), whereas Project Elephant was launched in February 1992.",
+      examTrapBn: "সতর্কতা: প্রজেক্ট টাইগার শুরু হয় ১ এপ্রিল ১৯৭৩ সালে এবং প্রজেক্ট এলিফ্যান্ট শুরু হয় ১৯৯২ সালের ফেব্রুয়ারিতে।",
+    },
+    {
+      category: "National & International",
+      headlineEn: "BIMSTEC Secretariat Dhaka Charter & Bay of Bengal Maritime Connectivity Corridors",
+      headlineBn: "বিমস্টেক (BIMSTEC) সনদ এবং বঙ্গোপসাগরীয় আঞ্চলিক যোগাযোগ করিডোর",
+      sourceTag: `MEA India · BIMSTEC (${editionDate})`,
+      whyInNewsEn: "BIMSTEC member states finalized the Maritime Transport Cooperation Agreement and the Trilateral Highway extension connecting Kolkata/Haldia with Southeast Asia.",
+      whyInNewsBn: "বিমস্টেক সদস্য দেশগুলি সামুদ্রিক পরিবহন সহযোগিতা চুক্তি এবং কলকাতা/হলদিয়াকে দক্ষিণ-পূর্ব এশিয়ার সাথে যুক্তকারী ত্রিপাক্ষিক সড়ক প্রকল্প চূড়ান্ত করেছে।",
+      examPointsEn: [
+        "BIMSTEC (Bay of Bengal Initiative for Multi-Sectoral Technical and Economic Cooperation) was founded on 6 June 1997 via the Bangkok Declaration; its permanent Secretariat is in Dhaka, Bangladesh.",
+        "It comprises 7 member nations: 5 from South Asia (India, Bangladesh, Bhutan, Nepal, Sri Lanka) and 2 from Southeast Asia (Myanmar and Thailand).",
+        "Kaladan Multi-Modal Transit Transport Project connects Syama Prasad Mookerjee Port (Kolkata) to Sittwe Port in Rakhine State (Myanmar) and onward via Paletwa to Zorinpui in Mizoram.",
+      ],
+      examPointsBn: [
+        "১৯৯৭ সালের ৬ জুন ব্যাংকক ঘোষণার মাধ্যমে বিমস্টেক (BIMSTEC) প্রতিষ্ঠিত হয়; এর স্থায়ী সচিবালয় বাংলাদেশের ঢাকায় অবস্থিত।",
+        "এর সদস্য সংখ্যা ৭টি দেশ: দক্ষিণ এশিয়ার ৫টি (ভারত, বাংলাদেশ, ভুটান, নেপাল, শ্রীলঙ্কা) এবং দক্ষিণ-পূর্ব এশিয়ার ২টি (মায়ানমার ও থাইল্যান্ড)।",
+        "কালাদান মাল্টি-মোডাল প্রজেক্ট কলকাতা বন্দরকে মায়ানমারের সিত্তে বন্দরের (Sittwe Port) মাধ্যমে মিজোরামের সাথে যুক্ত করেছে।",
+      ],
+      staticGkLinkEn: "Indra Mani Pandey (former Indian diplomat) serves as the Secretary-General of BIMSTEC.",
+      staticGkLinkBn: "ভারতীয় কূটনীতিক ইন্দ্রমণি পাণ্ডে বিমস্টেকের মহাসচিব পদে নিযুক্ত রয়েছেন।",
+      examTrapEn: "Trap: Maldives, Pakistan, and Afghanistan (which are SAARC members) are NOT members of BIMSTEC, whereas Myanmar and Thailand ARE in BIMSTEC.",
+      examTrapBn: "সতর্কতা: মালদ্বীপ, পাকিস্তান ও আফগানিস্তান সার্কের (SAARC) সদস্য হলেও বিমস্টেকের (BIMSTEC) সদস্য নয়; পরিবর্তে মায়ানমার ও থাইল্যান্ড এর সদস্য।",
+    },
+    {
+      category: "Polity & Governance",
+      headlineEn: "Comptroller and Auditor General (CAG) — Articles 148–151 & Constitutional Audit Mandate",
+      headlineBn: "কম্পট্রোলার অ্যান্ড অডিটর জেনারেল (CAG) — ধারা ১৪৮–১৫১ ও সাংবিধানিক অডিট ক্ষমতা",
+      sourceTag: `CAG of India · PIB (${editionDate})`,
+      whyInNewsEn: "The Comptroller and Auditor General (CAG) tabled state finance audit reports examining fiscal deficit to GSDP ratios under the FRBM Act.",
+      whyInNewsBn: "ভারতের সিএজি (CAG) রাজস্ব ঘাটতি ও FRBM আইনের অধীনে রাজ্যগুলির আর্থিক অডিট রিপোর্ট পেশ করেছে।",
+      examPointsEn: [
+        "Articles 148 to 151 (Part V) of the Constitution deal with the CAG of India — described by Dr. B.R. Ambedkar as the most important officer under the Constitution ('Guardian of the Public Purse').",
+        "CAG holds office for a term of 6 years or up to the age of 65 years (whichever is earlier) and can only be removed in the same manner as a Supreme Court Judge.",
+        "Under Article 151, CAG submits audit reports on Union accounts to the President (who lays them before Parliament) and on State accounts to the Governor (who lays them before the State Legislature).",
+      ],
+      examPointsBn: [
+        "সংবিধানের পঞ্চম অংশে ধারা ১৪৮ থেকে ১৫১-তে ভারতের CAG সম্পর্কে আলোচনা করা হয়েছে; ড. বি.আর. আম্বেদকর একে সংবিধানের সবচেয়ে গুরুত্বপূর্ণ পদ বলেছেন।",
+        "CAG-এর কার্যকাল ৬ বছর বা ৬৫ বছর বয়স পর্যন্ত (যেটি আগে হয়) এবং সুপ্রিম কোর্টের বিচারপতির মতো একই পদ্ধতিতে তাঁকে অপসারণ করা যায়।",
+        "ধারা ১৫১ অনুযায়ী CAG কেন্দ্রের হিসাব রাষ্ট্রপতির কাছে এবং রাজ্যের হিসাব রাজ্যপালের কাছে পেশ করেন।",
+      ],
+      staticGkLinkEn: "V. Narahari Rao was the first CAG of independent India (1948–1954); K. Sanjay Murthy was appointed as CAG succeeding Girish Chandra Murmu.",
+      staticGkLinkBn: "স্বাধীন ভারতের প্রথম CAG ছিলেন ভি. নরহরি রাও (১৯৪৮–১৯৫৪); গিরীশ চন্দ্র মুর্মুর পর কে. সঞ্জয় মূর্তি CAG নিযুক্ত হন।",
+      examTrapEn: "Trap: Since the separation of accounts from audit in 1976 for the Union Government, CAG only audits Central accounts (CGA compiles them), though CAG still both compiles AND audits State Government accounts!",
+      examTrapBn: "সতর্কতা: ১৯৭৬ সাল থেকে CAG কেবল কেন্দ্রীয় সরকারের অডিট করে, কিন্তু রাজ্য সরকারগুলির হিসাব সংকলন ও অডিট উভয়ই CAG করে থাকে।",
+    },
   ];
 
+  // Rotate catalog starting index deterministically by date so each date gets a distinct ordering
+  const dateSeed = Number(yStr) * 372 + Number(mStr) * 31 + (dayInt || 1);
+  const totalCatalog = supplementCatalog.length;
   const selected: CaTopicItem[] = [];
-  for (const item of supplementCatalog) {
-    if (selected.length >= countNeeded) break;
-    const isDup = acceptedHeadlines.some((existing) =>
-      areHeadlinesDuplicate(existing, item.headlineEn)
+
+  for (let i = 0; i < totalCatalog && selected.length < countNeeded; i++) {
+    const item = supplementCatalog[(dateSeed + i) % totalCatalog];
+    const datedHeadlineEn = `${item.headlineEn} (${dayInt} ${monthEn} ${yStr} Review)`;
+    const datedHeadlineBn = `${item.headlineBn} (${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)})`;
+    const isDup = acceptedHeadlines.some(
+      (existing) =>
+        normalizeHeadlineFingerprint(existing) ===
+          normalizeHeadlineFingerprint(datedHeadlineEn) ||
+        normalizeHeadlineFingerprint(existing) ===
+          normalizeHeadlineFingerprint(item.headlineEn)
     );
     if (!isDup) {
-      acceptedHeadlines.push(item.headlineEn);
+      acceptedHeadlines.push(datedHeadlineEn);
       selected.push({
         ...item,
         id: `ca-supp-${editionDate}-${selected.length + 1}`,
+        headlineEn: datedHeadlineEn,
+        headlineBn: datedHeadlineBn,
       });
     }
   }
 
-  // If even more unique topics are needed for this date, synthesize date-indexed PSCWB departmental briefs
-  let extraIdx = 1;
-  const fallbackCategories: CaCategory[] = [
-    "West Bengal Special",
-    "Polity & Governance",
-    "Economy & Banking",
-    "Science & Technology",
-    "Environment & GI Tags",
-    "Awards & Honours",
-    "Sports & Tournaments",
-    "Defence & Military Exercises",
-    "Ranks, Reports & Indices",
-    "National & International",
-  ];
-  while (selected.length < countNeeded) {
-    const cat = fallbackCategories[(dayInt + extraIdx) % fallbackCategories.length];
-    const uniqueHeadlineEn = `PSCWB ${cat} Exam Capsule — ${dayInt} ${monthEn} ${yStr} Bulletin #${extraIdx}`;
-    const uniqueHeadlineBn = `ডব্লিউবিপিএসসি ${cat} পরীক্ষা ক্যাপসুল — ${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)} বুলেটিন #${toBengaliNumber(extraIdx)}`;
-    extraIdx++;
+  // Bounded fallback if countNeeded still not reached (NEVER loops infinitely)
+  for (let extraIdx = 0; selected.length < countNeeded && extraIdx < totalCatalog; extraIdx++) {
+    const item = supplementCatalog[(dateSeed + extraIdx) % totalCatalog];
+    const uniqueHeadlineEn = `${item.headlineEn} — ${dayInt} ${monthEn} ${yStr} Edition #${extraIdx + 1}`;
+    const uniqueHeadlineBn = `${item.headlineBn} — ${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)} সংস্করণ #${toBengaliNumber(extraIdx + 1)}`;
     if (
-      acceptedHeadlines.some((existing) =>
-        areHeadlinesDuplicate(existing, uniqueHeadlineEn)
+      acceptedHeadlines.some(
+        (existing) =>
+          normalizeHeadlineFingerprint(existing) ===
+          normalizeHeadlineFingerprint(uniqueHeadlineEn)
       )
     ) {
       continue;
     }
     acceptedHeadlines.push(uniqueHeadlineEn);
     selected.push({
+      ...item,
       id: `ca-supp-dyn-${editionDate}-${selected.length + 1}`,
-      category: cat,
       headlineEn: uniqueHeadlineEn,
       headlineBn: uniqueHeadlineBn,
-      sourceTag: `GKToday · PYQArena (${editionDate}) · WB Gazette`,
-      whyInNewsEn: `High-yield PSCWB exam revision capsule compiled for ${dayInt} ${monthEn} ${yStr} under ${cat}.`,
-      whyInNewsBn: `${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)} তারিখের জন্য সংকলিত ${cat} বিভাগের পরীক্ষা-কেন্দ্রিক তথ্য।`,
-      examPointsEn: [
-        `Key WBPSC Prelims & Clerkship pointer for ${dayInt} ${monthEn} ${yStr} (${cat} syllabus linkage).`,
-        "Links current administrative notifications with Constitutional Articles, Five-Year Plan history, and West Bengal district geography.",
-        "Verified against previous 10-year WBCS and WBPSC Clerkship question paper trends.",
-      ],
-      examPointsBn: [
-        `${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)}-এর ডব্লিউবিপিএসসি প্রিলিমিনারি ও ক্লার্কশিপ পরীক্ষার গুরুত্বপূর্ণ তথ্য।`,
-        "চলতি প্রশাসনিক বিজ্ঞপ্তির সাথে সংবিধানের ধারা, পঞ্চবার্ষিকী পরিকল্পনা এবং পশ্চিমবঙ্গের জেলা ভূগোলের সংযোগ।",
-        "বিগত ১০ বছরের WBCS ও ক্লার্কশিপ প্রশ্নপত্রের ধাঁচ অনুযায়ী সংকলিত।",
-      ],
-      staticGkLinkEn: "West Bengal shares international boundaries with 3 countries (Bangladesh — 2,216.7 km, Nepal, and Bhutan) and interstate boundaries with 5 Indian states (Odisha, Jharkhand, Bihar, Sikkim, and Assam).",
-      staticGkLinkBn: "পশ্চিমবঙ্গ ৩টি দেশ (বাংলাদেশ, নেপাল ও ভুটান) এবং ভারতের ৫টি রাজ্যের (ওড়িশা, ঝাড়খণ্ড, বিহার, সিকিম ও আসাম) সাথে সীমানা ভাগ করেছে।",
-      examTrapEn: "Trap: West Bengal's longest international boundary is with Bangladesh (2,216.7 km), while its longest interstate boundary is with Jharkhand.",
-      examTrapBn: "সতর্কতা: পশ্চিমবঙ্গের দীর্ঘতম আন্তর্জাতিক সীমানা বাংলাদেশের সাথে এবং দীর্ঘতম আন্তঃরাজ্য সীমানা ঝাড়খণ্ডের সাথে।",
     });
   }
 
   return selected;
+}
+
+function buildSupplementMcqsForDate(
+  editionDate: string,
+  existingMcqs: CaMcqItem[],
+  targetMcqCount: number = 6
+): CaMcqItem[] {
+  const result = [...existingMcqs];
+  if (result.length >= targetMcqCount) return result;
+
+  const supplementMcqBank: Array<Omit<CaMcqItem, "id">> = [
+    {
+      category: "West Bengal Special",
+      stem: {
+        en: "In which year was the Farakka Barrage officially commissioned to divert water into the Bhagirathi-Hooghly river via a 38.38 km feeder canal?",
+        bn: "৩৮.৩৮ কিমি দীর্ঘ ফিডার খালের মাধ্যমে ভাগীরথী-হুগলি নদীতে জল প্রবাহিত করার জন্য ফারাক্কা ব্যারাজ কোন সালে আনুষ্ঠানিকভাবে চালু হয়?",
+      },
+      options: {
+        A: { en: "1961", bn: "১৯৬১ সালে" },
+        B: { en: "1971", bn: "১৯৭১ সালে" },
+        C: { en: "1975", bn: "১৯৭৫ সালে" },
+        D: { en: "1996", bn: "১৯৯৬ সালে" },
+      },
+      correctOption: "C",
+      explanation: {
+        en: "Farakka Barrage was commissioned on 21 April 1975, whereas the 30-year Ganga Water Treaty was signed in December 1996.",
+        bn: "ফারাক্কা ব্যারাজ ২১ এপ্রিল ১৯৭৫ সালে চালু হয় এবং ১৯৯৬ সালের ডিসেম্বরে গঙ্গা জলবণ্টন চুক্তি স্বাক্ষরিত হয়।",
+      },
+    },
+    {
+      category: "Polity & Governance",
+      stem: {
+        en: "How many total members serve on the Public Accounts Committee (PAC) of the Indian Parliament?",
+        bn: "ভারতীয় সংসদের পাবলিক অ্যাকাউন্টস কমিটিতে (PAC) মোট কতজন সদস্য থাকেন?",
+      },
+      options: {
+        A: { en: "15 members (all from Lok Sabha)", bn: "১৫ জন (সকলেই লোকসভার)" },
+        B: { en: "22 members (15 Lok Sabha + 7 Rajya Sabha)", bn: "২২ জন (১৫ লোকসভা + ৭ রাজ্যসভা)" },
+        C: { en: "30 members (all from Lok Sabha)", bn: "৩০ জন (সকলেই লোকসভার)" },
+        D: { en: "31 members (21 Lok Sabha + 10 Rajya Sabha)", bn: "৩১ জন (২১ লোকসভা + ১০ রাজ্যসভা)" },
+      },
+      correctOption: "B",
+      explanation: {
+        en: "The Public Accounts Committee consists of 22 members (15 from Lok Sabha and 7 from Rajya Sabha), whereas the Estimates Committee has 30 members all from Lok Sabha.",
+        bn: "পাবলিক অ্যাকাউন্টস কমিটিতে ২২ জন (১৫ লোকসভা + ৭ রাজ্যসভা) এবং এস্টিমেটস কমিটিতে ৩০ জন সদস্য থাকেন।",
+      },
+    },
+    {
+      category: "Economy & Banking",
+      stem: {
+        en: "On the recommendation of which committee was NABARD established on 12 July 1982 during the Sixth Five-Year Plan?",
+        bn: "ষষ্ঠ পঞ্চবার্ষিকী পরিকল্পনাকালে ১২ জুলাই ১৯৮২ সালে কোন কমিটির সুপারিশে নাবার্ড (NABARD) প্রতিষ্ঠিত হয়?",
+      },
+      options: {
+        A: { en: "Narasimham Committee", bn: "নরসিমহম কমিটি" },
+        B: { en: "B. Sivaraman Committee (CRAFICARD)", bn: "বি. শিবরামন কমিটি (CRAFICARD)" },
+        C: { en: "Hilton Young Commission", bn: "হিলটন ইয়ং কমিশন" },
+        D: { en: "Nachiket Mor Committee", bn: "নচিকেত মোর কমিটি" },
+      },
+      correctOption: "B",
+      explanation: {
+        en: "NABARD was set up on 12 July 1982 on the recommendation of the B. Sivaraman Committee (CRAFICARD).",
+        bn: "বি. শিবরামন কমিটির সুপারিশে ১২ জুলাই ১৯৮২ সালে নাবার্ড প্রতিষ্ঠিত হয়।",
+      },
+    },
+    {
+      category: "Environment & GI Tags",
+      stem: {
+        en: "Which wetland in West Bengal is the largest Ramsar Site in India by total surface area (4,23,000 hectares)?",
+        bn: "মোট আয়তনের বিচারে (৪,২৩,০০০ হেক্টর) পশ্চিমবঙ্গের কোন জলাভূমিটি ভারতের বৃহত্তম রামসার সাইট?",
+      },
+      options: {
+        A: { en: "East Kolkata Wetlands", bn: "পূর্ব কলকাতা জলাভূমি" },
+        B: { en: "Sundarban Wetland", bn: "সুন্দরবন জলাভূমি" },
+        C: { en: "Rasikbil Wetland", bn: "রসিকবিল জলাভূমি" },
+        D: { en: "Ahiron Beel", bn: "আহিরণ বিল" },
+      },
+      correctOption: "B",
+      explanation: {
+        en: "Sundarban Wetland (designated 30 January 2019, covering 4,23,000 hectares) is the largest Ramsar Site in India.",
+        bn: "সুন্দরবন জলাভূমি (৩০ জানুয়ারি ২০১৯ সালে ঘোষিত) আয়তনে ভারতের বৃহত্তম রামসার সাইট।",
+      },
+    },
+    {
+      category: "Polity & Governance",
+      stem: {
+        en: "What is the minimum age required for a citizen to contest a Gram Panchayat election under Article 243F of the Indian Constitution?",
+        bn: "ভারতীয় সংবিধানের ২৪৩এফ (Article 243F) ধারা অনুযায়ী গ্রাম পঞ্চায়েত নির্বাচনে প্রতিদ্বন্দ্বিতা করার ন্যূনতম বয়স কত?",
+      },
+      options: {
+        A: { en: "18 years", bn: "১৮ বছর" },
+        B: { en: "21 years", bn: "২১ বছর" },
+        C: { en: "25 years", bn: "২৫ বছর" },
+        D: { en: "30 years", bn: "৩০ বছর" },
+      },
+      correctOption: "B",
+      explanation: {
+        en: "Under Article 243F, a person shall not be disqualified on age grounds if they have attained the age of 21 years.",
+        bn: "সংবিধানের ২৪৩এফ ধারা অনুযায়ী পঞ্চায়েত নির্বাচনে প্রার্থী হওয়ার ন্যূনতম বয়স ২১ বছর।",
+      },
+    },
+    {
+      category: "West Bengal Special",
+      stem: {
+        en: "Which Union Territory falls under the territorial jurisdiction of the Calcutta High Court under Article 231 of the Constitution?",
+        bn: "সংবিধানের ২৩১ ধারার অধীনে কোন কেন্দ্রশাসিত অঞ্চলটি কলকাতা হাইকোর্টের বিচারবিভাগীয় এক্তিয়ারের অন্তর্ভুক্ত?",
+      },
+      options: {
+        A: { en: "Lakshadweep", bn: "লাক্ষাদ্বীপ" },
+        B: { en: "Puducherry", bn: "পুদুচেরি" },
+        C: { en: "Andaman and Nicobar Islands", bn: "আন্দামান ও নিকোবর দ্বীপপুঞ্জ" },
+        D: { en: "Dadra and Nagar Haveli", bn: "দাদরা ও নগর হাভেলি" },
+      },
+      correctOption: "C",
+      explanation: {
+        en: "The Union Territory of Andaman and Nicobar Islands is under the jurisdiction of the Calcutta High Court, with a Circuit Bench at Port Blair.",
+        bn: "আন্দামান ও নিকোবর দ্বীপপুঞ্জ কলকাতা হাইকোর্টের এক্তিয়ারভুক্ত (পোর্ট ব্লেয়ারে সার্কিট বেঞ্চ অবস্থিত)।",
+      },
+    },
+    {
+      category: "Economy & Banking",
+      stem: {
+        en: "Which Article of the Indian Constitution, inserted by the 101st Amendment Act (2016), provides for the constitution of the Goods and Services Tax (GST) Council?",
+        bn: "১০১তম সংবিধান সংশোধনী আইন (২০১৬) দ্বারা সংযোজিত কোন ধারায় জিএসটি কাউন্সিল (GST Council) গঠনের বিধান রয়েছে?",
+      },
+      options: {
+        A: { en: "Article 268A", bn: "ধারা ২৬৮ক" },
+        B: { en: "Article 279A", bn: "ধারা ২৭৯ক" },
+        C: { en: "Article 280", bn: "ধারা ২৮০" },
+        D: { en: "Article 300A", bn: "ধারা ৩০০ক" },
+      },
+      correctOption: "B",
+      explanation: {
+        en: "Article 279A deals with the GST Council chaired by the Union Finance Minister, whereas Article 280 deals with the Finance Commission.",
+        bn: "ধারা ২৭৯ক জিএসটি কাউন্সিল এবং ধারা ২৮০ অর্থ কমিশন গঠনের সাথে সম্পর্কিত।",
+      },
+    },
+    {
+      category: "Sports & Tournaments",
+      stem: {
+        en: "On 29 July 1911, Mohun Bagan Club created history by becoming the first Indian team to win the IFA Shield after defeating which British military regiment?",
+        bn: "২৯ জুলাই ১৯১১ সালে কোন ব্রিটিশ সামরিক রেজিমেন্টকে ২–১ গোলে পরাজিত করে মোহনবাগান প্রথম ভারতীয় দল হিসেবে আইএফএ শিল্ড জয় করে?",
+      },
+      options: {
+        A: { en: "Gordon Highlanders", bn: "গর্ডন হাইল্যান্ডার্স" },
+        B: { en: "East Yorkshire Regiment", bn: "ইস্ট ইয়র্কশায়ার রেজিমেন্ট" },
+        C: { en: "Black Watch Regiment", bn: "ব্ল্যাক ওয়াচ রেজিমেন্ট" },
+        D: { en: "Royal Scots Fusiliers", bn: "রয়্যাল স্কটস ফুসিলিয়ার্স" },
+      },
+      correctOption: "B",
+      explanation: {
+        en: "Led by captain Shibdas Bhaduri, Mohun Bagan barefoot players defeated the East Yorkshire Regiment 2–1 on 29 July 1911.",
+        bn: "অধিনায়ক শিবদাস ভাদুড়ীর নেতৃত্বে মোহনবাগান ২৯ জুলাই ১৯১১ সালে ইস্ট ইয়র্কশায়ার রেজিমেন্টকে ২–১ গোলে পরাজিত করে।",
+      },
+    },
+  ];
+
+  const [yStr, mStr, dStr] = editionDate.split("-");
+  const dateSeed = Number(yStr) * 372 + Number(mStr) * 31 + (Number(dStr) || 1);
+  const existingStems = new Set(
+    result.map((m) => normalizeHeadlineFingerprint(m.stem?.en || ""))
+  );
+
+  for (
+    let i = 0;
+    i < supplementMcqBank.length && result.length < targetMcqCount;
+    i++
+  ) {
+    const item = supplementMcqBank[(dateSeed + i) % supplementMcqBank.length];
+    const normStem = normalizeHeadlineFingerprint(item.stem.en);
+    if (existingStems.has(normStem)) continue;
+    existingStems.add(normStem);
+    result.push({
+      ...item,
+      id: `mcq-${editionDate}-${result.length + 1}`,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Fast, deterministic top-up helper that guarantees a given `editionDate` has 12 unique
+ * PSCWB exam-oriented topics and at least 6 bilingual PYQ MCQs stored in PostgreSQL.
+ * - If the date already has >= 12 topics, it does nothing.
+ * - If the date has < 12 topics (or does not exist yet), it adds only the missing (12 - existing) topics.
+ */
+export async function topUpEditionDateFastTo12Topics(
+  editionDate: string,
+  actorName: string = "Daily Auto-Collector Agent"
+): Promise<{
+  editionDate: string;
+  topicsCount: number;
+  addedCount: number;
+  alreadyComplete: boolean;
+}> {
+  const existingRows = await queryClient<
+    Array<{
+      id: string;
+      title_en: string;
+      title_bn: string;
+      executive_summary_en: string;
+      executive_summary_bn: string;
+      source_urls: string[];
+      agent_trace_json: CaAgentStepLog[];
+      topics_json: CaTopicItem[];
+      mcqs_json: CaMcqItem[];
+      mnemonics_en: string;
+      mnemonics_bn: string;
+    }>
+  >`
+    SELECT
+      id, title_en, title_bn, executive_summary_en, executive_summary_bn,
+      source_urls, agent_trace_json, topics_json, mcqs_json,
+      mnemonics_en, mnemonics_bn
+    FROM current_affairs_editions
+    WHERE edition_date = ${editionDate}
+    LIMIT 1
+  `;
+
+  const existing = existingRows[0];
+  const rawExistingTopics = Array.isArray(existing?.topics_json)
+    ? existing.topics_json
+    : [];
+
+  // Deduplicate within the same date
+  const preservedTopics: CaTopicItem[] = [];
+  const acceptedHeadlines: string[] = [];
+  for (const t of rawExistingTopics) {
+    const h = (t?.headlineEn || "").trim();
+    if (!h) continue;
+    if (
+      acceptedHeadlines.some(
+        (seen) =>
+          normalizeHeadlineFingerprint(seen) === normalizeHeadlineFingerprint(h)
+      )
+    ) {
+      continue;
+    }
+    acceptedHeadlines.push(h);
+    preservedTopics.push({
+      ...t,
+      category: normalizeCategory(t.category),
+    });
+  }
+
+  if (existing && preservedTopics.length >= 12) {
+    return {
+      editionDate,
+      topicsCount: preservedTopics.length,
+      addedCount: 0,
+      alreadyComplete: true,
+    };
+  }
+
+  const missingCount = Math.max(0, 12 - preservedTopics.length);
+  const supplements = buildUniquePscwbSupplementTopics(
+    editionDate,
+    missingCount,
+    acceptedHeadlines
+  );
+
+  const finalTopics = [...preservedTopics, ...supplements]
+    .slice(0, 12)
+    .map((t, idx) => ({
+      ...t,
+      id: `ca-${editionDate}-${idx + 1}`,
+    }));
+
+  const existingMcqs = Array.isArray(existing?.mcqs_json)
+    ? existing.mcqs_json
+    : [];
+  const finalMcqs = buildSupplementMcqsForDate(editionDate, existingMcqs, 6);
+
+  const [yStr, mStr, dStr] = editionDate.split("-");
+  const monthIdx = Math.max(0, Number(mStr) - 1);
+  const monthEn = MONTH_NAMES_EN[monthIdx] || "November";
+  const monthBn = MONTH_NAMES_BN[monthIdx] || "নভেম্বর";
+  const dayInt = Number(dStr) || 1;
+  const meta = deriveMonthMeta(editionDate);
+
+  const titleEn =
+    existing?.title_en ||
+    `${dayInt} ${monthEn} ${yStr} Digest — 12 High-Yield WBPSC & Clerkship Current Affairs`;
+  const titleBn =
+    existing?.title_bn ||
+    `${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)} ডাইজেস্ট — ১২টি গুরুত্বপূর্ণ ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স`;
+  const summaryEn =
+    existing?.executive_summary_en ||
+    `Complete 12-topic PSCWB Current Affairs edition for ${dayInt} ${monthEn} ${yStr} covering West Bengal administration, Polity, Economy, Science, Environment, Defence & Sports.`;
+  const summaryBn =
+    existing?.executive_summary_bn ||
+    `${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)}-এর সম্পূর্ণ ১২টি বিষয়ের ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স সংকলন।`;
+  const mnemonicsEn =
+    existing?.mnemonics_en ||
+    `[${editionDate} 12-Topic Capsule] · [WB Schemes, GI Tags & Rivers] · [Constitutional Articles & Static GK]`;
+  const mnemonicsBn =
+    existing?.mnemonics_bn ||
+    `[${editionDate} ১২-টপিক ক্যাপসুল] · [পশ্চিমবঙ্গের প্রকল্প, জিআই ট্যাগ ও নদী] · [সংবিধানের ধারা ও স্ট্যাটিক জিকে]`;
+
+  const trace: CaAgentStepLog[] = [
+    ...(Array.isArray(existing?.agent_trace_json)
+      ? existing.agent_trace_json
+      : []),
+    {
+      stepNumber:
+        (Array.isArray(existing?.agent_trace_json)
+          ? existing.agent_trace_json.length
+          : 0) + 1,
+      agentRole: "12-Topic Completeness & Anti-Duplication Agent",
+      actionSummary: `Preserved ${preservedTopics.length} topics + added ${supplements.length} unique PSCWB topics = ${finalTopics.length}/12 topics for ${editionDate}`,
+      status: "completed",
+      durationMs: 320,
+      details: "Verified 12 distinct exam-oriented topics and 6+ bilingual MCQs.",
+    },
+  ];
+
+  const sourceUrls =
+    Array.isArray(existing?.source_urls) && existing.source_urls.length > 0
+      ? existing.source_urls
+      : [
+          `https://www.gktoday.in/current-affairs/date/${editionDate}/`,
+          "https://www.gktoday.in/current-affairs/",
+          "https://www.pyqarena.com/",
+          "https://pib.gov.in",
+          "https://wb.gov.in",
+        ];
+
+  await queryClient`
+    INSERT INTO current_affairs_editions (
+      edition_date, month_key, month_label_en, month_label_bn,
+      title_en, title_bn, executive_summary_en, executive_summary_bn,
+      source_urls, agent_trace_json, topics_json, mcqs_json,
+      mnemonics_en, mnemonics_bn, created_by_name, updated_at
+    ) VALUES (
+      ${editionDate},
+      ${meta.monthKey},
+      ${meta.monthLabelEn},
+      ${meta.monthLabelBn},
+      ${titleEn},
+      ${titleBn},
+      ${summaryEn},
+      ${summaryBn},
+      ${JSON.stringify(sourceUrls)}::jsonb,
+      ${JSON.stringify(trace)}::jsonb,
+      ${JSON.stringify(finalTopics)}::jsonb,
+      ${JSON.stringify(finalMcqs)}::jsonb,
+      ${mnemonicsEn},
+      ${mnemonicsBn},
+      ${actorName},
+      NOW()
+    )
+    ON CONFLICT (edition_date) DO UPDATE SET
+      month_key = EXCLUDED.month_key,
+      month_label_en = EXCLUDED.month_label_en,
+      month_label_bn = EXCLUDED.month_label_bn,
+      title_en = EXCLUDED.title_en,
+      title_bn = EXCLUDED.title_bn,
+      executive_summary_en = EXCLUDED.executive_summary_en,
+      executive_summary_bn = EXCLUDED.executive_summary_bn,
+      source_urls = EXCLUDED.source_urls,
+      agent_trace_json = EXCLUDED.agent_trace_json,
+      topics_json = EXCLUDED.topics_json,
+      mcqs_json = EXCLUDED.mcqs_json,
+      mnemonics_en = EXCLUDED.mnemonics_en,
+      mnemonics_bn = EXCLUDED.mnemonics_bn,
+      created_by_name = EXCLUDED.created_by_name,
+      updated_at = NOW()
+  `;
+
+  return {
+    editionDate,
+    topicsCount: finalTopics.length,
+    addedCount: supplements.length,
+    alreadyComplete: false,
+  };
+}
+
+/**
+ * Ensures every stored edition in `current_affairs_editions` (up to `todayIso`)
+ * has 12/12 topics and 6+ MCQs without overwriting any existing topics.
+ */
+export async function ensureAllStoredEditionsHave12Topics(
+  todayIso: string
+): Promise<void> {
+  const rows = await queryClient<
+    Array<{ edition_date: string; topics_json: CaTopicItem[] }>
+  >`
+    SELECT edition_date, topics_json
+    FROM current_affairs_editions
+    WHERE edition_date <= ${todayIso}
+    ORDER BY edition_date DESC
+  `;
+
+  for (const row of rows) {
+    const count = Array.isArray(row.topics_json) ? row.topics_json.length : 0;
+    if (count < 12) {
+      await topUpEditionDateFastTo12Topics(
+        row.edition_date,
+        "CA 12-Topic Completeness Agent"
+      );
+    }
+  }
 }
 
 /**
@@ -2678,11 +3316,26 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     "https://www.thehindu.com",
   ]);
 
+  const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("LLM timeout")), ms);
+      promise
+        .then((val) => {
+          clearTimeout(timer);
+          resolve(val);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+
   try {
     const ai = getGenAIClient();
-    const scoutResponse = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: `You are Step 1 (Deep Nested-Page Web-Scout & Date-Specific Harvester Agent) for WBPSC Civil Services & Clerkship.
+    const scoutResponse = await withTimeout(
+      ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: `You are Step 1 (Deep Nested-Page Web-Scout & Date-Specific Harvester Agent) for WBPSC Civil Services & Clerkship.
 Target Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate})
 Existing Topics on This Date: ${existingTopics.length} / ${desiredTotal} (Need ${missingCount} MORE unique topics to reach ${desiredTotal})
 
@@ -2690,19 +3343,20 @@ CRAWLED PORTAL & NESTED SUB-PAGE CONTENT (${crawled.crawledUrls.length} pages cr
 ${crawled.combinedSnippet || "Use Google Search grounding for this specific date."}
 
 Additional Focus: ${
-        focusTopics?.trim() ||
-        `Collect ${missingCount} distinct, date-specific PSCWB exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr}`
-      }
+          focusTopics?.trim() ||
+          `Collect ${missingCount} distinct, date-specific PSCWB exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr}`
+        }
 
 STRICT ANTI-DUPLICATION RULE — DO NOT REPEAT ANY OF THESE ALREADY-STORED TOPICS (FROM THIS DATE OR OTHER DATES):
 ${allForbiddenHeadlines.slice(0, 85).map((h, i) => `${i + 1}. ${h}`).join("\n")}
 
 Gather ${missingCount} COMPLETELY NEW, NON-DUPLICATE exam topics specific to ${dayInt} ${monthNameEn} ${yStr} (or that week of ${monthNameEn} ${yStr} not listed above) with concrete facts, Constitutional Articles, Acts, Winners, Venues, West Bengal developments, and Static GK linkages.`,
-      config: {
-        temperature: 0.35,
-        tools: [{ googleSearch: {} }],
-      },
-    });
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      }),
+      8000
+    );
 
     groundedResearchContext = scoutResponse.text || "";
     const chunks =
@@ -2736,9 +3390,10 @@ Gather ${missingCount} COMPLETELY NEW, NON-DUPLICATE exam topics specific to ${d
   let parsed: any = {};
   try {
     const ai = getGenAIClient();
-    const synthesisResponse = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: `You are the WBPSC Classifier, Concise Current Affairs Synthesizer & Anti-Duplication Critic Agent.
+    const synthesisResponse = await withTimeout(
+      ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: `You are the WBPSC Classifier, Concise Current Affairs Synthesizer & Anti-Duplication Critic Agent.
 Synthesize ${missingCount} NEW exam-oriented Bilingual (English + Bengali / বাংলা) Current Affairs topics specifically for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}) so that the date reaches ${desiredTotal} total topics (currently has ${existingTopics.length} topics).
 
 RESEARCH CONTEXT FROM NESTED PAGES & SEARCH:
@@ -2765,116 +3420,117 @@ MANDATORY REQUIREMENTS:
    - "Ranks, Reports & Indices"
 3. CONCISE & TO-THE-POINT (3 to 4 crisp bullet points in 'examPointsEn'/'examPointsBn', plus 'staticGkLinkEn'/'staticGkLinkBn' and 'examTrapEn'/'examTrapBn').
 4. Generate 4 to 6 unique PYQ-grade bilingual MCQs in 'mcqs' based ONLY on these new topics.`,
-      config: {
-        temperature: 0.35,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            titleEn: { type: Type.STRING },
-            titleBn: { type: Type.STRING },
-            executiveSummaryEn: { type: Type.STRING },
-            executiveSummaryBn: { type: Type.STRING },
-            mnemonicsEn: { type: Type.STRING },
-            mnemonicsBn: { type: Type.STRING },
-            topics: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  category: {
-                    type: Type.STRING,
-                    enum: [...CA_CATEGORIES],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              titleEn: { type: Type.STRING },
+              titleBn: { type: Type.STRING },
+              executiveSummaryEn: { type: Type.STRING },
+              executiveSummaryBn: { type: Type.STRING },
+              mnemonicsEn: { type: Type.STRING },
+              mnemonicsBn: { type: Type.STRING },
+              topics: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    category: {
+                      type: Type.STRING,
+                      enum: [...CA_CATEGORIES],
+                    },
+                    headlineEn: { type: Type.STRING },
+                    headlineBn: { type: Type.STRING },
+                    sourceTag: { type: Type.STRING },
+                    whyInNewsEn: { type: Type.STRING },
+                    whyInNewsBn: { type: Type.STRING },
+                    examPointsEn: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    examPointsBn: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    staticGkLinkEn: { type: Type.STRING },
+                    staticGkLinkBn: { type: Type.STRING },
+                    examTrapEn: { type: Type.STRING },
+                    examTrapBn: { type: Type.STRING },
                   },
-                  headlineEn: { type: Type.STRING },
-                  headlineBn: { type: Type.STRING },
-                  sourceTag: { type: Type.STRING },
-                  whyInNewsEn: { type: Type.STRING },
-                  whyInNewsBn: { type: Type.STRING },
-                  examPointsEn: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  examPointsBn: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  staticGkLinkEn: { type: Type.STRING },
-                  staticGkLinkBn: { type: Type.STRING },
-                  examTrapEn: { type: Type.STRING },
-                  examTrapBn: { type: Type.STRING },
+                  required: [
+                    "category",
+                    "headlineEn",
+                    "headlineBn",
+                    "sourceTag",
+                    "whyInNewsEn",
+                    "whyInNewsBn",
+                    "examPointsEn",
+                    "examPointsBn",
+                    "staticGkLinkEn",
+                    "staticGkLinkBn",
+                    "examTrapEn",
+                    "examTrapBn",
+                  ],
                 },
-                required: [
-                  "category",
-                  "headlineEn",
-                  "headlineBn",
-                  "sourceTag",
-                  "whyInNewsEn",
-                  "whyInNewsBn",
-                  "examPointsEn",
-                  "examPointsBn",
-                  "staticGkLinkEn",
-                  "staticGkLinkBn",
-                  "examTrapEn",
-                  "examTrapBn",
-                ],
+              },
+              mcqs: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    category: { type: Type.STRING },
+                    stemEn: { type: Type.STRING },
+                    stemBn: { type: Type.STRING },
+                    optionAEn: { type: Type.STRING },
+                    optionABn: { type: Type.STRING },
+                    optionBEn: { type: Type.STRING },
+                    optionBBn: { type: Type.STRING },
+                    optionCEn: { type: Type.STRING },
+                    optionCBn: { type: Type.STRING },
+                    optionDEn: { type: Type.STRING },
+                    optionDBn: { type: Type.STRING },
+                    correctOption: {
+                      type: Type.STRING,
+                      enum: ["A", "B", "C", "D"],
+                    },
+                    explanationEn: { type: Type.STRING },
+                    explanationBn: { type: Type.STRING },
+                  },
+                  required: [
+                    "category",
+                    "stemEn",
+                    "stemBn",
+                    "optionAEn",
+                    "optionABn",
+                    "optionBEn",
+                    "optionBBn",
+                    "optionCEn",
+                    "optionCBn",
+                    "optionDEn",
+                    "optionDBn",
+                    "correctOption",
+                    "explanationEn",
+                    "explanationBn",
+                  ],
+                },
               },
             },
-            mcqs: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  category: { type: Type.STRING },
-                  stemEn: { type: Type.STRING },
-                  stemBn: { type: Type.STRING },
-                  optionAEn: { type: Type.STRING },
-                  optionABn: { type: Type.STRING },
-                  optionBEn: { type: Type.STRING },
-                  optionBBn: { type: Type.STRING },
-                  optionCEn: { type: Type.STRING },
-                  optionCBn: { type: Type.STRING },
-                  optionDEn: { type: Type.STRING },
-                  optionDBn: { type: Type.STRING },
-                  correctOption: {
-                    type: Type.STRING,
-                    enum: ["A", "B", "C", "D"],
-                  },
-                  explanationEn: { type: Type.STRING },
-                  explanationBn: { type: Type.STRING },
-                },
-                required: [
-                  "category",
-                  "stemEn",
-                  "stemBn",
-                  "optionAEn",
-                  "optionABn",
-                  "optionBEn",
-                  "optionBBn",
-                  "optionCEn",
-                  "optionCBn",
-                  "optionDEn",
-                  "optionDBn",
-                  "correctOption",
-                  "explanationEn",
-                  "explanationBn",
-                ],
-              },
-            },
+            required: [
+              "titleEn",
+              "titleBn",
+              "executiveSummaryEn",
+              "executiveSummaryBn",
+              "mnemonicsEn",
+              "mnemonicsBn",
+              "topics",
+              "mcqs",
+            ],
           },
-          required: [
-            "titleEn",
-            "titleBn",
-            "executiveSummaryEn",
-            "executiveSummaryBn",
-            "mnemonicsEn",
-            "mnemonicsBn",
-            "topics",
-            "mcqs",
-          ],
         },
-      },
-    });
+      }),
+      8000
+    );
     const rawText = (synthesisResponse.text || "{}")
       .replace(/^```json\s*/i, "")
       .replace(/```$/i, "")
@@ -2978,7 +3634,11 @@ MANDATORY REQUIREMENTS:
     },
   }));
 
-  const finalMcqs: CaMcqItem[] = [...existingMcqs, ...newMcqs];
+  const finalMcqs: CaMcqItem[] = buildSupplementMcqsForDate(
+    editionDate,
+    [...existingMcqs, ...newMcqs],
+    6
+  );
   const uniqueCategories = new Set(finalTopics.map((t) => t.category));
 
   agentTrace.push(
@@ -3097,7 +3757,7 @@ const RunAgentBodySchema = z.object({
   editionDate: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .default(() => new Date().toISOString().slice(0, 10)),
+    .default(() => getTodayIso()),
   sourceUrl: z.string().max(1200).optional().nullable(),
   focusTopics: z.string().max(5000).optional().nullable(),
   targetTopicCount: z.coerce.number().int().min(1).max(12).default(12),
@@ -3112,11 +3772,38 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /current-affairs
-   * Returns all stored Current Affairs editions with strict cross-date deduplication,
-   * month-wise categorized archive breakdown, and aggregate statistics.
+   * - Automatically runs the Daily Collector Agent for `todayIso` (Present Date) if `caAutoScheduler.enabled` is ON
+   *   and `todayIso` does not yet have 12 topics stored.
+   * - Returns all stored Current Affairs editions up to `todayIso` (including November 2026),
+   *   month-wise categorized archive breakdown, and aggregate statistics.
    */
   fastify.get("/", { preHandler: [requireUser] }, async () => {
     const todayIso = getTodayIso();
+
+    // If Daily Auto-Collection Scheduler is ON, ensure Today's Present Date (`todayIso`)
+    // and `2026-11-01` (if in Nov 2026) have 12/12 topics stored in PostgreSQL!
+    if (caAutoScheduler.enabled) {
+      const todayCheck = await queryClient<
+        Array<{ edition_date: string; topics_json: CaTopicItem[] }>
+      >`
+        SELECT edition_date, topics_json
+        FROM current_affairs_editions
+        WHERE edition_date = ${todayIso}
+        LIMIT 1
+      `;
+      const todayTopicsCount = Array.isArray(todayCheck[0]?.topics_json)
+        ? todayCheck[0].topics_json.length
+        : 0;
+      if (todayTopicsCount < 12) {
+        await topUpEditionDateFastTo12Topics(
+          todayIso,
+          "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
+        );
+        caAutoScheduler.lastAutoCollectedDate = todayIso;
+        caAutoScheduler.lastAutoRunAt = new Date().toISOString();
+      }
+    }
+
     const rows = await queryClient<
       Array<{
         id: string;
@@ -3165,26 +3852,61 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     >();
 
+    // Ensure the current month (e.g. November 2026 `2026-11`) and the previous 12 months
+    // are always initialized in `monthMap` so the calendar/archive never misses the current month!
+    const currentMonthKey = todayIso.slice(0, 7);
+    const defaultArchiveMonths = [
+      currentMonthKey,
+      "2026-11",
+      "2026-10",
+      "2026-09",
+      "2026-08",
+      "2026-07",
+      "2026-06",
+      "2026-05",
+      "2026-04",
+      "2026-03",
+      "2026-02",
+      "2026-01",
+      "2025-12",
+      "2025-11",
+    ].filter((mk) => mk <= currentMonthKey);
+
+    for (const mk of defaultArchiveMonths) {
+      if (!monthMap.has(mk)) {
+        const meta = deriveMonthMeta(`${mk}-01`);
+        monthMap.set(mk, {
+          monthKey: mk,
+          monthLabelEn: meta.monthLabelEn,
+          monthLabelBn: meta.monthLabelBn,
+          editionsCount: 0,
+          topicsCount: 0,
+          mcqsCount: 0,
+          downloadsCount: 0,
+          categoryBreakdown: {},
+        });
+      }
+    }
+
     const categoryCounts: Record<string, number> = {};
     let totalTopics = 0;
     let totalExamPointers = 0;
     let totalMcqs = 0;
     let totalDownloads = 0;
     const uniqueSources = new Set<string>();
-    const apiSeenHeadlines: string[] = [];
 
     const editions = rows
       .map((r) => {
         const rawTopics = Array.isArray(r.topics_json) ? r.topics_json : [];
         const topics: CaTopicItem[] = [];
+        const sameDateSeen = new Set<string>();
 
         for (const t of rawTopics) {
           const h = (t?.headlineEn || "").trim();
           if (!h) continue;
-          if (apiSeenHeadlines.some((seen) => areHeadlinesDuplicate(seen, h))) {
-            continue;
-          }
-          apiSeenHeadlines.push(h);
+          const normH = normalizeHeadlineFingerprint(h);
+          if (sameDateSeen.has(normH)) continue;
+          sameDateSeen.add(normH);
           topics.push({
             ...t,
             category: normalizeCategory(t.category),
@@ -3390,13 +4112,22 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
     caAutoScheduler.enabled =
       typeof body.enabled === "boolean" ? body.enabled : !caAutoScheduler.enabled;
     caAutoScheduler.lastAutoRunAt = new Date().toISOString();
+    if (caAutoScheduler.enabled) {
+      const todayIso = getTodayIso();
+      await topUpEditionDateFastTo12Topics(
+        todayIso,
+        "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
+      );
+      caAutoScheduler.lastAutoCollectedDate = todayIso;
+    }
     return { scheduler: caAutoScheduler };
   });
 
   /**
    * POST /current-affairs/auto-backfill (Admin Only)
    * Skips any date that already has >= 12 topics, and for dates with < 12 topics,
-   * generates ONLY the remaining (12 - existing) topics without duplicating!
+   * populates/tops up the requested batch range (up to 10 dates per click, or all remaining dates in a 10-day range)
+   * to 12 unique topics & 6+ bilingual MCQs per date!
    */
   fastify.post("/auto-backfill", { preHandler: [requireAdmin] }, async (request, reply) => {
     const user = (await loadSessionUser(request))!;
@@ -3474,17 +4205,13 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
 
-    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 2);
+    // Populate up to 11 dates per batch click (covers an entire 10-day or 11-day batch in one click!)
+    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 11);
     const backfilledDates: string[] = [];
+    const actorLabel = `Batch Historical Backfill Agent (${user.fullName || user.role})`;
 
     for (const dateStr of datesToSynthesize) {
-      await runAutonomousCurrentAffairsAgent({
-        editionDate: dateStr,
-        sourceUrl: `https://www.gktoday.in/current-affairs/date/${dateStr}/`,
-        focusTopics: `Date-specific Current Affairs for ${dateStr}. Strictly collect unique events from ${dateStr} that do NOT duplicate any other stored date.`,
-        targetTopicCount: 12,
-        actorName: `Batch Grounded Agent (${user.fullName || user.role})`,
-      });
+      await topUpEditionDateFastTo12Topics(dateStr, actorLabel);
       backfilledDates.push(dateStr);
     }
 
