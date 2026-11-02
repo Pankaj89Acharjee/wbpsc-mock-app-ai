@@ -7,10 +7,13 @@ import {
   ChevronRight,
   CheckCircle2,
   Clock,
+  Database,
   Download,
   FileDown,
+  FileText,
   Filter,
   HelpCircle,
+  Image as ImageIcon,
   Layers,
   Maximize2,
   Play,
@@ -20,6 +23,7 @@ import {
   ShieldAlert,
   Sparkles,
   Trash2,
+  Upload,
   X,
   XCircle,
 } from "lucide-react";
@@ -115,6 +119,57 @@ export interface CaAutoSchedulerStatus {
   lastAutoCollectedDate: string;
   pastDaysAutoBackfilled: boolean;
   totalAutoRunsCount: number;
+}
+
+export interface CaVectorDocumentDto {
+  id: string;
+  title: string;
+  sourcePublisher: string;
+  scopeType: "single_day" | "date_range" | "multi_month" | "yearly" | string;
+  scopeLabel: string;
+  targetDates: string[];
+  targetMonths: string[];
+  targetYear: string;
+  fileName: string;
+  fileFormat: "PDF" | "WORD" | "IMAGE" | "TEXT" | string;
+  mimeType: string;
+  fileSizeBytes: number;
+  extractedSummaryEn: string;
+  extractedSummaryBn: string;
+  categories: string[];
+  chunksCount: number;
+  embeddingModel: string;
+  embeddingDims: number;
+  examTags: string[];
+  uploadedByName: string;
+  createdAt: string;
+}
+
+export interface CaVectorChunkDto {
+  id: string;
+  documentId: string;
+  chunkIndex: number;
+  category: string;
+  headlineEn: string;
+  headlineBn: string;
+  contentEn: string;
+  contentBn: string;
+  keyFacts: string[];
+  scopeType: string;
+  scopeLabel: string;
+  targetMonths: string[];
+  targetYear: string;
+  sourcePublisher: string;
+  similarityScore?: number;
+  createdAt?: string;
+}
+
+export interface CaVectorStoreStats {
+  totalDocumentsCount: number;
+  totalChunksIndexed: number;
+  uniquePublishersCount: number;
+  byFormat: Record<string, number>;
+  byScope: Record<string, number>;
 }
 
 interface DailyCurrentAffairsTabProps {
@@ -348,11 +403,77 @@ export default function DailyCurrentAffairsTab({
   );
 
   // =========================================================================
+  // ADMIN MULTI-DAY DELETION & VECTOR DB DOCUMENT UPLOAD STATE
+  // =========================================================================
+  const [deleteMonthKey, setDeleteMonthKey] = useState<string>(() =>
+    getClientTodayIso().slice(0, 7)
+  );
+  const [selectedDatesForDelete, setSelectedDatesForDelete] = useState<string[]>([]);
+  const [deleteBusy, setDeleteBusy] = useState<boolean>(false);
+
+  // Vector DB Knowledge Store state (PDF / Word / Image uploads)
+  const [vectorStats, setVectorStats] = useState<CaVectorStoreStats | null>(null);
+  const [vectorDocs, setVectorDocs] = useState<CaVectorDocumentDto[]>([]);
+  const [vectorChunksPreview, setVectorChunksPreview] = useState<CaVectorChunkDto[]>([]);
+  const [vectorUploadBusy, setVectorUploadBusy] = useState<boolean>(false);
+  const [vectorSearchBusy, setVectorSearchBusy] = useState<boolean>(false);
+  const [uploadTitle, setUploadTitle] = useState<string>("");
+  const [uploadPublisher, setUploadPublisher] = useState<string>(
+    "GKToday / Achievers / PIB Compilation"
+  );
+  const [uploadScopeType, setUploadScopeType] = useState<
+    "single_day" | "date_range" | "multi_month" | "yearly"
+  >("multi_month");
+  const [uploadSingleDate, setUploadSingleDate] = useState<string>(() =>
+    getClientTodayIso()
+  );
+  const [uploadStartDate, setUploadStartDate] = useState<string>("2026-10-01");
+  const [uploadEndDate, setUploadEndDate] = useState<string>(() =>
+    getClientTodayIso()
+  );
+  const [uploadSelectedMonths, setUploadSelectedMonths] = useState<string[]>(() => [
+    getClientTodayIso().slice(0, 7),
+    "2026-10",
+  ]);
+  const [uploadTargetYear, setUploadTargetYear] = useState<string>("2025-2026");
+  const [uploadExamTags, setUploadExamTags] = useState<string[]>([
+    "WBPSC Clerkship (100 Marks)",
+    "WBCS Prelims (200 Marks)",
+  ]);
+  const [uploadTextHint, setUploadTextHint] = useState<string>("");
+  const [selectedUploadFiles, setSelectedUploadFiles] = useState<File[]>([]);
+
+  // Vector DB Semantic Search state
+  const [vectorSearchQuery, setVectorSearchQuery] = useState<string>("");
+  const [vectorSearchScopeFilter, setVectorSearchScopeFilter] = useState<string>("all");
+  const [vectorSearchCategoryFilter, setVectorSearchCategoryFilter] =
+    useState<string>("all");
+  const [vectorSearchResults, setVectorSearchResults] = useState<
+    CaVectorChunkDto[] | null
+  >(null);
+
+  // =========================================================================
   // INTERACTIVE MCQ PRACTICE QUIZ STATE
   // =========================================================================
   const [quizMonthKey, setQuizMonthKey] = useState<string>("all");
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, OptionKey>>({});
   const [quizSubmitted, setQuizSubmitted] = useState<boolean>(false);
+
+  const loadVectorStore = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await api<{
+        stats: CaVectorStoreStats;
+        documents: CaVectorDocumentDto[];
+        recentChunks: CaVectorChunkDto[];
+      }>("/current-affairs/vector-store");
+      setVectorStats(res.stats);
+      setVectorDocs(res.documents || []);
+      setVectorChunksPreview(res.recentChunks || []);
+    } catch {
+      // Non-blocking for non-admin or initial load
+    }
+  }, [isAdmin]);
 
   const loadArchive = useCallback(async () => {
     setLoading(true);
@@ -388,6 +509,9 @@ export default function DailyCurrentAffairsTab({
         setClassifierSelectedMonth((prev) =>
           validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
         );
+        setDeleteMonthKey((prev) =>
+          validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
+        );
       }
       setAgentEditionDate((prev) => (prev > serverToday ? serverToday : prev));
     } catch (err) {
@@ -399,7 +523,8 @@ export default function DailyCurrentAffairsTab({
 
   useEffect(() => {
     void loadArchive();
-  }, [loadArchive]);
+    void loadVectorStore();
+  }, [loadArchive, loadVectorStore]);
 
   // Map editionDate -> edition for fast calendar lookup
   const editionsByDate = useMemo(() => {
@@ -694,12 +819,209 @@ export default function DailyCurrentAffairsTab({
 
   const handleDeleteEdition = async (editionId: string, editionDate: string) => {
     if (!isAdmin) return;
+    setDeleteBusy(true);
     try {
       await api(`/current-affairs/${editionId}`, { method: "DELETE" });
+      setSelectedDatesForDelete((prev) => prev.filter((d) => d !== editionDate));
       await loadArchive();
-      onNotify?.("info", `Deleted Current Affairs edition (${formatReadableDate(editionDate, "en")}).`);
+      if (modalDateFilter === editionDate) {
+        setModalDateFilter("all");
+        setFloatingCardIdx(0);
+      }
+      onNotify?.(
+        "info",
+        `Deleted Current Affairs edition for ${formatReadableDate(editionDate, "en")}.`
+      );
     } catch (err) {
       onError(err, "Failed to delete edition.");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const handleBulkDeleteEditions = async (params: {
+    editionDates?: string[];
+    monthKey?: string;
+    deleteAllInMonth?: boolean;
+  }) => {
+    if (!isAdmin) return;
+    setDeleteBusy(true);
+    try {
+      const res = await api<{
+        deleted: boolean;
+        deletedCount: number;
+        deletedDates: string[];
+      }>("/current-affairs/delete-editions", {
+        method: "POST",
+        body: params,
+      });
+      setSelectedDatesForDelete([]);
+      await loadArchive();
+      if (
+        modalDateFilter !== "all" &&
+        res.deletedDates.includes(modalDateFilter)
+      ) {
+        setModalDateFilter("all");
+        setFloatingCardIdx(0);
+      }
+      onNotify?.(
+        "info",
+        params.deleteAllInMonth && params.monthKey
+          ? `Deleted all ${res.deletedCount} stored Current Affairs day(s) in ${formatReadableMonth(params.monthKey, "en")}.`
+          : `Deleted ${res.deletedCount} selected Current Affairs day(s): ${res.deletedDates.join(", ")}.`
+      );
+    } catch (err) {
+      onError(err, "Failed to delete selected Current Affairs editions.");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const readFileAsBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        resolve(result);
+      };
+      reader.onerror = () => reject(new Error(`Failed to read file ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+
+  const handleUploadDocumentsToVectorStore = async () => {
+    if (!isAdmin) return;
+    if (selectedUploadFiles.length === 0 && !uploadTextHint.trim()) {
+      onNotify?.(
+        "error",
+        "Please select at least one PDF, Word (.docx/.doc/.txt), or Image (.png/.jpg/.webp) file (or paste text notes) to index into the Vector DB."
+      );
+      return;
+    }
+
+    setVectorUploadBusy(true);
+    try {
+      let uploadedDocsCount = 0;
+      let totalChunksCreated = 0;
+
+      if (selectedUploadFiles.length > 0) {
+        for (const file of selectedUploadFiles) {
+          const base64Data = await readFileAsBase64(file);
+          const customTitle =
+            selectedUploadFiles.length === 1 && uploadTitle.trim()
+              ? uploadTitle.trim()
+              : uploadTitle.trim()
+                ? `${uploadTitle.trim()} — ${file.name}`
+                : "";
+
+          const res = await api<{
+            documentId: string;
+            title: string;
+            chunksCount: number;
+            fileFormat: string;
+            scopeLabel: string;
+          }>("/current-affairs/vector-store/upload", {
+            method: "POST",
+            body: {
+              title: customTitle,
+              sourcePublisher: uploadPublisher,
+              scopeType: uploadScopeType,
+              singleDate: uploadSingleDate,
+              startDate: uploadStartDate,
+              endDate: uploadEndDate,
+              selectedMonths: uploadSelectedMonths,
+              targetYear: uploadTargetYear,
+              examTags: uploadExamTags,
+              fileName: file.name,
+              mimeType: file.type || "application/octet-stream",
+              fileSizeBytes: file.size,
+              fileBase64: base64Data,
+              extractedTextHint: uploadTextHint,
+            },
+          });
+          uploadedDocsCount += 1;
+          totalChunksCreated += res.chunksCount;
+        }
+      } else {
+        const res = await api<{
+          documentId: string;
+          title: string;
+          chunksCount: number;
+          fileFormat: string;
+          scopeLabel: string;
+        }>("/current-affairs/vector-store/upload", {
+          method: "POST",
+          body: {
+            title: uploadTitle.trim() || `${uploadPublisher} Notes`,
+            sourcePublisher: uploadPublisher,
+            scopeType: uploadScopeType,
+            singleDate: uploadSingleDate,
+            startDate: uploadStartDate,
+            endDate: uploadEndDate,
+            selectedMonths: uploadSelectedMonths,
+            targetYear: uploadTargetYear,
+            examTags: uploadExamTags,
+            fileName: "Admin_Current_Affairs_Notes.txt",
+            mimeType: "text/plain",
+            fileSizeBytes: uploadTextHint.length,
+            extractedTextHint: uploadTextHint,
+          },
+        });
+        uploadedDocsCount = 1;
+        totalChunksCreated = res.chunksCount;
+      }
+
+      setSelectedUploadFiles([]);
+      setUploadTitle("");
+      setUploadTextHint("");
+      await loadVectorStore();
+      onNotify?.(
+        "success",
+        `Indexed ${uploadedDocsCount} resource(s) (${totalChunksCreated} bilingual vector chunks) into Vector DB via gemini-embedding-2-preview!`
+      );
+    } catch (err) {
+      onError(err, "Failed to upload & index Current Affairs document into Vector DB.");
+    } finally {
+      setVectorUploadBusy(false);
+    }
+  };
+
+  const handleSearchVectorStore = async () => {
+    if (!isAdmin) return;
+    setVectorSearchBusy(true);
+    try {
+      const res = await api<{
+        query: string;
+        results: CaVectorChunkDto[];
+      }>("/current-affairs/vector-store/search", {
+        method: "POST",
+        body: {
+          query: vectorSearchQuery,
+          scopeType: vectorSearchScopeFilter,
+          category: vectorSearchCategoryFilter,
+          topK: 10,
+        },
+      });
+      setVectorSearchResults(res.results || []);
+    } catch (err) {
+      onError(err, "Vector DB semantic search failed.");
+    } finally {
+      setVectorSearchBusy(false);
+    }
+  };
+
+  const handleDeleteVectorDocument = async (docId: string, docTitle: string) => {
+    if (!isAdmin) return;
+    try {
+      await api(`/current-affairs/vector-store/${docId}`, { method: "DELETE" });
+      await loadVectorStore();
+      if (vectorSearchResults) {
+        setVectorSearchResults((prev) =>
+          prev ? prev.filter((c) => c.documentId !== docId) : null
+        );
+      }
+      onNotify?.("info", `Removed "${docTitle}" and its vector chunks from Vector DB.`);
+    } catch (err) {
+      onError(err, "Failed to delete document from Vector DB.");
     }
   };
 
@@ -1539,7 +1861,696 @@ export default function DailyCurrentAffairsTab({
             </div>
           </div>
         </div>
+
+        {/* ====================================================================
+            CARD 5: ADMIN DELETE GENERATED CURRENT AFFAIRS (SINGLE DAY / MULTIPLE DAYS / MONTH)
+        ==================================================================== */}
+        {(() => {
+          const storedInDeleteMonth = editions
+            .filter((e) => e.monthKey === deleteMonthKey && e.editionDate <= todayIso)
+            .sort((a, b) => b.editionDate.localeCompare(a.editionDate));
+          const allDatesInDeleteMonth = storedInDeleteMonth.map((e) => e.editionDate);
+          const selectedInThisMonth = selectedDatesForDelete.filter((d) =>
+            allDatesInDeleteMonth.includes(d)
+          );
+
+          return (
+            <div className="bg-slate-950 border border-rose-500/30 rounded-xl p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Trash2 className="w-4 h-4" />
+                    5. Delete Generated Current Affairs (Single Day / Multiple Days / Entire Month)
+                  </span>
+                  <p className="text-xs text-slate-400">
+                    Select any month below, pick one or multiple stored dates (or select all days in the month), and delete them cleanly. Deleted dates will not auto-regenerate unless you manually trigger collection for them.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={deleteMonthKey}
+                    onChange={(e) => {
+                      setDeleteMonthKey(e.target.value);
+                      setSelectedDatesForDelete([]);
+                    }}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-bold text-white cursor-pointer"
+                  >
+                    {availableMonthKeys.map((mk) => {
+                      const count = editions.filter((e) => e.monthKey === mk).length;
+                      return (
+                        <option key={mk} value={mk}>
+                          {formatReadableMonth(mk, lang)} ({count} Stored {count === 1 ? "Day" : "Days"})
+                        </option>
+                      );
+                    })}
+                  </select>
+
+                  {storedInDeleteMonth.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedDatesForDelete(
+                            selectedInThisMonth.length === allDatesInDeleteMonth.length
+                              ? []
+                              : allDatesInDeleteMonth
+                          )
+                        }
+                        className="px-2.5 py-1.5 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-lg cursor-pointer"
+                      >
+                        {selectedInThisMonth.length === allDatesInDeleteMonth.length
+                          ? "Unselect All Days"
+                          : `Select All (${storedInDeleteMonth.length} Days)`}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={deleteBusy || selectedInThisMonth.length === 0}
+                        onClick={() =>
+                          void handleBulkDeleteEditions({
+                            editionDates: selectedInThisMonth,
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-rose-500 hover:bg-rose-400 disabled:opacity-40 text-slate-950 rounded-lg cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        {deleteBusy
+                          ? "Deleting..."
+                          : `Delete Selected (${selectedInThisMonth.length} ${selectedInThisMonth.length === 1 ? "Day" : "Days"})`}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={deleteBusy}
+                        onClick={() =>
+                          void handleBulkDeleteEditions({
+                            monthKey: deleteMonthKey,
+                            deleteAllInMonth: true,
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-rose-950/90 hover:bg-rose-900 border border-rose-500/50 text-rose-200 rounded-lg cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete All {storedInDeleteMonth.length} Days in {formatReadableMonth(deleteMonthKey, "en")}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {storedInDeleteMonth.length === 0 ? (
+                <div className="text-xs text-slate-400 bg-slate-900/70 border border-slate-800 rounded-lg p-3">
+                  No stored Current Affairs editions in{" "}
+                  <strong className="text-white">{formatReadableMonth(deleteMonthKey, "en")}</strong>.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[180px] overflow-y-auto pr-1 pt-1">
+                  {storedInDeleteMonth.map((ed) => {
+                    const isChecked = selectedDatesForDelete.includes(ed.editionDate);
+                    return (
+                      <div
+                        key={ed.id}
+                        className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs transition-all ${
+                          isChecked
+                            ? "bg-rose-500/15 border-rose-500/50 text-rose-200"
+                            : "bg-slate-900 border-slate-800 text-slate-200"
+                        }`}
+                      >
+                        <label className="flex items-center gap-2 cursor-pointer flex-1 truncate">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {
+                              setSelectedDatesForDelete((prev) =>
+                                prev.includes(ed.editionDate)
+                                  ? prev.filter((d) => d !== ed.editionDate)
+                                  : [...prev, ed.editionDate]
+                              );
+                            }}
+                            className="accent-rose-500 cursor-pointer"
+                          />
+                          <span className="truncate font-medium">
+                            {formatReadableDate(ed.editionDate, "en")}
+                          </span>
+                          <span className="text-[10px] font-mono text-emerald-400 shrink-0">
+                            ({ed.topics.length}t)
+                          </span>
+                        </label>
+
+                        <button
+                          type="button"
+                          disabled={deleteBusy}
+                          onClick={() => void handleDeleteEdition(ed.id, ed.editionDate)}
+                          title={`Delete ${ed.editionDate} immediately`}
+                          className="p-1 rounded hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
+      )}
+
+      {/* ====================================================================
+          SECTION 3B: MULTI-FORMAT CURRENT AFFAIRS UPLOAD & VECTOR DB KNOWLEDGE STORE (ADMIN ONLY)
+          - Supports PDF (.pdf), Word (.docx/.doc/.txt), and Image (.png/.jpg/.webp)
+          - Scope: Single Day | Multiple Days (Date Range) | Multiple Months | Yearly Digest
+          - Unlimited uploads for the same day/month/year from different resources!
+          - Phase-2 Ready for WBPSC Clerkship (100 Marks) & WBCS Prelims (200 Marks) Test Series
+      ==================================================================== */}
+      {isAdmin && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
+            <div className="space-y-1 max-w-3xl">
+              <div className="inline-flex items-center gap-1.5 text-xs font-bold text-sky-400 uppercase tracking-wider">
+                <Database className="w-4 h-4" />
+                Multi-Source Current Affairs Vector DB Knowledge Store (Admin Only)
+              </div>
+              <h2 className="text-base font-bold text-white">
+                Upload PDF / Word / Image Current Affairs (Single Day, Multi-Day, Multi-Month, or Yearly)
+              </h2>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Upload <strong className="text-white">as many Current Affairs files as you want</strong> for the{" "}
+                <strong className="text-emerald-300">same day, same month, multiple months, or full year</strong> from different resources (e.g.,{" "}
+                <em>GKToday PDF, Achievers Bengali Magazine, VisionIAS / PIB Word Doc, Newspaper Clipping Image</em>). Every file is chunked and indexed with{" "}
+                <code className="text-sky-300">gemini-embedding-2-preview</code> vectors.
+              </p>
+            </div>
+
+            {/* Phase-2 Exam Blueprint Integration Badge */}
+            <div className="bg-slate-950 border border-amber-500/30 rounded-xl px-3.5 py-2.5 max-w-sm">
+              <div className="text-[11px] font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" />
+                Phase-2 Test Series Pipeline Ready
+              </div>
+              <p className="text-[11px] text-slate-300 mt-0.5 leading-snug">
+                Vector chunks stored here are tagged for generating{" "}
+                <strong className="text-white">WBPSC Clerkship (100 Marks)</strong> &amp;{" "}
+                <strong className="text-white">WBCS Prelims (200 Marks)</strong> CA questions and full-length mock test series.
+              </p>
+            </div>
+          </div>
+
+          {/* Vector DB Live Metrics Strip */}
+          {vectorStats && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[11px] text-slate-400">Uploaded CA Resources</div>
+                <div className="text-lg font-bold font-mono text-white mt-0.5">
+                  {vectorStats.totalDocumentsCount} Files
+                </div>
+                <div className="text-[10px] text-emerald-400">
+                  {vectorStats.uniquePublishersCount} Distinct Publishers / Sources
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[11px] text-slate-400">Vector-Indexed Chunks</div>
+                <div className="text-lg font-bold font-mono text-sky-300 mt-0.5">
+                  {vectorStats.totalChunksIndexed} Chunks
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  gemini-embedding-2-preview (128d)
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[11px] text-slate-400">Formats Stored</div>
+                <div className="text-xs font-mono font-bold text-amber-300 mt-1 space-x-2">
+                  <span>PDF: {vectorStats.byFormat?.PDF || 0}</span>
+                  <span>·</span>
+                  <span>WORD: {vectorStats.byFormat?.WORD || 0}</span>
+                  <span>·</span>
+                  <span>IMAGE: {vectorStats.byFormat?.IMAGE || 0}</span>
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  Multimodal OCR + DOCX XML Parser
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[11px] text-slate-400">Coverage Scopes</div>
+                <div className="text-[11px] font-mono text-purple-300 mt-1">
+                  Day: {vectorStats.byScope?.single_day || 0} · Multi-Day:{" "}
+                  {vectorStats.byScope?.date_range || 0} · Month:{" "}
+                  {vectorStats.byScope?.multi_month || 0} · Yearly:{" "}
+                  {vectorStats.byScope?.yearly || 0}
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  Unlimited uploads per day/month/year
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Upload Form + Vector Store Explorer Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* LEFT 6 COLS: Multi-Format Upload & Scope Configuration */}
+            <div className="lg:col-span-6 bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                  <Upload className="w-4 h-4" />
+                  1. Ingest New PDF / Word / Image into Vector DB
+                </h3>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  Multi-File &amp; Multi-Source Enabled
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Document Title (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={uploadTitle}
+                    onChange={(e) => setUploadTitle(e.target.value)}
+                    placeholder="e.g., Achievers Oct 2026 Capsule"
+                    className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Resource / Publisher Name
+                  </label>
+                  <input
+                    type="text"
+                    value={uploadPublisher}
+                    onChange={(e) => setUploadPublisher(e.target.value)}
+                    placeholder="e.g., GKToday, Achievers, VisionIAS, PIB"
+                    className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
+                  />
+                </div>
+              </div>
+
+              {/* Scope Type Selector */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">
+                  Select Time Coverage Scope of Uploaded File(s)
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {(
+                    [
+                      { id: "single_day", label: "Single Day" },
+                      { id: "date_range", label: "Multiple Days" },
+                      { id: "multi_month", label: "Month(s)" },
+                      { id: "yearly", label: "Yearly / Annual" },
+                    ] as const
+                  ).map((sc) => (
+                    <button
+                      key={sc.id}
+                      type="button"
+                      onClick={() => setUploadScopeType(sc.id)}
+                      className={`py-1.5 px-2.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                        uploadScopeType === sc.id
+                          ? "bg-sky-500 text-slate-950 border-sky-400"
+                          : "bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      {sc.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Dynamic Scope Inputs based on `uploadScopeType` */}
+              {uploadScopeType === "single_day" && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 flex items-center justify-between gap-3">
+                  <span className="text-xs text-slate-300 font-medium">
+                    Select Date for Single-Day CA File:
+                  </span>
+                  <input
+                    type="date"
+                    max={todayIso}
+                    value={uploadSingleDate}
+                    onChange={(e) => setUploadSingleDate(e.target.value)}
+                    className="px-3 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono"
+                  />
+                </div>
+              )}
+
+              {uploadScopeType === "date_range" && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">
+                      From Date
+                    </label>
+                    <input
+                      type="date"
+                      max={todayIso}
+                      value={uploadStartDate}
+                      onChange={(e) => setUploadStartDate(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">
+                      To Date
+                    </label>
+                    <input
+                      type="date"
+                      max={todayIso}
+                      value={uploadEndDate}
+                      onChange={(e) => setUploadEndDate(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {uploadScopeType === "multi_month" && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-slate-300">
+                    <span>Click to select one or multiple months covered by this PDF/Doc/Image:</span>
+                    <span className="font-mono text-sky-300">
+                      {uploadSelectedMonths.length} selected
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 max-h-[90px] overflow-y-auto">
+                    {availableMonthKeys.map((mk) => {
+                      const active = uploadSelectedMonths.includes(mk);
+                      return (
+                        <button
+                          key={mk}
+                          type="button"
+                          onClick={() =>
+                            setUploadSelectedMonths((prev) =>
+                              prev.includes(mk)
+                                ? prev.length > 1
+                                  ? prev.filter((x) => x !== mk)
+                                  : prev
+                                : [...prev, mk]
+                            )
+                          }
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
+                            active
+                              ? "bg-emerald-500/25 border-emerald-500/60 text-emerald-200"
+                              : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          {formatReadableMonth(mk, "en")}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {uploadScopeType === "yearly" && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 flex items-center justify-between gap-3">
+                  <span className="text-xs text-slate-300 font-medium">
+                    Select Annual / Yearly Window:
+                  </span>
+                  <select
+                    value={uploadTargetYear}
+                    onChange={(e) => setUploadTargetYear(e.target.value)}
+                    className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-bold text-white cursor-pointer"
+                  >
+                    <option value="2025-2026">Nov 2025 – Nov 2026 (Clerkship 1-Year)</option>
+                    <option value="2026">Full Year 2026 Annual Compendium</option>
+                    <option value="2025">Full Year 2025 Annual Compendium</option>
+                  </select>
+                </div>
+              )}
+
+              {/* File Picker Input (PDF, Word .docx/.doc/.txt, Image .png/.jpg/.webp) */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-semibold text-slate-300">
+                  Choose File(s) — PDF (<code>.pdf</code>), Word (<code>.docx</code>, <code>.doc</code>, <code>.txt</code>), or Image (<code>.png</code>, <code>.jpg</code>, <code>.webp</code>)
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
+                  onChange={(e) => {
+                    const files = e.target.files ? Array.from(e.target.files) : [];
+                    setSelectedUploadFiles(files);
+                  }}
+                  className="block w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-sky-500 file:text-slate-950 hover:file:bg-sky-400 cursor-pointer bg-slate-900 border border-slate-700 rounded-lg p-1.5"
+                />
+                {selectedUploadFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {selectedUploadFiles.map((f, i) => (
+                      <span
+                        key={`${f.name}-${i}`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-[11px] text-sky-200 font-mono"
+                      >
+                        <FileText className="w-3 h-3" />
+                        {f.name} ({Math.max(1, Math.round(f.size / 1024))} KB)
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Optional Text / Key Highlights Paste Box */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  Optional Raw Text / Key Highlights to Include in Vector Chunks
+                </label>
+                <textarea
+                  rows={2}
+                  value={uploadTextHint}
+                  onChange={(e) => setUploadTextHint(e.target.value)}
+                  placeholder="Optional: Paste additional Current Affairs notes, bullet points, or leave blank to extract directly from the uploaded PDF/Word/Image file..."
+                  className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
+                />
+              </div>
+
+              {/* Target Exam Blueprint Tags (Phase 2 Readiness) */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="text-slate-400 font-semibold">Exam Store Tags:</span>
+                  {[
+                    "WBPSC Clerkship (100 Marks)",
+                    "WBCS Prelims (200 Marks)",
+                    "WBPSC Miscellaneous",
+                  ].map((tag) => {
+                    const active = uploadExamTags.includes(tag);
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() =>
+                          setUploadExamTags((prev) =>
+                            prev.includes(tag)
+                              ? prev.length > 1
+                                ? prev.filter((t) => t !== tag)
+                                : prev
+                              : [...prev, tag]
+                          )
+                        }
+                        className={`px-2 py-0.5 rounded border cursor-pointer ${
+                          active
+                            ? "bg-amber-500/20 border-amber-500/50 text-amber-200 font-semibold"
+                            : "bg-slate-900 border-slate-800 text-slate-400"
+                        }`}
+                      >
+                        {tag}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={vectorUploadBusy}
+                  onClick={() => void handleUploadDocumentsToVectorStore()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer shadow-sm"
+                >
+                  {vectorUploadBusy ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Chunking &amp; Embedding into Vector DB...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-3.5 h-3.5" />
+                      Upload &amp; Index into Vector DB
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* RIGHT 6 COLS: Uploaded Vector Documents List + Semantic Vector Search */}
+            <div className="lg:col-span-6 bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3.5">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+                    <Search className="w-4 h-4" />
+                    2. Vector DB Repository &amp; Semantic Cosine Search
+                  </h3>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    {vectorDocs.length} Multi-Source Docs Stored
+                  </span>
+                </div>
+
+                {/* Semantic Search Bar */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={vectorSearchQuery}
+                    onChange={(e) => setVectorSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void handleSearchVectorStore();
+                    }}
+                    placeholder="Semantic vector search (e.g., Kanyashree, ISRO Gaganyaan, 16th Finance Commission)..."
+                    className="flex-1 min-w-[180px] px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
+                  />
+                  <select
+                    value={vectorSearchScopeFilter}
+                    onChange={(e) => setVectorSearchScopeFilter(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 cursor-pointer"
+                  >
+                    <option value="all">All Scopes</option>
+                    <option value="single_day">Single Day</option>
+                    <option value="date_range">Multiple Days</option>
+                    <option value="multi_month">Month(s)</option>
+                    <option value="yearly">Yearly</option>
+                  </select>
+                  <button
+                    type="button"
+                    disabled={vectorSearchBusy}
+                    onClick={() => void handleSearchVectorStore()}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-sky-400 hover:bg-sky-300 text-slate-950 rounded-lg cursor-pointer"
+                  >
+                    <Search className="w-3.5 h-3.5" />
+                    {vectorSearchBusy ? "Searching..." : "Search Vectors"}
+                  </button>
+                  {vectorSearchResults !== null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVectorSearchResults(null);
+                        setVectorSearchQuery("");
+                      }}
+                      className="px-2.5 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                {/* Semantic Search Results (when active) */}
+                {vectorSearchResults !== null ? (
+                  <div className="space-y-2 max-h-[270px] overflow-y-auto pr-1">
+                    <div className="text-[11px] font-semibold text-sky-300">
+                      Top Vector Matches ({vectorSearchResults.length} Chunks):
+                    </div>
+                    {vectorSearchResults.map((ch) => (
+                      <div
+                        key={ch.id}
+                        className="bg-slate-900 border border-sky-500/30 rounded-lg p-3 space-y-1"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="font-bold text-emerald-300">
+                            {ch.category} · {ch.sourcePublisher}
+                          </span>
+                          <span className="font-mono text-sky-300">
+                            Similarity: {Math.round((ch.similarityScore || 0.88) * 100)}%
+                          </span>
+                        </div>
+                        <div className="text-xs font-bold text-white">
+                          {lang === "bn" && ch.headlineBn ? ch.headlineBn : ch.headlineEn}
+                        </div>
+                        <p className="text-[11px] text-slate-300 leading-relaxed">
+                          {lang === "bn" && ch.contentBn ? ch.contentBn : ch.contentEn}
+                        </p>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          Scope: {ch.scopeLabel}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  /* Stored Multi-Source Documents List */
+                  <div className="space-y-2 max-h-[270px] overflow-y-auto pr-1">
+                    {vectorDocs.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex items-start justify-between gap-3"
+                      >
+                        <div className="space-y-1 flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                            <span
+                              className={`px-2 py-0.5 rounded font-bold ${
+                                doc.fileFormat === "PDF"
+                                  ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                  : doc.fileFormat === "WORD"
+                                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
+                                    : "bg-purple-500/20 text-purple-300 border border-purple-500/40"
+                              }`}
+                            >
+                              {doc.fileFormat === "IMAGE" ? (
+                                <span className="inline-flex items-center gap-1">
+                                  <ImageIcon className="w-3 h-3" /> IMAGE
+                                </span>
+                              ) : (
+                                doc.fileFormat
+                              )}
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              {doc.scopeLabel}
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-slate-800 text-sky-300">
+                              {doc.chunksCount} Vector Chunks
+                            </span>
+                          </div>
+
+                          <div className="text-xs font-bold text-white truncate">
+                            {doc.title}
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            Source: <strong className="text-slate-200">{doc.sourcePublisher}</strong> · File:{" "}
+                            <span className="font-mono">{doc.fileName}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1 pt-0.5">
+                            {doc.examTags.map((t) => (
+                              <span
+                                key={t}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300"
+                              >
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteVectorDocument(doc.id, doc.title)}
+                          title="Delete this document and its vector chunks from Vector DB"
+                          className="p-1.5 rounded-lg bg-slate-950 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-slate-800 cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="text-[11px] text-slate-400 border-t border-slate-800 pt-2 flex items-center justify-between">
+                <span>
+                  Embedding Model: <code className="text-sky-300">gemini-embedding-2-preview</code>
+                </span>
+                <span>
+                  Total Indexed Chunks: <strong className="text-white">{vectorChunksPreview.length}</strong>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ====================================================================
@@ -1741,7 +2752,7 @@ export default function DailyCurrentAffairsTab({
                         </span>
                       );
                     }
-                    return (
+                     return (
                       <button
                         type="button"
                         disabled={agentBusy}
@@ -1758,6 +2769,25 @@ export default function DailyCurrentAffairsTab({
                       </button>
                     );
                   })()}
+
+                {/* Admin Single-Date Delete Button directly inside Modal Header */}
+                {isAdmin &&
+                  modalDateFilter !== "all" &&
+                  editionsByDate.has(modalDateFilter) && (
+                    <button
+                      type="button"
+                      disabled={deleteBusy}
+                      onClick={() => {
+                        const ed = editionsByDate.get(modalDateFilter);
+                        if (ed) void handleDeleteEdition(ed.id, ed.editionDate);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-xs font-bold text-rose-300 cursor-pointer"
+                      title={`Delete generated Current Affairs for ${modalDateFilter}`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete {modalDateFilter} CA
+                    </button>
+                  )}
               </div>
 
               <div className="flex items-center gap-2">
@@ -1942,29 +2972,63 @@ export default function DailyCurrentAffairsTab({
 
                   {/* Quick List of Stored Dates in This Month */}
                   <div className="space-y-1.5">
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                      Stored Dates in {formatReadableMonth(modalMonthKey, "en")}
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        Stored Dates in {formatReadableMonth(modalMonthKey, "en")}
+                      </div>
+                      {isAdmin && storedEditionsInModalMonth.length > 0 && (
+                        <button
+                          type="button"
+                          disabled={deleteBusy}
+                          onClick={() =>
+                            void handleBulkDeleteEditions({
+                              monthKey: modalMonthKey,
+                              deleteAllInMonth: true,
+                            })
+                          }
+                          className="text-[10px] font-bold text-rose-400 hover:text-rose-300 inline-flex items-center gap-1 cursor-pointer"
+                          title={`Delete all stored dates in ${formatReadableMonth(modalMonthKey, "en")}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Delete Month ({storedEditionsInModalMonth.length}d)
+                        </button>
+                      )}
                     </div>
                     <div className="space-y-1.5 max-h-[150px] overflow-y-auto pr-1">
                       {storedEditionsInModalMonth.map((ed) => (
-                        <button
+                        <div
                           key={ed.id}
-                          type="button"
-                          onClick={() => {
-                            setModalDateFilter(ed.editionDate);
-                            setFloatingCardIdx(0);
-                          }}
-                          className={`w-full text-left px-3 py-2 rounded-lg border text-xs transition-all flex items-center justify-between cursor-pointer ${
+                          className={`w-full px-3 py-2 rounded-lg border text-xs transition-all flex items-center justify-between gap-2 ${
                             modalDateFilter === ed.editionDate
                               ? "bg-amber-400/20 border-amber-400/60 text-amber-200 font-bold"
                               : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
                           }`}
                         >
-                          <span>📅 {formatReadableDate(ed.editionDate, lang)}</span>
-                          <span className="font-mono text-[11px] text-emerald-400">
-                            {ed.topics.length} Cards
-                          </span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalDateFilter(ed.editionDate);
+                              setFloatingCardIdx(0);
+                            }}
+                            className="flex-1 text-left flex items-center justify-between cursor-pointer"
+                          >
+                            <span>📅 {formatReadableDate(ed.editionDate, lang)}</span>
+                            <span className="font-mono text-[11px] text-emerald-400">
+                              {ed.topics.length} Cards
+                            </span>
+                          </button>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              disabled={deleteBusy}
+                              onClick={() => void handleDeleteEdition(ed.id, ed.editionDate)}
+                              title={`Delete ${ed.editionDate} Current Affairs`}
+                              className="p-1 rounded hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 cursor-pointer shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       ))}
                     </div>
                   </div>
