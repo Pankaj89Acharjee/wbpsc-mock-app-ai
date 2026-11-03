@@ -401,7 +401,7 @@ export default function DailyCurrentAffairsTab({
     "https://www.gktoday.in/current-affairs/"
   );
   const [agentFocusTopics, setAgentFocusTopics] = useState<string>(
-    "GKToday + PYQArena (The Hindu) + PIB + WB Gazette: Collect 12 high-yield PSCWB topics across West Bengal Special, Polity, Economy, Science & Tech, Sports, Awards, Defence, Environment & Indices"
+    "give me today's current affairs for wbpsc clerkship exam (Top 10-12 GKToday, AffairsCloud, PIB, The Hindu & West Bengal Special)"
   );
 
   // =========================================================================
@@ -749,11 +749,12 @@ export default function DailyCurrentAffairsTab({
       });
       setScheduler(res.scheduler);
       await loadArchive();
+      await loadVectorStore();
       openFloatingDeckForMonth(targetMonth, "all");
       onNotify?.(
         "success",
         res.backfilledDates.length > 0
-          ? `Batch Historical Backfill Agent populated/topped up ${res.backfilledDates.length} dates to 12 topics for ${formatReadableMonth(targetMonth, "en")} (${targetRange})!`
+          ? `Google Search Grounded Batch Agent populated & vector-indexed ${res.backfilledDates.length} dates (${res.backfilledDates.join(", ")}) for ${formatReadableMonth(targetMonth, "en")}!`
           : `All dates in ${formatReadableMonth(targetMonth, "en")} (${targetRange}) already have 12/12 topics stored — skipped regeneration!`
       );
     } catch (err) {
@@ -802,6 +803,7 @@ export default function DailyCurrentAffairsTab({
         },
       });
       await loadArchive();
+      await loadVectorStore();
       openFloatingDeckForMonth(res.editionDate.slice(0, 7), res.editionDate);
       if (res.alreadyComplete) {
         onNotify?.(
@@ -813,8 +815,8 @@ export default function DailyCurrentAffairsTab({
         onNotify?.(
           "success",
           existingCount > 0
-            ? `Generated remaining ${addedCount} unique topics without duplicates (now ${res.topicsCount}/12 topics) for ${formatReadableDate(res.editionDate, "en")}.`
-            : `Agent collected & classified ${res.topicsCount}/12 topics and ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
+            ? `Google Search Grounded + Vector DB Verified: Added ${addedCount} unique topics (now ${res.topicsCount} topics) for ${formatReadableDate(res.editionDate, "en")}.`
+            : `Google Search Grounded + Vector DB Indexed: Collected ${res.topicsCount} unique topics & ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
         );
       }
     } catch (err) {

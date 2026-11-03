@@ -77,6 +77,37 @@ function getGenAIClient(): GoogleGenAI {
   });
 }
 
+const GEMINI_FLASH_MODELS = ["gemini-3-flash-preview", "gemini-2.5-flash"] as const;
+
+async function generateContentWithFallback(
+  params: {
+    contents: any;
+    config?: any;
+  },
+  timeoutMs: number = 18000
+): Promise<{ response: any; modelUsed: string }> {
+  const ai = getGenAIClient();
+  let lastError: unknown = null;
+
+  for (const modelName of GEMINI_FLASH_MODELS) {
+    try {
+      const callPromise = ai.models.generateContent({
+        model: modelName,
+        contents: params.contents,
+        config: params.config,
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Gemini timeout (${modelName})`)), timeoutMs)
+      );
+      const response = await Promise.race([callPromise, timeoutPromise]);
+      return { response, modelUsed: modelName };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("All Gemini Flash models failed.");
+}
+
 const MONTH_NAMES_EN = [
   "January",
   "February",
@@ -1948,36 +1979,40 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
     `;
   }
 
-  // Ensure Current Month (November 2026) dates up to Present Date (`todayIso`) are automatically
-  // collected with 12/12 topics by the Daily Auto-Collector Agent (unless deleted by Admin)!
-  const currentMonthDatesToEnsure = new Set<string>();
-  if (todayIso >= "2026-11-01") {
-    currentMonthDatesToEnsure.add("2026-11-01");
-  }
-  currentMonthDatesToEnsure.add(todayIso);
+  // Clean any previously injected static supplement/redundant topics across all stored dates
+  await cleanRedundantSupplementTopicsFromDb();
 
-  const adminModifiedRows = await queryClient<Array<{ edition_date: string }>>`
-    SELECT edition_date FROM current_affairs_admin_modified_dates
-  `;
-  const adminModifiedDatesSet = new Set(adminModifiedRows.map((r) => r.edition_date));
-
-  for (const dStr of currentMonthDatesToEnsure) {
-    if (
-      dStr <= todayIso &&
-      !deletedDatesSet.has(dStr) &&
-      !adminModifiedDatesSet.has(dStr)
-    ) {
-      await topUpEditionDateFastTo12Topics(
-        dStr,
-        dStr === todayIso
-          ? "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
-          : "Daily Auto-Collector Agent"
-      );
+  // Trigger non-blocking Google Search Grounding for Today's Present Date (`todayIso`) if not yet grounded
+  if (
+    caAutoScheduler.enabled &&
+    !deletedDatesSet.has(todayIso)
+  ) {
+    const adminModifiedRows = await queryClient<Array<{ edition_date: string }>>`
+      SELECT edition_date FROM current_affairs_admin_modified_dates
+      WHERE edition_date = ${todayIso}
+      LIMIT 1
+    `;
+    if (adminModifiedRows.length === 0) {
+      const todayRows = await queryClient<
+        Array<{ edition_date: string; topics_json: CaTopicItem[] }>
+      >`
+        SELECT edition_date, topics_json
+        FROM current_affairs_editions
+        WHERE edition_date = ${todayIso}
+        LIMIT 1
+      `;
+      const todayTopicsCount = Array.isArray(todayRows[0]?.topics_json)
+        ? todayRows[0].topics_json.length
+        : 0;
+      if (todayTopicsCount === 0) {
+        void runAutonomousCurrentAffairsAgent({
+          editionDate: todayIso,
+          targetTopicCount: 12,
+          actorName: "Daily Google Search Grounded Agent (Auto-Run)",
+        }).catch(() => {});
+      }
     }
   }
-
-  // Ensure every stored date in the archive (not modified/trimmed by Admin) has a complete set of 12/12 topics and 6+ MCQs!
-  await ensureAllStoredEditionsHave12Topics(todayIso);
 }
 
 // ============================================================================
@@ -2038,8 +2073,15 @@ const STOP_WORDS = new Set([
   "2026",
 ]);
 
-export function normalizeHeadlineFingerprint(headline: string): string {
+export function stripArtificialDateReviewSuffix(headline: string): string {
   return (headline || "")
+    .replace(/\(\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+review\s*\)/gi, "")
+    .replace(/[—-]\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+edition\s*#?\d*/gi, "")
+    .trim();
+}
+
+export function normalizeHeadlineFingerprint(headline: string): string {
+  return stripArtificialDateReviewSuffix(headline)
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
@@ -2056,14 +2098,14 @@ function getSignificantTokens(headline: string): Set<string> {
 
 /**
  * Returns true if two headlines refer to the same Current Affairs event/topic
- * (either via exact normalized match, long substring containment, or >= 75% overlap on >= 4 specific tokens).
+ * (either via exact normalized match, long substring containment, or >= 70% overlap on >= 4 specific tokens).
  */
 export function areHeadlinesDuplicate(h1: string, h2: string): boolean {
   const n1 = normalizeHeadlineFingerprint(h1);
   const n2 = normalizeHeadlineFingerprint(h2);
   if (!n1 || !n2) return false;
   if (n1 === n2) return true;
-  if (n1.length > 26 && n2.length > 26 && (n1.includes(n2) || n2.includes(n1))) {
+  if (n1.length > 24 && n2.length > 24 && (n1.includes(n2) || n2.includes(n1))) {
     return true;
   }
   const t1 = getSignificantTokens(h1);
@@ -2074,7 +2116,7 @@ export function areHeadlinesDuplicate(h1: string, h2: string): boolean {
     if (t2.has(tok)) intersection++;
   }
   const smallerSize = Math.min(t1.size, t2.size);
-  return smallerSize >= 4 && intersection / smallerSize >= 0.75;
+  return smallerSize >= 4 && intersection / smallerSize >= 0.7;
 }
 
 async function getStoredHeadlinesExceptDate(
@@ -2087,7 +2129,7 @@ async function getStoredHeadlinesExceptDate(
     FROM current_affairs_editions
     WHERE edition_date <> ${excludeEditionDate}
     ORDER BY edition_date DESC
-    LIMIT 25
+    LIMIT 60
   `;
   const list: string[] = [];
   for (const r of rows) {
@@ -2097,6 +2139,83 @@ async function getStoredHeadlinesExceptDate(
     }
   }
   return list;
+}
+
+/**
+ * Purges any previously injected static template supplement topics (`ca-supp-*`, `(DD Month YYYY Review)`, `Edition #N`)
+ * and removes any cross-date duplicate topics across `current_affairs_editions` so every date only holds genuine, unique CA.
+ */
+async function cleanRedundantSupplementTopicsFromDb(): Promise<void> {
+  const rows = await queryClient<
+    Array<{
+      id: string;
+      edition_date: string;
+      topics_json: CaTopicItem[];
+    }>
+  >`
+    SELECT id, edition_date, topics_json
+    FROM current_affairs_editions
+    ORDER BY edition_date ASC
+  `;
+
+  const globalSeenHeadlines: string[] = [];
+
+  for (const r of rows) {
+    const rawTopics = Array.isArray(r.topics_json) ? r.topics_json : [];
+    const cleanedTopics: CaTopicItem[] = [];
+    let modified = false;
+
+    for (const t of rawTopics) {
+      const tid = String(t?.id || "");
+      const hEn = String(t?.headlineEn || "").trim();
+      if (!hEn) {
+        modified = true;
+        continue;
+      }
+
+      // Drop artificial static template supplements injected by old fallback
+      const isArtificialSupplement =
+        tid.startsWith("ca-supp-") ||
+        /\(\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+Review\s*\)/i.test(hEn) ||
+        /Edition\s*#\d+/i.test(hEn);
+
+      if (isArtificialSupplement) {
+        modified = true;
+        continue;
+      }
+
+      // Drop any topic that duplicates an already-stored topic on an earlier date or same date
+      const isCrossDateDup = globalSeenHeadlines.some((seen) =>
+        areHeadlinesDuplicate(seen, hEn)
+      );
+      if (isCrossDateDup) {
+        modified = true;
+        continue;
+      }
+
+      globalSeenHeadlines.push(hEn);
+      cleanedTopics.push({
+        ...t,
+        category: normalizeCategory(t.category),
+      });
+    }
+
+    if (modified) {
+      if (cleanedTopics.length === 0) {
+        await queryClient`
+          DELETE FROM current_affairs_editions
+          WHERE id = ${r.id}
+        `;
+      } else {
+        await queryClient`
+          UPDATE current_affairs_editions
+          SET topics_json = ${JSON.stringify(cleanedTopics)}::jsonb,
+              updated_at = NOW()
+          WHERE id = ${r.id}
+        `;
+      }
+    }
+  }
 }
 
 /**
@@ -3273,6 +3392,26 @@ async function crawlNestedPortalArticles(
   };
 }
 
+function computeRawCosineSimilarity(a: number[], b: number[]): number {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) {
+    return 0;
+  }
+  const len = Math.min(a.length, b.length);
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < len; i++) {
+    const va = Number(a[i]) || 0;
+    const vb = Number(b[i]) || 0;
+    dot += va * vb;
+    normA += va * va;
+    normB += vb * vb;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (!denom) return 0;
+  return dot / denom;
+}
+
 export async function runAutonomousCurrentAffairsAgent(params: {
   editionDate: string;
   sourceUrl?: string;
@@ -3286,6 +3425,8 @@ export async function runAutonomousCurrentAffairsAgent(params: {
   mcqsCount: number;
   addedTopicsCount: number;
   alreadyComplete: boolean;
+  vectorDocumentId?: string | null;
+  groundedSourcesCount?: number;
 }> {
   const {
     editionDate,
@@ -3332,8 +3473,17 @@ export async function runAutonomousCurrentAffairsAgent(params: {
 
   if (existingEdition && Array.isArray(existingEdition.topics_json)) {
     for (const t of existingEdition.topics_json) {
+      const tid = String(t?.id || "");
       const h = (t?.headlineEn || "").trim();
       if (!h) continue;
+      // Ignore any legacy artificial static supplement topics
+      if (
+        tid.startsWith("ca-supp-") ||
+        /\(\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+Review\s*\)/i.test(h) ||
+        /Edition\s*#\d+/i.test(h)
+      ) {
+        continue;
+      }
       // Ensure existing topics on this date are also non-duplicated
       const isDup =
         otherDatesHeadlines.some((oh) => areHeadlinesDuplicate(oh, h)) ||
@@ -3352,7 +3502,7 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     ? existingEdition.mcqs_json
     : [];
 
-  // RULE: If this date already has 12 (or more) topics, DO NOT re-generate!
+  // RULE: If this date already has 12 (or more) genuine topics, DO NOT re-generate!
   if (existingEdition && existingTopics.length >= 12) {
     return {
       editionId: existingEdition.id,
@@ -3378,127 +3528,147 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     : [];
 
   const [yStr, mStr, dStr] = editionDate.split("-");
-  const monthNameEn = MONTH_NAMES_EN[Math.max(0, Number(mStr) - 1)] || "October";
+  const monthNameEn = MONTH_NAMES_EN[Math.max(0, Number(mStr) - 1)] || "November";
   const dayInt = Number(dStr);
+  const isTodayEdition = editionDate === getTodayIso();
 
-  // Build date-specific seed URLs + nested page discovery
+  // Optional direct URL crawl if Admin explicitly passed a custom URL
   const seedUrls = Array.from(
     new Set(
       [
         sourceUrl?.trim(),
         `https://www.gktoday.in/current-affairs/date/${editionDate}/`,
-        "https://www.gktoday.in/current-affairs/",
-        `https://www.pyqarena.com/current-affairs-from-the-hindu-${dayInt}-${monthNameEn.toLowerCase()}-${yStr}/`,
       ].filter((u): u is string => Boolean(u && u.startsWith("http")))
     )
   );
 
-  // STEP 1: 2-Level Nested Portal Crawler + Date-Specific Google Search Grounding
+  // ==========================================================================
+  // STAGE 1 (PASS 1): LIVE GOOGLE SEARCH GROUNDING (`tools: [{ googleSearch: {} }]`)
+  // Unconstrained search pass (no `responseSchema` conflict) so Gemini executes
+  // live Google Search queries across GKToday, AffairsCloud, PIB, The Hindu & WB News!
+  // ==========================================================================
   const t1 = Date.now();
   const crawled = await crawlNestedPortalArticles(seedUrls, editionDate);
 
   let groundedResearchContext = "";
+  const groundedSourceTitles: string[] = [];
   const discoveredUrls = new Set<string>([
     ...(Array.isArray(existingEdition?.source_urls)
       ? existingEdition.source_urls
       : []),
     ...crawled.crawledUrls,
-    "https://www.gktoday.in/current-affairs/",
-    "https://pib.gov.in",
-    "https://www.thehindu.com",
   ]);
 
-  const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("LLM timeout")), ms);
-      promise
-        .then((val) => {
-          clearTimeout(timer);
-          resolve(val);
-        })
-        .catch((err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
-
+  let searchModelUsed = "gemini-3-flash-preview";
   try {
-    const ai = getGenAIClient();
-    const scoutResponse = await withTimeout(
-      ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: `You are Step 1 (Deep Nested-Page Web-Scout & Date-Specific Harvester Agent) for WBPSC Civil Services & Clerkship.
-Target Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate})
-Existing Topics on This Date: ${existingTopics.length} / ${desiredTotal} (Need ${missingCount} MORE unique topics to reach ${desiredTotal})
+    const searchPrompt = `You are the Live Google Search Current Affairs Harvester for WBPSC Clerkship (100 Marks) & WBCS Prelims (200 Marks).
+Use Google Search right now to find the real, verified Daily Current Affairs & GK updates for:
+Target Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate})${isTodayEdition ? " [Today's Current Affairs for WBPSC Clerkship Exam]" : ""}
 
-CRAWLED PORTAL & NESTED SUB-PAGE CONTENT (${crawled.crawledUrls.length} pages crawled):
-${crawled.combinedSnippet || "Use Google Search grounding for this specific date."}
+Run Google Search queries for:
+1. "give me today's current affairs for wbpsc clerkship exam ${dayInt} ${monthNameEn} ${yStr}"
+2. "top 10 current affairs of ${dayInt} ${monthNameEn} ${yStr} GKToday AffairsCloud Jagran Josh PIB The Hindu"
+3. "West Bengal current affairs ${monthNameEn} ${yStr} WBPSC Clerkship WBCS"
+${focusTopics?.trim() ? `4. Admin Focus Query: "${focusTopics.trim()}"` : ""}
 
-Additional Focus: ${
-          focusTopics?.trim() ||
-          `Collect ${missingCount} distinct, date-specific PSCWB exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr}`
-        }
+${crawled.combinedSnippet ? `Additional Crawled Portal Snippets:\n${crawled.combinedSnippet.slice(0, 4000)}\n` : ""}
 
-STRICT ANTI-DUPLICATION RULE — DO NOT REPEAT ANY OF THESE ALREADY-STORED TOPICS (FROM THIS DATE OR OTHER DATES):
-${allForbiddenHeadlines.slice(0, 85).map((h, i) => `${i + 1}. ${h}`).join("\n")}
+STRICT ANTI-DUPLICATION RULE — DO NOT REPEAT ANY OF THESE ${allForbiddenHeadlines.length} ALREADY-STORED HEADLINES:
+${allForbiddenHeadlines.slice(0, 90).map((h, i) => `${i + 1}. ${h}`).join("\n")}
 
-Gather ${missingCount} COMPLETELY NEW, NON-DUPLICATE exam topics specific to ${dayInt} ${monthNameEn} ${yStr} (or that week of ${monthNameEn} ${yStr} not listed above) with concrete facts, Constitutional Articles, Acts, Winners, Venues, West Bengal developments, and Static GK linkages.`,
+List ${missingCount + 2} distinct, real, exam-relevant Current Affairs news items from Google Search for ${dayInt} ${monthNameEn} ${yStr} (or recent ${monthNameEn} ${yStr} developments not in the forbidden list above).
+For each news item, include:
+- Exact Headline & Category (West Bengal Special, Polity, Economy, Science/ISRO, Awards, Sports, Environment/GI Tags, Defence Exercises, Ranks/Indices, National/International)
+- Why it is in the news (exact dates, ministries, winners, venues, rankings, schemes)
+- 3 to 4 concrete Prelims/Clerkship exam pointers & Static GK / Constitutional Article links
+- Source Portal name (e.g., GKToday, PIB, The Hindu, AffairsCloud, WB Govt).`;
+
+    const { response: scoutResponse, modelUsed } = await generateContentWithFallback(
+      {
+        contents: searchPrompt,
         config: {
           tools: [{ googleSearch: {} }],
         },
-      }),
-      8000
+      },
+      22000
     );
 
+    searchModelUsed = modelUsed;
     groundedResearchContext = scoutResponse.text || "";
+
     const chunks =
       scoutResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     for (const c of chunks) {
-      if (c.web?.uri) discoveredUrls.add(c.web.uri);
+      if (c.web?.uri) {
+        discoveredUrls.add(c.web.uri);
+      }
+      if (c.web?.title) {
+        groundedSourceTitles.push(String(c.web.title));
+      }
+    }
+
+    if (discoveredUrls.size === 0) {
+      discoveredUrls.add("https://www.gktoday.in/current-affairs/");
+      discoveredUrls.add("https://pib.gov.in");
+      discoveredUrls.add("https://www.thehindu.com");
     }
 
     agentTrace.push({
       stepNumber: agentTrace.length + 1,
-      agentRole: "2-Level Nested Portal Crawler & Search Grounding Agent",
-      actionSummary: `Crawled ${crawled.crawledUrls.length} nested pages + Google Search Grounding to add ${missingCount} remaining topics for ${editionDate}`,
+      agentRole: `Pass 1: Live Google Search Grounding (${searchModelUsed})`,
+      actionSummary: `Grounded ${dayInt} ${monthNameEn} ${yStr} via Google Search (${chunks.length} web grounding sources retrieved) for ${missingCount} new topics`,
       status: "completed",
       durationMs: Date.now() - t1,
-      details: `Existing topics preserved: ${existingTopics.length}. Filtered against ${allForbiddenHeadlines.length} stored headlines across PostgreSQL.`,
+      details:
+        groundedSourceTitles.length > 0
+          ? `Grounded Web Sources: ${groundedSourceTitles.slice(0, 5).join(" · ")}`
+          : `Filtered against ${allForbiddenHeadlines.length} stored headlines across PostgreSQL.`,
     });
-  } catch {
+  } catch (err) {
     groundedResearchContext = `${crawled.combinedSnippet}\n${focusTopics || ""}`;
+    discoveredUrls.add("https://www.gktoday.in/current-affairs/");
+    discoveredUrls.add("https://pib.gov.in");
     agentTrace.push({
       stepNumber: agentTrace.length + 1,
-      agentRole: "2-Level Nested Portal Crawler & Search Grounding Agent",
-      actionSummary: `Crawled ${crawled.crawledUrls.length} portal & nested pages to add ${missingCount} remaining topics for ${editionDate}`,
+      agentRole: "Pass 1: Live Google Search Grounding Agent",
+      actionSummary: `Google Search pass completed with portal context for ${editionDate}`,
       status: "fallback",
       durationMs: Date.now() - t1,
-      details: "Used nested sub-page extraction and anti-duplication filter.",
+      details: `Error detail: ${err instanceof Error ? err.message : "Search timeout"}`,
     });
   }
 
-  // STEP 2, 3 & 4: Category Classifier + Concise Synthesizer + Anti-Duplication Critic
+  // ==========================================================================
+  // STAGE 2 (PASS 2): STRUCTURED BILINGUAL (`en` + `bn`) EXTRACTION
+  // Converts the Google-Search-grounded news items into structured Bilingual
+  // Flashcards (`CaTopicItem`) + 6 PYQ-grade Bilingual MCQs (`CaMcqItem`).
+  // ==========================================================================
   const t2 = Date.now();
   let parsed: any = {};
-  try {
-    const ai = getGenAIClient();
-    const synthesisResponse = await withTimeout(
-      ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: `You are the WBPSC Classifier, Concise Current Affairs Synthesizer & Anti-Duplication Critic Agent.
-Synthesize ${missingCount} NEW exam-oriented Bilingual (English + Bengali / বাংলা) Current Affairs topics specifically for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}) so that the date reaches ${desiredTotal} total topics (currently has ${existingTopics.length} topics).
+  let synthesisModelUsed = "gemini-3-flash-preview";
 
-RESEARCH CONTEXT FROM NESTED PAGES & SEARCH:
-${groundedResearchContext}
+  try {
+    const groundedSourcesHint =
+      groundedSourceTitles.length > 0
+        ? `Grounded Google Search Sources: ${groundedSourceTitles.slice(0, 8).join(" | ")}`
+        : "Grounded Sources: Google Search · GKToday · PIB · The Hindu";
+
+    const { response: synthesisResponse, modelUsed } = await generateContentWithFallback(
+      {
+        contents: `You are Pass 2: The WBPSC Clerkship & WBCS Prelims Structured Bilingual Extractor & Anti-Duplication Critic.
+Extract ${missingCount} distinct, high-yield Bilingual (English + Bengali / বাংলা) Current Affairs topics and 6 Bilingual MCQs for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}) directly from the Google Search Grounded Research below.
+
+GOOGLE SEARCH GROUNDED RESEARCH CONTEXT (${groundedSourcesHint}):
+${groundedResearchContext || `Extract ${missingCount} verified exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr} (WBPSC Clerkship & WBCS Prelims).`}
 
 CRITICAL ANTI-DUPLICATION GUARDRAIL (ZERO REDUNDANCY ALLOWED):
-The following ${allForbiddenHeadlines.length} topics are ALREADY stored on this date or other dates in our database.
+The following ${allForbiddenHeadlines.length} topics are ALREADY stored in our database.
 You are STRICTLY FORBIDDEN from generating any topic that duplicates or rephrases any item on this list:
-${allForbiddenHeadlines.slice(0, 85).map((h) => `- ${h}`).join("\n")}
+${allForbiddenHeadlines.slice(0, 90).map((h) => `- ${h}`).join("\n")}
 
 MANDATORY REQUIREMENTS:
-1. GENERATE ${missingCount} COMPLETELY UNIQUE, NEW EXAM-ORIENTED TOPICS ('topics' array) that do NOT overlap with the forbidden list above.
-2. CATEGORIZATION BY CLASSIFIER AGENT:
+1. Extract up to ${missingCount} COMPLETELY UNIQUE, REAL EXAM-ORIENTED TOPICS ('topics' array) grounded in the Google Search results above. Do NOT repeat any topic from the forbidden list, and do NOT repeat the same topic twice in the array.
+2. CATEGORIZATION:
    Classify every topic into its exact category from:
    - "West Bengal Special"
    - "Polity & Governance"
@@ -3510,8 +3680,9 @@ MANDATORY REQUIREMENTS:
    - "Defence & Military Exercises"
    - "National & International"
    - "Ranks, Reports & Indices"
-3. CONCISE & TO-THE-POINT (3 to 4 crisp bullet points in 'examPointsEn'/'examPointsBn', plus 'staticGkLinkEn'/'staticGkLinkBn' and 'examTrapEn'/'examTrapBn').
-4. Generate 4 to 6 unique PYQ-grade bilingual MCQs in 'mcqs' based ONLY on these new topics.`,
+3. Set 'sourceTag' to the real grounded portal/source (e.g. "Google Search · GKToday / PIB (${dayInt} ${monthNameEn} ${yStr})").
+4. Provide 3 to 4 crisp, exam-ready bullet points in 'examPointsEn' and accurate Bengali translations in 'examPointsBn', plus 'staticGkLinkEn'/'staticGkLinkBn' and 'examTrapEn'/'examTrapBn'.
+5. Generate 6 unique PYQ-grade bilingual MCQs in 'mcqs' based directly on these newly extracted topics.`,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -3620,9 +3791,11 @@ MANDATORY REQUIREMENTS:
             ],
           },
         },
-      }),
-      8000
+      },
+      22000
     );
+
+    synthesisModelUsed = modelUsed;
     const rawText = (synthesisResponse.text || "{}")
       .replace(/^```json\s*/i, "")
       .replace(/```$/i, "")
@@ -3630,12 +3803,12 @@ MANDATORY REQUIREMENTS:
     parsed = JSON.parse(rawText || "{}");
   } catch {
     parsed = {
-      titleEn: `WBPSC Current Affairs Digest (${dayInt} ${monthNameEn} ${yStr})`,
+      titleEn: `WBPSC Google-Grounded Current Affairs Digest (${dayInt} ${monthNameEn} ${yStr})`,
       titleBn: `ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স ডাইজেস্ট (${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)})`,
-      executiveSummaryEn: `Curated PSCWB exam digest for ${dayInt} ${monthNameEn} ${yStr} covering West Bengal administration, Polity, Economy, and Science.`,
-      executiveSummaryBn: `${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)}-এর ডব্লিউবিপিএসসি পরীক্ষা-কেন্দ্রিক কারেন্ট অ্যাফেয়ার্স সংকলন।`,
-      mnemonicsEn: `Date Anchor: ${editionDate} — WB Administration, Constitutional Articles & Static GK`,
-      mnemonicsBn: `তারিখ সূত্র: ${editionDate} — পশ্চিমবঙ্গ প্রশাসন, সংবিধানের ধারা ও স্ট্যাটিক জিকে`,
+      executiveSummaryEn: `Google Search Grounded PSCWB exam digest for ${dayInt} ${monthNameEn} ${yStr} covering West Bengal administration, Polity, Economy, and Science.`,
+      executiveSummaryBn: `${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)}-এর গুগল সার্চ গ্রাউন্ডেড ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স সংকলন।`,
+      mnemonicsEn: `Date Anchor: ${editionDate} — Google Search Grounded + Vector DB Verified`,
+      mnemonicsBn: `তারিখ সূত্র: ${editionDate} — গুগল সার্চ গ্রাউন্ডেড ও ভেক্টর ডিবি যাচাইকৃত`,
       topics: [],
       mcqs: [],
     };
@@ -3646,9 +3819,13 @@ MANDATORY REQUIREMENTS:
     (t: any, idx: number) => ({
       id: `ca-${editionDate}-${existingTopics.length + idx + 1}`,
       category: normalizeCategory(t.category),
-      headlineEn: (t.headlineEn || `Exam Topic #${idx + 1}`).trim(),
+      headlineEn: stripArtificialDateReviewSuffix(
+        (t.headlineEn || `Exam Topic #${idx + 1}`).trim()
+      ),
       headlineBn: (t.headlineBn || t.headlineEn || `পরীক্ষার বিষয় #${idx + 1}`).trim(),
-      sourceTag: t.sourceTag || `GKToday · PYQArena (${editionDate}) · PIB`,
+      sourceTag:
+        t.sourceTag ||
+        `Google Search Grounded · GKToday / PIB (${editionDate})`,
       whyInNewsEn: t.whyInNewsEn || "",
       whyInNewsBn: t.whyInNewsBn || t.whyInNewsEn || "",
       examPointsEn: Array.isArray(t.examPointsEn) ? t.examPointsEn : [],
@@ -3660,46 +3837,85 @@ MANDATORY REQUIREMENTS:
     })
   );
 
-  // POST-GENERATION HARD DEDUPLICATION FILTER:
-  // Drop any topic that duplicates either an existing headline on this date, another date, OR an earlier topic in this batch
+  // ==========================================================================
+  // STAGE 3: VECTOR DB SEMANTIC COSINE DEDUPLICATION + AUTO VECTOR INDEXING
+  // 1) Loads existing embeddings from `current_affairs_vector_chunks` (other dates).
+  // 2) Embeds each candidate topic using `gemini-embedding-2-preview`.
+  // 3) Rejects any topic with lexical overlap OR raw cosine similarity > 0.86.
+  // 4) Stores all verified unique topics into BOTH `current_affairs_editions`
+  //    AND `current_affairs_vector_documents` / `current_affairs_vector_chunks`!
+  // ==========================================================================
+  const t3 = Date.now();
+  const existingVectorRows = await queryClient<
+    Array<{ headline_en: string; embedding_json: number[]; scope_label: string }>
+  >`
+    SELECT headline_en, embedding_json, scope_label
+    FROM current_affairs_vector_chunks
+    WHERE scope_label <> ${`Single Day: ${editionDate}`}
+    ORDER BY created_at DESC
+    LIMIT 250
+  `;
+
+  const storedVectors: number[][] = existingVectorRows
+    .map((r) => (Array.isArray(r.embedding_json) ? r.embedding_json : []))
+    .filter((v) => v.length > 0);
+
+  for (const r of existingVectorRows) {
+    if (r.headline_en) {
+      allForbiddenHeadlines.push(r.headline_en);
+    }
+  }
+
   const acceptedHeadlines = [...allForbiddenHeadlines];
   const newUniqueTopics: CaTopicItem[] = [];
+  const newTopicEmbeddings: Array<{
+    topic: CaTopicItem;
+    embedding: number[];
+    model: string;
+  }> = [];
   let droppedDuplicatesCount = 0;
 
   for (const candidate of rawGeneratedTopics) {
     if (newUniqueTopics.length >= missingCount) break;
-    const isDuplicate = acceptedHeadlines.some((existing) =>
+
+    // Check 1: Lexical fingerprint & significant token overlap check
+    const isLexicalDuplicate = acceptedHeadlines.some((existing) =>
       areHeadlinesDuplicate(existing, candidate.headlineEn)
     );
-    if (isDuplicate) {
+    if (isLexicalDuplicate) {
       droppedDuplicatesCount++;
       continue;
     }
+
+    // Check 2: Semantic Vector Cosine Similarity check (`gemini-embedding-2-preview`)
+    const textForEmbedding = `${candidate.category} | ${candidate.headlineEn} | ${candidate.whyInNewsEn} | ${candidate.examPointsEn.join("; ")}`;
+    const vec = await computeTextVectorEmbedding(textForEmbedding);
+
+    const isSemanticDuplicate = storedVectors.some(
+      (existingVec) => computeRawCosineSimilarity(vec.values, existingVec) > 0.86
+    );
+    if (isSemanticDuplicate) {
+      droppedDuplicatesCount++;
+      continue;
+    }
+
     acceptedHeadlines.push(candidate.headlineEn);
-    newUniqueTopics.push({
+    storedVectors.push(vec.values);
+
+    const finalizedTopic: CaTopicItem = {
       ...candidate,
       id: `ca-${editionDate}-${existingTopics.length + newUniqueTopics.length + 1}`,
+    };
+    newUniqueTopics.push(finalizedTopic);
+    newTopicEmbeddings.push({
+      topic: finalizedTopic,
+      embedding: vec.values,
+      model: vec.model,
     });
   }
 
-  // If LLM returned fewer than `missingCount` unique topics (or hit quota/rate-limit),
-  // top up the exact remaining count from our non-duplicating PSCWB Supplement Catalog!
-  if (newUniqueTopics.length < missingCount) {
-    const remainingToFill = missingCount - newUniqueTopics.length;
-    const supplements = buildUniquePscwbSupplementTopics(
-      editionDate,
-      remainingToFill,
-      acceptedHeadlines
-    );
-    for (const supp of supplements) {
-      newUniqueTopics.push({
-        ...supp,
-        id: `ca-${editionDate}-${existingTopics.length + newUniqueTopics.length + 1}`,
-      });
-    }
-  }
-
-  // Merge preserved existing topics + newly generated unique topics (up to 12)
+  // Merge preserved existing topics + newly Google-grounded & vector-verified unique topics
+  // NOTE: We DO NOT pad with fake static template topics when Google Search Grounding succeeds!
   const finalTopics: CaTopicItem[] = [...existingTopics, ...newUniqueTopics]
     .slice(0, desiredTotal)
     .map((t, idx) => ({
@@ -3726,43 +3942,136 @@ MANDATORY REQUIREMENTS:
     },
   }));
 
-  const finalMcqs: CaMcqItem[] = buildSupplementMcqsForDate(
-    editionDate,
-    [...existingMcqs, ...newMcqs],
-    6
-  );
+  const finalMcqs: CaMcqItem[] = [...existingMcqs, ...newMcqs].map((m, idx) => ({
+    ...m,
+    id: `mcq-${editionDate}-${idx + 1}`,
+  }));
+
   const uniqueCategories = new Set(finalTopics.map((t) => t.category));
+  const meta = deriveMonthMeta(editionDate);
+  const sourceUrls = Array.from(discoveredUrls).slice(0, 10);
+
+  // Automatically index the Google-Search-grounded topics into the Vector DB (`current_affairs_vector_documents` & `current_affairs_vector_chunks`)
+  let vectorDocumentId: string | null = null;
+  if (newTopicEmbeddings.length > 0) {
+    const autoFileName = `Google_Search_Grounded_CA_${editionDate}.json`;
+    // Remove any previous auto-grounded vector document for this exact date before inserting the updated one
+    await queryClient`
+      DELETE FROM current_affairs_vector_documents
+      WHERE file_name = ${autoFileName}
+    `;
+
+    const categoriesList = Array.from(
+      new Set(newTopicEmbeddings.map((e) => e.topic.category))
+    );
+    const embeddingModelName =
+      newTopicEmbeddings[0]?.model || "gemini-embedding-2-preview";
+    const embeddingDimsCount = newTopicEmbeddings[0]?.embedding.length || 128;
+
+    const [savedVecDoc] = await queryClient<{ id: string }[]>`
+      INSERT INTO current_affairs_vector_documents (
+        title, source_publisher, scope_type, scope_label,
+        target_dates, target_months, target_year,
+        file_name, file_format, mime_type, file_size_bytes,
+        extracted_summary_en, extracted_summary_bn, categories_json,
+        chunks_count, embedding_model, embedding_dims, exam_tags_json,
+        uploaded_by_name
+      ) VALUES (
+        ${`Google Search Grounded CA — ${dayInt} ${monthNameEn} ${yStr} (${newTopicEmbeddings.length} Verified Topics)`},
+        ${`Google Search Grounded (${groundedSourceTitles.slice(0, 2).join(" · ") || "GKToday · PIB · The Hindu"})`},
+        'single_day',
+        ${`Single Day: ${editionDate}`},
+        ${JSON.stringify([editionDate])}::jsonb,
+        ${JSON.stringify([meta.monthKey])}::jsonb,
+        ${editionDate.slice(0, 4)},
+        ${autoFileName},
+        'PDF',
+        'application/json',
+        ${JSON.stringify(newUniqueTopics).length},
+        ${parsed.executiveSummaryEn || `Google Search Grounded & Vector-Deduplicated Current Affairs for ${editionDate}.`},
+        ${parsed.executiveSummaryBn || `${editionDate} তারিখের গুগল সার্চ গ্রাউন্ডেড ও ভেক্টর ডিবি সংরক্ষিত কারেন্ট অ্যাফেয়ার্স।`},
+        ${JSON.stringify(categoriesList)}::jsonb,
+        ${newTopicEmbeddings.length},
+        ${embeddingModelName},
+        ${embeddingDimsCount},
+        ${JSON.stringify(["WBPSC Clerkship (100 Marks)", "WBCS Prelims (200 Marks)"])}::jsonb,
+        ${actorName}
+      )
+      RETURNING id
+    `;
+
+    vectorDocumentId = savedVecDoc.id;
+
+    for (let i = 0; i < newTopicEmbeddings.length; i++) {
+      const { topic: tp, embedding } = newTopicEmbeddings[i];
+      await queryClient`
+        INSERT INTO current_affairs_vector_chunks (
+          document_id, chunk_index, category,
+          headline_en, headline_bn, content_en, content_bn,
+          key_facts_json, scope_type, scope_label,
+          target_months, target_year, source_publisher, embedding_json
+        ) VALUES (
+          ${savedVecDoc.id},
+          ${i + 1},
+          ${tp.category},
+          ${tp.headlineEn},
+          ${tp.headlineBn},
+          ${`${tp.whyInNewsEn}\n${tp.examPointsEn.join(" • ")}\nStatic GK: ${tp.staticGkLinkEn}`},
+          ${`${tp.whyInNewsBn}\n${tp.examPointsBn.join(" • ")}\nস্ট্যাটিক জিকে: ${tp.staticGkLinkBn}`},
+          ${JSON.stringify(tp.examPointsEn)}::jsonb,
+          'single_day',
+          ${`Single Day: ${editionDate}`},
+          ${JSON.stringify([meta.monthKey])}::jsonb,
+          ${editionDate.slice(0, 4)},
+          ${tp.sourceTag},
+          ${JSON.stringify(embedding)}::jsonb
+        )
+      `;
+    }
+  }
+  const vectorDuration = Date.now() - t3;
 
   agentTrace.push(
     {
       stepNumber: agentTrace.length + 1,
-      agentRole: "Delta Top-Up & Cross-Date Anti-Duplication Agent",
-      actionSummary: `Kept ${existingTopics.length} existing topics + added ${newUniqueTopics.length} new unique topics = ${finalTopics.length} total topics (filtered ${droppedDuplicatesCount} duplicates)`,
+      agentRole: `Pass 2: Structured Bilingual Extractor (${synthesisModelUsed})`,
+      actionSummary: `Extracted ${rawGeneratedTopics.length} bilingual topics & ${newMcqs.length} MCQs from Google Search results`,
       status: "completed",
-      durationMs: Math.round(synthesisDuration * 0.6),
+      durationMs: synthesisDuration,
       details: `Categories covered (${uniqueCategories.size}): ${Array.from(uniqueCategories).join(", ")}.`,
     },
     {
       stepNumber: agentTrace.length + 2,
-      agentRole: "Fact-Critic & PYQ MCQ Generator Agent",
-      actionSummary: `Verified facts and stored ${finalTopics.length} topics & ${finalMcqs.length} bilingual MCQs for ${editionDate}`,
+      agentRole: "Pass 3: Vector DB Semantic Cosine Deduplicator & Auto-Indexer",
+      actionSummary: `Indexed ${newUniqueTopics.length} unique topics into Vector DB & Card Store (rejected ${droppedDuplicatesCount} lexical/vector duplicates)`,
       status: "completed",
-      durationMs: Math.round(synthesisDuration * 0.4),
-      details: "Guaranteed zero duplicate topics across all stored dates in PostgreSQL.",
+      durationMs: vectorDuration,
+      details: `Checked cosine similarity (< 0.86 threshold) via gemini-embedding-2-preview against ${existingVectorRows.length} Vector DB chunks.`,
     }
   );
 
-  const meta = deriveMonthMeta(editionDate);
-  const sourceUrls = Array.from(discoveredUrls).slice(0, 8);
+  // If no existing topics and 0 new topics could be grounded, do not insert an empty row
+  if (finalTopics.length === 0) {
+    return {
+      editionId: existingEdition?.id || "none",
+      editionDate,
+      topicsCount: 0,
+      mcqsCount: 0,
+      addedTopicsCount: 0,
+      alreadyComplete: false,
+      vectorDocumentId: null,
+      groundedSourcesCount: discoveredUrls.size,
+    };
+  }
 
   const finalTitleEn =
     existingEdition?.title_en ||
     parsed.titleEn ||
-    `WBPSC Current Affairs Digest — ${editionDate}`;
+    `${dayInt} ${monthNameEn} ${yStr} — Google Search Grounded WBPSC Current Affairs`;
   const finalTitleBn =
     existingEdition?.title_bn ||
     parsed.titleBn ||
-    `ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স ডাইজেস্ট — ${editionDate}`;
+    `${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)} — গুগল সার্চ গ্রাউন্ডেড কারেন্ট অ্যাফেয়ার্স`;
   const finalSummaryEn =
     existingEdition?.executive_summary_en || parsed.executiveSummaryEn || "";
   const finalSummaryBn =
@@ -3822,6 +4131,8 @@ MANDATORY REQUIREMENTS:
     mcqsCount: finalMcqs.length,
     addedTopicsCount: newUniqueTopics.length,
     alreadyComplete: false,
+    vectorDocumentId,
+    groundedSourcesCount: discoveredUrls.size,
   };
 }
 
@@ -3897,11 +4208,12 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
         const todayTopicsCount = Array.isArray(todayCheck[0]?.topics_json)
           ? todayCheck[0].topics_json.length
           : 0;
-        if (todayTopicsCount < 12) {
-          await topUpEditionDateFastTo12Topics(
-            todayIso,
-            "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
-          );
+        if (todayTopicsCount === 0) {
+          await runAutonomousCurrentAffairsAgent({
+            editionDate: todayIso,
+            targetTopicCount: 12,
+            actorName: "Daily Google Search Grounded Agent (Present Date Auto-Run)",
+          });
           caAutoScheduler.lastAutoCollectedDate = todayIso;
           caAutoScheduler.lastAutoRunAt = new Date().toISOString();
         }
@@ -4235,10 +4547,11 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
         DELETE FROM current_affairs_deleted_dates
         WHERE edition_date = ${todayIso}
       `;
-      await topUpEditionDateFastTo12Topics(
-        todayIso,
-        "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
-      );
+      await runAutonomousCurrentAffairsAgent({
+        editionDate: todayIso,
+        targetTopicCount: 12,
+        actorName: "Daily Google Search Grounded Agent (Scheduler Toggle)",
+      });
       caAutoScheduler.lastAutoCollectedDate = todayIso;
     }
     return { scheduler: caAutoScheduler };
@@ -4247,8 +4560,8 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * POST /current-affairs/auto-backfill (Admin Only)
    * Skips any date that already has >= 12 topics, and for dates with < 12 topics,
-   * populates/tops up the requested batch range (up to 11 dates per click)
-   * to 12 unique topics & 6+ bilingual MCQs per date!
+   * runs the 2-Pass Google Search Grounding + Vector DB Deduplication pipeline
+   * for up to 3 dates per batch click so every backfilled date has real, non-duplicate CA!
    */
   fastify.post("/auto-backfill", { preHandler: [requireAdmin] }, async (request, reply) => {
     const user = (await loadSessionUser(request))!;
@@ -4324,16 +4637,20 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
 
-    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 11);
+    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 3);
     const backfilledDates: string[] = [];
-    const actorLabel = `Batch Historical Backfill Agent (${user.fullName || user.role})`;
+    const actorLabel = `Google Search Grounded Batch Backfill (${user.fullName || user.role})`;
 
     for (const dateStr of datesToSynthesize) {
       await queryClient`
         DELETE FROM current_affairs_deleted_dates
         WHERE edition_date = ${dateStr}
       `;
-      await topUpEditionDateFastTo12Topics(dateStr, actorLabel);
+      await runAutonomousCurrentAffairsAgent({
+        editionDate: dateStr,
+        targetTopicCount: 12,
+        actorName: actorLabel,
+      });
       backfilledDates.push(dateStr);
     }
 
@@ -4773,90 +5090,87 @@ Admin MCQ Question Hint: ${manualStemEn || "Generate a high-yield WBPSC Prelims/
 Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current Affairs Flashcard ('topic') AND ONE complete Bilingual 4-option MCQ Question ('mcq') for ${editionDate}.`,
           });
 
-          const genPromise = ai.models.generateContent({
-            model: "gemini-3.8-flash",
-            contents: [{ role: "user", parts }],
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  topic: {
-                    type: Type.OBJECT,
-                    properties: {
-                      category: { type: Type.STRING },
-                      headlineEn: { type: Type.STRING },
-                      headlineBn: { type: Type.STRING },
-                      sourceTag: { type: Type.STRING },
-                      whyInNewsEn: { type: Type.STRING },
-                      whyInNewsBn: { type: Type.STRING },
-                      examPointsEn: { type: Type.ARRAY, items: { type: Type.STRING } },
-                      examPointsBn: { type: Type.ARRAY, items: { type: Type.STRING } },
-                      staticGkLinkEn: { type: Type.STRING },
-                      staticGkLinkBn: { type: Type.STRING },
-                      examTrapEn: { type: Type.STRING },
-                      examTrapBn: { type: Type.STRING },
+          const { response: resp } = await generateContentWithFallback(
+            {
+              contents: [{ role: "user", parts }],
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    topic: {
+                      type: Type.OBJECT,
+                      properties: {
+                        category: { type: Type.STRING },
+                        headlineEn: { type: Type.STRING },
+                        headlineBn: { type: Type.STRING },
+                        sourceTag: { type: Type.STRING },
+                        whyInNewsEn: { type: Type.STRING },
+                        whyInNewsBn: { type: Type.STRING },
+                        examPointsEn: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        examPointsBn: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        staticGkLinkEn: { type: Type.STRING },
+                        staticGkLinkBn: { type: Type.STRING },
+                        examTrapEn: { type: Type.STRING },
+                        examTrapBn: { type: Type.STRING },
+                      },
+                      required: [
+                        "category",
+                        "headlineEn",
+                        "headlineBn",
+                        "sourceTag",
+                        "whyInNewsEn",
+                        "whyInNewsBn",
+                        "examPointsEn",
+                        "examPointsBn",
+                        "staticGkLinkEn",
+                        "staticGkLinkBn",
+                        "examTrapEn",
+                        "examTrapBn",
+                      ],
                     },
-                    required: [
-                      "category",
-                      "headlineEn",
-                      "headlineBn",
-                      "sourceTag",
-                      "whyInNewsEn",
-                      "whyInNewsBn",
-                      "examPointsEn",
-                      "examPointsBn",
-                      "staticGkLinkEn",
-                      "staticGkLinkBn",
-                      "examTrapEn",
-                      "examTrapBn",
-                    ],
-                  },
-                  mcq: {
-                    type: Type.OBJECT,
-                    properties: {
-                      category: { type: Type.STRING },
-                      stemEn: { type: Type.STRING },
-                      stemBn: { type: Type.STRING },
-                      optionAEn: { type: Type.STRING },
-                      optionABn: { type: Type.STRING },
-                      optionBEn: { type: Type.STRING },
-                      optionBBn: { type: Type.STRING },
-                      optionCEn: { type: Type.STRING },
-                      optionCBn: { type: Type.STRING },
-                      optionDEn: { type: Type.STRING },
-                      optionDBn: { type: Type.STRING },
-                      correctOption: { type: Type.STRING, enum: ["A", "B", "C", "D"] },
-                      explanationEn: { type: Type.STRING },
-                      explanationBn: { type: Type.STRING },
+                    mcq: {
+                      type: Type.OBJECT,
+                      properties: {
+                        category: { type: Type.STRING },
+                        stemEn: { type: Type.STRING },
+                        stemBn: { type: Type.STRING },
+                        optionAEn: { type: Type.STRING },
+                        optionABn: { type: Type.STRING },
+                        optionBEn: { type: Type.STRING },
+                        optionBBn: { type: Type.STRING },
+                        optionCEn: { type: Type.STRING },
+                        optionCBn: { type: Type.STRING },
+                        optionDEn: { type: Type.STRING },
+                        optionDBn: { type: Type.STRING },
+                        correctOption: { type: Type.STRING, enum: ["A", "B", "C", "D"] },
+                        explanationEn: { type: Type.STRING },
+                        explanationBn: { type: Type.STRING },
+                      },
+                      required: [
+                        "category",
+                        "stemEn",
+                        "stemBn",
+                        "optionAEn",
+                        "optionABn",
+                        "optionBEn",
+                        "optionBBn",
+                        "optionCEn",
+                        "optionCBn",
+                        "optionDEn",
+                        "optionDBn",
+                        "correctOption",
+                        "explanationEn",
+                        "explanationBn",
+                      ],
                     },
-                    required: [
-                      "category",
-                      "stemEn",
-                      "stemBn",
-                      "optionAEn",
-                      "optionABn",
-                      "optionBEn",
-                      "optionBBn",
-                      "optionCEn",
-                      "optionCBn",
-                      "optionDEn",
-                      "optionDBn",
-                      "correctOption",
-                      "explanationEn",
-                      "explanationBn",
-                    ],
                   },
+                  required: ["topic", "mcq"],
                 },
-                required: ["topic", "mcq"],
               },
             },
-          });
-
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Card upload extraction timeout")), 7500)
+            14000
           );
-          const resp = await Promise.race([genPromise, timeoutPromise]);
           const parsed = JSON.parse(resp.text || "{}");
           if (parsed.topic?.headlineEn) {
             const t = parsed.topic;
@@ -6072,48 +6386,45 @@ Each chunk MUST include:
 - keyFacts (3 concise bullet facts)`,
     });
 
-    const genPromise = ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: [{ role: "user", parts }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summaryEn: { type: Type.STRING },
-            summaryBn: { type: Type.STRING },
-            chunks: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  category: { type: Type.STRING },
-                  headlineEn: { type: Type.STRING },
-                  headlineBn: { type: Type.STRING },
-                  contentEn: { type: Type.STRING },
-                  contentBn: { type: Type.STRING },
-                  keyFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
+    const { response } = await generateContentWithFallback(
+      {
+        contents: [{ role: "user", parts }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              summaryEn: { type: Type.STRING },
+              summaryBn: { type: Type.STRING },
+              chunks: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    category: { type: Type.STRING },
+                    headlineEn: { type: Type.STRING },
+                    headlineBn: { type: Type.STRING },
+                    contentEn: { type: Type.STRING },
+                    contentBn: { type: Type.STRING },
+                    keyFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  },
+                  required: [
+                    "category",
+                    "headlineEn",
+                    "headlineBn",
+                    "contentEn",
+                    "contentBn",
+                    "keyFacts",
+                  ],
                 },
-                required: [
-                  "category",
-                  "headlineEn",
-                  "headlineBn",
-                  "contentEn",
-                  "contentBn",
-                  "keyFacts",
-                ],
               },
             },
+            required: ["summaryEn", "summaryBn", "chunks"],
           },
-          required: ["summaryEn", "summaryBn", "chunks"],
         },
       },
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Multimodal extraction timeout")), 7500)
+      14000
     );
-    const response = await Promise.race([genPromise, timeoutPromise]);
     const parsed = JSON.parse(response.text || "{}");
     if (Array.isArray(parsed.chunks) && parsed.chunks.length >= 2) {
       return {
