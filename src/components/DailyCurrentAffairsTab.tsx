@@ -315,6 +315,8 @@ function buildCalendarDays(monthKey: string): Array<{
 
 export interface DeckCardEntry {
   topic: CaTopicItem;
+  pageNumberInDate: number;
+  totalPagesInDate: number;
   editionId: string;
   editionDate: string;
   editionTitleEn: string;
@@ -403,13 +405,38 @@ export default function DailyCurrentAffairsTab({
   );
 
   // =========================================================================
-  // ADMIN MULTI-DAY DELETION & VECTOR DB DOCUMENT UPLOAD STATE
+  // ADMIN PAGE-WISE DELETE & DATE-CARD UPLOAD STATE (INSIDE FLOATING MODAL)
   // =========================================================================
-  const [deleteMonthKey, setDeleteMonthKey] = useState<string>(() =>
-    getClientTodayIso().slice(0, 7)
-  );
-  const [selectedDatesForDelete, setSelectedDatesForDelete] = useState<string[]>([]);
   const [deleteBusy, setDeleteBusy] = useState<boolean>(false);
+  const [pageDeleteBusy, setPageDeleteBusy] = useState<boolean>(false);
+  const [showPageDeletePicker, setShowPageDeletePicker] = useState<boolean>(false);
+  const [selectedPagesToDelete, setSelectedPagesToDelete] = useState<number[]>([]);
+
+  // Inline Date-Specific Upload CA + Question Drawer inside Floating Card Modal
+  const [showModalDateUpload, setShowModalDateUpload] = useState<boolean>(false);
+  const [cardUploadBusy, setCardUploadBusy] = useState<boolean>(false);
+  const [cardUploadFile, setCardUploadFile] = useState<File | null>(null);
+  const [cardUploadCategory, setCardUploadCategory] = useState<string>(
+    "West Bengal Special"
+  );
+  const [cardUploadSourceTag, setCardUploadSourceTag] = useState<string>(
+    "Admin Custom Upload"
+  );
+  const [cardUploadHeadlineEn, setCardUploadHeadlineEn] = useState<string>("");
+  const [cardUploadHeadlineBn, setCardUploadHeadlineBn] = useState<string>("");
+  const [cardUploadWhyEn, setCardUploadWhyEn] = useState<string>("");
+  const [cardUploadPointsText, setCardUploadPointsText] = useState<string>("");
+  const [cardUploadStaticGkEn, setCardUploadStaticGkEn] = useState<string>("");
+  const [cardUploadMcqStemEn, setCardUploadMcqStemEn] = useState<string>("");
+  const [cardUploadMcqStemBn, setCardUploadMcqStemBn] = useState<string>("");
+  const [cardUploadOptA, setCardUploadOptA] = useState<string>("");
+  const [cardUploadOptB, setCardUploadOptB] = useState<string>("");
+  const [cardUploadOptC, setCardUploadOptC] = useState<string>("");
+  const [cardUploadOptD, setCardUploadOptD] = useState<string>("");
+  const [cardUploadCorrectOpt, setCardUploadCorrectOpt] =
+    useState<OptionKey>("A");
+  const [cardUploadExplanationEn, setCardUploadExplanationEn] =
+    useState<string>("");
 
   // Vector DB Knowledge Store state (PDF / Word / Image uploads)
   const [vectorStats, setVectorStats] = useState<CaVectorStoreStats | null>(null);
@@ -509,9 +536,6 @@ export default function DailyCurrentAffairsTab({
         setClassifierSelectedMonth((prev) =>
           validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
         );
-        setDeleteMonthKey((prev) =>
-          validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
-        );
       }
       setAgentEditionDate((prev) => (prev > serverToday ? serverToday : prev));
     } catch (err) {
@@ -583,10 +607,8 @@ export default function DailyCurrentAffairsTab({
     const list: DeckCardEntry[] = [];
     for (const ed of targetEditions) {
       const sameDateSeen = new Set<string>();
+      const dedupedForDate: Array<{ topic: CaTopicItem; pageNum: number }> = [];
       for (const t of ed.topics) {
-        if (modalCategoryFilter !== "all" && t.category !== modalCategoryFilter) {
-          continue;
-        }
         const normKey = String(t.headlineEn || "")
           .toLowerCase()
           .replace(/[^a-z0-9\s]/g, " ")
@@ -598,8 +620,24 @@ export default function DailyCurrentAffairsTab({
         if (normKey) {
           sameDateSeen.add(normKey);
         }
-        list.push({
+        dedupedForDate.push({
           topic: t,
+          pageNum: dedupedForDate.length + 1,
+        });
+      }
+
+      const totalInDate = dedupedForDate.length;
+      for (const item of dedupedForDate) {
+        if (
+          modalCategoryFilter !== "all" &&
+          item.topic.category !== modalCategoryFilter
+        ) {
+          continue;
+        }
+        list.push({
+          topic: item.topic,
+          pageNumberInDate: item.pageNum,
+          totalPagesInDate: totalInDate,
           editionId: ed.id,
           editionDate: ed.editionDate,
           editionTitleEn: ed.titleEn,
@@ -822,7 +860,6 @@ export default function DailyCurrentAffairsTab({
     setDeleteBusy(true);
     try {
       await api(`/current-affairs/${editionId}`, { method: "DELETE" });
-      setSelectedDatesForDelete((prev) => prev.filter((d) => d !== editionDate));
       await loadArchive();
       if (modalDateFilter === editionDate) {
         setModalDateFilter("all");
@@ -855,7 +892,6 @@ export default function DailyCurrentAffairsTab({
         method: "POST",
         body: params,
       });
-      setSelectedDatesForDelete([]);
       await loadArchive();
       if (
         modalDateFilter !== "all" &&
@@ -874,6 +910,151 @@ export default function DailyCurrentAffairsTab({
       onError(err, "Failed to delete selected Current Affairs editions.");
     } finally {
       setDeleteBusy(false);
+    }
+  };
+
+  /**
+   * Page-Wise / Card-Wise Delete for a Particular Date!
+   * Allows Admin to delete a single page (e.g. Page 3 or Page 8 of 31 October 2026)
+   * or multiple selected page numbers on that date.
+   */
+  const handleDeletePagesForDate = async (params: {
+    editionDate: string;
+    topicId?: string;
+    pageNumbers?: number[];
+  }) => {
+    if (!isAdmin) return;
+    setPageDeleteBusy(true);
+    try {
+      const res = await api<{
+        deleted: boolean;
+        editionDate: string;
+        deletedPageNumbers: number[];
+        deletedHeadlines: string[];
+        remainingTopicsCount: number;
+        editionRemoved: boolean;
+      }>("/current-affairs/delete-topic", {
+        method: "POST",
+        body: params,
+      });
+      setSelectedPagesToDelete([]);
+      setShowPageDeletePicker(false);
+      await loadArchive();
+
+      if (res.editionRemoved) {
+        if (modalDateFilter === params.editionDate) {
+          setModalDateFilter("all");
+        }
+        setFloatingCardIdx(0);
+      } else {
+        setFloatingCardIdx((prev) =>
+          Math.max(0, Math.min(prev, res.remainingTopicsCount - 1))
+        );
+      }
+
+      onNotify?.(
+        "info",
+        `Deleted Page(s) ${res.deletedPageNumbers.map((p) => `#${p}`).join(", ")} from ${formatReadableDate(params.editionDate, "en")}. (${res.remainingTopicsCount} cards remaining on this date)`
+      );
+    } catch (err) {
+      onError(err, "Failed to delete selected page(s) for this date.");
+    } finally {
+      setPageDeleteBusy(false);
+    }
+  };
+
+  /**
+   * Upload / Add CA Card + Question into DB for a Particular Date (directly inside the Card Modal)
+   */
+  const handleUploadCaForDateInModal = async (targetDate: string) => {
+    if (!isAdmin) return;
+    if (
+      !cardUploadFile &&
+      !cardUploadHeadlineEn.trim() &&
+      !cardUploadWhyEn.trim() &&
+      !cardUploadPointsText.trim() &&
+      !cardUploadMcqStemEn.trim()
+    ) {
+      onNotify?.(
+        "error",
+        "Please select a file (PDF / Word / Image) or enter a Headline / Question to upload for this date."
+      );
+      return;
+    }
+
+    setCardUploadBusy(true);
+    try {
+      let fileBase64 = "";
+      if (cardUploadFile) {
+        fileBase64 = await readFileAsBase64(cardUploadFile);
+      }
+
+      const res = await api<{
+        editionDate: string;
+        addedTopic: CaTopicItem;
+        addedMcq: CaMcqItem;
+        newPageNumber: number;
+        totalTopicsCount: number;
+        totalMcqsCount: number;
+      }>("/current-affairs/date-card-upload", {
+        method: "POST",
+        body: {
+          editionDate: targetDate,
+          category: cardUploadCategory,
+          sourceTag: cardUploadSourceTag,
+          headlineEn: cardUploadHeadlineEn,
+          headlineBn: cardUploadHeadlineBn,
+          whyInNewsEn: cardUploadWhyEn,
+          examPointsText: cardUploadPointsText,
+          staticGkLinkEn: cardUploadStaticGkEn,
+          mcqStemEn: cardUploadMcqStemEn,
+          mcqStemBn: cardUploadMcqStemBn,
+          optionAEn: cardUploadOptA,
+          optionBEn: cardUploadOptB,
+          optionCEn: cardUploadOptC,
+          optionDEn: cardUploadOptD,
+          correctOption: cardUploadCorrectOpt,
+          explanationEn: cardUploadExplanationEn,
+          fileName: cardUploadFile?.name || "",
+          mimeType: cardUploadFile?.type || "",
+          fileSizeBytes: cardUploadFile?.size || 0,
+          fileBase64,
+        },
+      });
+
+      // Reset upload form
+      setCardUploadFile(null);
+      setCardUploadHeadlineEn("");
+      setCardUploadHeadlineBn("");
+      setCardUploadWhyEn("");
+      setCardUploadPointsText("");
+      setCardUploadStaticGkEn("");
+      setCardUploadMcqStemEn("");
+      setCardUploadMcqStemBn("");
+      setCardUploadOptA("");
+      setCardUploadOptB("");
+      setCardUploadOptC("");
+      setCardUploadOptD("");
+      setCardUploadExplanationEn("");
+      setShowModalDateUpload(false);
+
+      await loadArchive();
+      await loadVectorStore();
+
+      // Switch modal to the uploaded date and jump to the newly added page!
+      setModalMonthKey(targetDate.slice(0, 7));
+      setModalDateFilter(targetDate);
+      setModalCategoryFilter("all");
+      setFloatingCardIdx(Math.max(0, res.newPageNumber - 1));
+
+      onNotify?.(
+        "success",
+        `Uploaded & added Page #${res.newPageNumber} ("${res.addedTopic.headlineEn.slice(0, 48)}...") + 1 MCQ Question into DB for ${formatReadableDate(targetDate, "en")}!`
+      );
+    } catch (err) {
+      onError(err, "Failed to upload Current Affairs for this date.");
+    } finally {
+      setCardUploadBusy(false);
     }
   };
 
@@ -1861,160 +2042,6 @@ export default function DailyCurrentAffairsTab({
             </div>
           </div>
         </div>
-
-        {/* ====================================================================
-            CARD 5: ADMIN DELETE GENERATED CURRENT AFFAIRS (SINGLE DAY / MULTIPLE DAYS / MONTH)
-        ==================================================================== */}
-        {(() => {
-          const storedInDeleteMonth = editions
-            .filter((e) => e.monthKey === deleteMonthKey && e.editionDate <= todayIso)
-            .sort((a, b) => b.editionDate.localeCompare(a.editionDate));
-          const allDatesInDeleteMonth = storedInDeleteMonth.map((e) => e.editionDate);
-          const selectedInThisMonth = selectedDatesForDelete.filter((d) =>
-            allDatesInDeleteMonth.includes(d)
-          );
-
-          return (
-            <div className="bg-slate-950 border border-rose-500/30 rounded-xl p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="space-y-0.5">
-                  <span className="text-xs font-bold text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <Trash2 className="w-4 h-4" />
-                    5. Delete Generated Current Affairs (Single Day / Multiple Days / Entire Month)
-                  </span>
-                  <p className="text-xs text-slate-400">
-                    Select any month below, pick one or multiple stored dates (or select all days in the month), and delete them cleanly. Deleted dates will not auto-regenerate unless you manually trigger collection for them.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    value={deleteMonthKey}
-                    onChange={(e) => {
-                      setDeleteMonthKey(e.target.value);
-                      setSelectedDatesForDelete([]);
-                    }}
-                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-bold text-white cursor-pointer"
-                  >
-                    {availableMonthKeys.map((mk) => {
-                      const count = editions.filter((e) => e.monthKey === mk).length;
-                      return (
-                        <option key={mk} value={mk}>
-                          {formatReadableMonth(mk, lang)} ({count} Stored {count === 1 ? "Day" : "Days"})
-                        </option>
-                      );
-                    })}
-                  </select>
-
-                  {storedInDeleteMonth.length > 0 && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setSelectedDatesForDelete(
-                            selectedInThisMonth.length === allDatesInDeleteMonth.length
-                              ? []
-                              : allDatesInDeleteMonth
-                          )
-                        }
-                        className="px-2.5 py-1.5 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-lg cursor-pointer"
-                      >
-                        {selectedInThisMonth.length === allDatesInDeleteMonth.length
-                          ? "Unselect All Days"
-                          : `Select All (${storedInDeleteMonth.length} Days)`}
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={deleteBusy || selectedInThisMonth.length === 0}
-                        onClick={() =>
-                          void handleBulkDeleteEditions({
-                            editionDates: selectedInThisMonth,
-                          })
-                        }
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-rose-500 hover:bg-rose-400 disabled:opacity-40 text-slate-950 rounded-lg cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        {deleteBusy
-                          ? "Deleting..."
-                          : `Delete Selected (${selectedInThisMonth.length} ${selectedInThisMonth.length === 1 ? "Day" : "Days"})`}
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={deleteBusy}
-                        onClick={() =>
-                          void handleBulkDeleteEditions({
-                            monthKey: deleteMonthKey,
-                            deleteAllInMonth: true,
-                          })
-                        }
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-rose-950/90 hover:bg-rose-900 border border-rose-500/50 text-rose-200 rounded-lg cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete All {storedInDeleteMonth.length} Days in {formatReadableMonth(deleteMonthKey, "en")}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {storedInDeleteMonth.length === 0 ? (
-                <div className="text-xs text-slate-400 bg-slate-900/70 border border-slate-800 rounded-lg p-3">
-                  No stored Current Affairs editions in{" "}
-                  <strong className="text-white">{formatReadableMonth(deleteMonthKey, "en")}</strong>.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[180px] overflow-y-auto pr-1 pt-1">
-                  {storedInDeleteMonth.map((ed) => {
-                    const isChecked = selectedDatesForDelete.includes(ed.editionDate);
-                    return (
-                      <div
-                        key={ed.id}
-                        className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs transition-all ${
-                          isChecked
-                            ? "bg-rose-500/15 border-rose-500/50 text-rose-200"
-                            : "bg-slate-900 border-slate-800 text-slate-200"
-                        }`}
-                      >
-                        <label className="flex items-center gap-2 cursor-pointer flex-1 truncate">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => {
-                              setSelectedDatesForDelete((prev) =>
-                                prev.includes(ed.editionDate)
-                                  ? prev.filter((d) => d !== ed.editionDate)
-                                  : [...prev, ed.editionDate]
-                              );
-                            }}
-                            className="accent-rose-500 cursor-pointer"
-                          />
-                          <span className="truncate font-medium">
-                            {formatReadableDate(ed.editionDate, "en")}
-                          </span>
-                          <span className="text-[10px] font-mono text-emerald-400 shrink-0">
-                            ({ed.topics.length}t)
-                          </span>
-                        </label>
-
-                        <button
-                          type="button"
-                          disabled={deleteBusy}
-                          onClick={() => void handleDeleteEdition(ed.id, ed.editionDate)}
-                          title={`Delete ${ed.editionDate} immediately`}
-                          className="p-1 rounded hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 cursor-pointer shrink-0"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })()}
       </div>
       )}
 
@@ -2781,13 +2808,58 @@ export default function DailyCurrentAffairsTab({
                         const ed = editionsByDate.get(modalDateFilter);
                         if (ed) void handleDeleteEdition(ed.id, ed.editionDate);
                       }}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-xs font-bold text-rose-300 cursor-pointer"
-                      title={`Delete generated Current Affairs for ${modalDateFilter}`}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-xs font-bold text-rose-300 cursor-pointer"
+                      title={`Delete all pages of ${modalDateFilter}`}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      Delete {modalDateFilter} CA
+                      Delete Whole Date ({modalDateFilter})
                     </button>
                   )}
+
+                {/* Admin Page-Wise Delete Button for Current Page (e.g. Page 3 or Page 8) */}
+                {isAdmin && activeModalCard && (
+                  <button
+                    type="button"
+                    disabled={pageDeleteBusy}
+                    onClick={() =>
+                      void handleDeletePagesForDate({
+                        editionDate: activeModalCard.editionDate,
+                        topicId: activeModalCard.topic.id,
+                        pageNumbers: [activeModalCard.pageNumberInDate],
+                      })
+                    }
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500 hover:bg-rose-400 disabled:opacity-50 text-xs font-bold text-slate-950 cursor-pointer shadow-sm"
+                    title={`Delete only Page ${activeModalCard.pageNumberInDate} of ${activeModalCard.editionDate}`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    {pageDeleteBusy
+                      ? "Deleting Page..."
+                      : `Delete Page ${activeModalCard.pageNumberInDate} (${activeModalCard.editionDate})`}
+                  </button>
+                )}
+
+                {/* Admin Upload / Add CA Button for Particular Date directly inside Card Modal */}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setShowModalDateUpload((prev) => !prev)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      showModalDateUpload
+                        ? "bg-sky-400 text-slate-950 border-sky-300 shadow-sm"
+                        : "bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border-sky-500/40"
+                    }`}
+                    title="Upload a file (PDF/Word/Image) or add a custom Current Affairs card & MCQ question for this date"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    {showModalDateUpload
+                      ? "Close Upload Panel"
+                      : `+ Upload CA to ${
+                          modalDateFilter !== "all"
+                            ? modalDateFilter
+                            : activeModalCard?.editionDate || todayIso
+                        }`}
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-2">
@@ -3057,12 +3129,323 @@ export default function DailyCurrentAffairsTab({
                 </div>
               )}
 
-              {/* RIGHT AREA INSIDE MODAL: Animated Flashcard Content */}
+              {/* RIGHT AREA INSIDE MODAL: Animated Flashcard Content + Page-Wise Delete + Date Upload */}
               <div
                 className={`${
                   showModalCalendar ? "lg:col-span-8" : "lg:col-span-12"
                 } flex flex-col overflow-hidden`}
               >
+                {/* INLINE ADMIN UPLOAD CA + QUESTION PANEL FOR THIS PARTICULAR DATE */}
+                {isAdmin && showModalDateUpload && (() => {
+                  const targetUploadDate =
+                    modalDateFilter !== "all"
+                      ? modalDateFilter
+                      : activeModalCard?.editionDate || todayIso;
+
+                  return (
+                    <div className="bg-slate-950 border-b border-sky-500/40 p-4 space-y-3 overflow-y-auto max-h-[56vh] shrink-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <Upload className="w-3.5 h-3.5" />
+                            Upload / Add Current Affairs &amp; Question for{" "}
+                            <span className="text-amber-300">
+                              {formatReadableDate(targetUploadDate, "en")} ({targetUploadDate})
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400">
+                            Upload a PDF / Word (.docx) / Image file OR fill in custom topic &amp; MCQ details below. It will be added as a new Page card and question directly into{" "}
+                            <strong className="text-white">{targetUploadDate}</strong> in the DB.
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setShowModalDateUpload(false)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                        {/* File Picker (PDF / Word / Image / Text) */}
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold uppercase text-slate-400">
+                            1. Upload File (PDF / Word / Image) — Optional
+                          </label>
+                          <label className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg border border-dashed border-sky-500/50 bg-sky-500/10 hover:bg-sky-500/15 text-xs text-sky-200 cursor-pointer">
+                            <span className="truncate font-semibold">
+                              {cardUploadFile
+                                ? `📄 ${cardUploadFile.name}`
+                                : "Choose PDF / Word / Image..."}
+                            </span>
+                            <input
+                              type="file"
+                              accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.webp"
+                              onChange={(e) =>
+                                setCardUploadFile(e.target.files?.[0] || null)
+                              }
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+
+                        {/* Category */}
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold uppercase text-slate-400">
+                            2. Category
+                          </label>
+                          <select
+                            value={cardUploadCategory}
+                            onChange={(e) => setCardUploadCategory(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white cursor-pointer"
+                          >
+                            {ORDERED_CATEGORIES.map((cat) => (
+                              <option key={cat} value={cat}>
+                                {cat}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Source Tag */}
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold uppercase text-slate-400">
+                            3. Source / Reference Tag
+                          </label>
+                          <input
+                            type="text"
+                            value={cardUploadSourceTag}
+                            onChange={(e) => setCardUploadSourceTag(e.target.value)}
+                            placeholder="e.g. Admin Upload · PIB / The Hindu"
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Topic Headline & Bullet Points */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        <input
+                          type="text"
+                          value={cardUploadHeadlineEn}
+                          onChange={(e) => setCardUploadHeadlineEn(e.target.value)}
+                          placeholder="Topic Headline (English) — or leave blank to auto-extract from uploaded file"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                        />
+                        <input
+                          type="text"
+                          value={cardUploadHeadlineBn}
+                          onChange={(e) => setCardUploadHeadlineBn(e.target.value)}
+                          placeholder="শিরোনাম (বাংলা) — ঐচ্ছিক (Optional Bengali Headline)"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        <textarea
+                          rows={2}
+                          value={cardUploadWhyEn}
+                          onChange={(e) => setCardUploadWhyEn(e.target.value)}
+                          placeholder="Why in News / Summary for this date..."
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                        />
+                        <textarea
+                          rows={2}
+                          value={cardUploadPointsText}
+                          onChange={(e) => setCardUploadPointsText(e.target.value)}
+                          placeholder="Exam Bullet Facts (one per line) + Static GK linkage..."
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+
+                      {/* Question (MCQ) to Add into DB for this Date */}
+                      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 space-y-2">
+                        <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
+                          Add MCQ Question into DB for {targetUploadDate} (Auto-Generated from File if Left Blank)
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <input
+                            type="text"
+                            value={cardUploadMcqStemEn}
+                            onChange={(e) => setCardUploadMcqStemEn(e.target.value)}
+                            placeholder="MCQ Question Stem (English)"
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <input
+                            type="text"
+                            value={cardUploadMcqStemBn}
+                            onChange={(e) => setCardUploadMcqStemBn(e.target.value)}
+                            placeholder="প্রশ্ন (বাংলা) — Optional"
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                          <input
+                            type="text"
+                            value={cardUploadOptA}
+                            onChange={(e) => setCardUploadOptA(e.target.value)}
+                            placeholder="Option A"
+                            className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <input
+                            type="text"
+                            value={cardUploadOptB}
+                            onChange={(e) => setCardUploadOptB(e.target.value)}
+                            placeholder="Option B"
+                            className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <input
+                            type="text"
+                            value={cardUploadOptC}
+                            onChange={(e) => setCardUploadOptC(e.target.value)}
+                            placeholder="Option C"
+                            className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <input
+                            type="text"
+                            value={cardUploadOptD}
+                            onChange={(e) => setCardUploadOptD(e.target.value)}
+                            placeholder="Option D"
+                            className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <select
+                            value={cardUploadCorrectOpt}
+                            onChange={(e) =>
+                              setCardUploadCorrectOpt(e.target.value as OptionKey)
+                            }
+                            className="bg-slate-950 border border-emerald-500/50 rounded-lg px-2.5 py-1.5 text-xs font-bold text-emerald-300 cursor-pointer"
+                          >
+                            <option value="A">Correct: Option A</option>
+                            <option value="B">Correct: Option B</option>
+                            <option value="C">Correct: Option C</option>
+                            <option value="D">Correct: Option D</option>
+                          </select>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                          <input
+                            type="text"
+                            value={cardUploadExplanationEn}
+                            onChange={(e) => setCardUploadExplanationEn(e.target.value)}
+                            placeholder="Answer Explanation (Optional)"
+                            className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <button
+                            type="button"
+                            disabled={cardUploadBusy}
+                            onClick={() =>
+                              void handleUploadCaForDateInModal(targetUploadDate)
+                            }
+                            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-xs font-bold text-slate-950 cursor-pointer shadow-sm"
+                          >
+                            {cardUploadBusy ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                Uploading &amp; Saving to {targetUploadDate}...
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="w-3.5 h-3.5" />
+                                Upload &amp; Add CA + Question to {targetUploadDate} DB
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* INLINE MULTI-PAGE DELETE SELECTOR (e.g. Delete Page 3 or Page 8 of 31 October 2026) */}
+                {isAdmin && showPageDeletePicker && activeModalCard && (() => {
+                  const targetDate = activeModalCard.editionDate;
+                  const targetEdition = editionsByDate.get(targetDate);
+                  const dateTopics = targetEdition?.topics || [];
+
+                  return (
+                    <div className="bg-rose-950/30 border-b border-rose-500/40 px-5 py-3 space-y-2 shrink-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Select Page Number(s) to Delete from{" "}
+                          <span className="text-white">
+                            {formatReadableDate(targetDate, "en")}
+                          </span>{" "}
+                          (e.g. Page 3, Page 8):
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={
+                              pageDeleteBusy || selectedPagesToDelete.length === 0
+                            }
+                            onClick={() =>
+                              void handleDeletePagesForDate({
+                                editionDate: targetDate,
+                                pageNumbers: selectedPagesToDelete,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-rose-500 hover:bg-rose-400 disabled:opacity-40 text-xs font-bold text-slate-950 cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            {pageDeleteBusy
+                              ? "Deleting..."
+                              : `Delete Selected Page(s) (${
+                                  selectedPagesToDelete.length > 0
+                                    ? selectedPagesToDelete
+                                        .sort((a, b) => a - b)
+                                        .map((p) => `#${p}`)
+                                        .join(", ")
+                                    : "0"
+                                })`}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowPageDeletePicker(false);
+                              setSelectedPagesToDelete([]);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 cursor-pointer"
+                          >
+                            Close
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {dateTopics.map((t, idx) => {
+                          const pNum = idx + 1;
+                          const isChecked = selectedPagesToDelete.includes(pNum);
+                          return (
+                            <button
+                              key={t.id || pNum}
+                              type="button"
+                              onClick={() =>
+                                setSelectedPagesToDelete((prev) =>
+                                  prev.includes(pNum)
+                                    ? prev.filter((x) => x !== pNum)
+                                    : [...prev, pNum]
+                                )
+                              }
+                              title={`Page ${pNum}: ${t.headlineEn}`}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                                isChecked
+                                  ? "bg-rose-500 text-slate-950 border-rose-300"
+                                  : "bg-slate-900 text-slate-200 border-slate-700 hover:border-rose-400"
+                              }`}
+                            >
+                              <span>Page {pNum}</span>
+                              <span className="text-[10px] font-sans font-normal opacity-85 max-w-[120px] truncate">
+                                ({t.headlineEn.slice(0, 18)}...)
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {!activeModalCard ? (
                   <div className="p-10 m-auto text-center space-y-3 max-w-md">
                     <CalendarIcon className="w-10 h-10 text-amber-400 mx-auto" />
@@ -3074,7 +3457,7 @@ export default function DailyCurrentAffairsTab({
                     <p className="text-xs text-slate-400 leading-relaxed">
                       {modalDateFilter !== "all"
                         ? isAdmin
-                          ? "You can either view all stored dates in this month or click below to let the AI Agent collect exam topics for this exact past date."
+                          ? "You can view all stored dates in this month, let the AI Agent collect topics, or Upload your own Current Affairs & Question for this date."
                           : "Current Affairs for this specific date has not been published yet. Click below to view all published Current Affairs cards for this month."
                         : "Switch the category filter back to 'All 10 Categories' to see all cards."}
                     </p>
@@ -3092,17 +3475,28 @@ export default function DailyCurrentAffairsTab({
                       </button>
 
                       {isAdmin && modalDateFilter !== "all" && modalDateFilter <= todayIso && (
-                        <button
-                          type="button"
-                          disabled={agentBusy}
-                          onClick={() => void handleRunAgentForDate(modalDateFilter)}
-                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-slate-950 cursor-pointer"
-                        >
-                          <Bot className="w-4 h-4" />
-                          {agentBusy
-                            ? "Collecting Topics..."
-                            : `Collect Topics for ${formatReadableDate(modalDateFilter, "en").replace(/\s*\(.*\)$/, "")}`}
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            disabled={agentBusy}
+                            onClick={() => void handleRunAgentForDate(modalDateFilter)}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-slate-950 cursor-pointer"
+                          >
+                            <Bot className="w-4 h-4" />
+                            {agentBusy
+                              ? "Collecting Topics..."
+                              : `Collect Topics for ${formatReadableDate(modalDateFilter, "en").replace(/\s*\(.*\)$/, "")}`}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setShowModalDateUpload(true)}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-xs font-bold text-slate-950 cursor-pointer"
+                          >
+                            <Upload className="w-4 h-4" />
+                            Upload CA for {modalDateFilter}
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -3111,19 +3505,67 @@ export default function DailyCurrentAffairsTab({
                     key={`${activeModalCard.topic.id}-${cardAnimDirection}`}
                     className="p-6 overflow-y-auto space-y-4 flex-1 transition-all duration-300 ease-out"
                   >
-                    {/* Top Metadata Bar on the Card: PROMINENT HUMAN-READABLE DATE + CATEGORY */}
+                    {/* Top Metadata Bar on the Card: PROMINENT HUMAN-READABLE DATE + PAGE NUMBER + ADMIN PAGE DELETE / UPLOAD */}
                     <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="px-3 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-bold text-emerald-300">
                           📅 Date: {formatReadableDate(activeModalCard.editionDate, lang)}
                         </span>
+                        <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-xs font-mono font-bold text-amber-300">
+                          Page {activeModalCard.pageNumberInDate} of {activeModalCard.totalPagesInDate}
+                        </span>
                         <span className="px-3 py-1 rounded-lg bg-sky-500/20 border border-sky-500/40 text-xs font-bold text-sky-300 uppercase tracking-wider">
                           {activeModalCard.topic.category}
                         </span>
                       </div>
-                      <span className="text-[11px] text-slate-400">
-                        Source: {activeModalCard.topic.sourceTag}
-                      </span>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] text-slate-400">
+                          Source: {activeModalCard.topic.sourceTag}
+                        </span>
+
+                        {isAdmin && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={pageDeleteBusy}
+                              onClick={() =>
+                                void handleDeletePagesForDate({
+                                  editionDate: activeModalCard.editionDate,
+                                  topicId: activeModalCard.topic.id,
+                                  pageNumbers: [activeModalCard.pageNumberInDate],
+                                })
+                              }
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-500/50 text-xs font-bold text-rose-300 cursor-pointer"
+                              title={`Delete Page ${activeModalCard.pageNumberInDate} from ${activeModalCard.editionDate}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Delete Page {activeModalCard.pageNumberInDate}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setShowPageDeletePicker((prev) => !prev)
+                              }
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-rose-200 cursor-pointer"
+                              title="Pick specific page numbers (e.g. Page 3, Page 8) to delete from this date"
+                            >
+                              Delete Specific Pages...
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => setShowModalDateUpload((prev) => !prev)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-500/50 text-xs font-bold text-sky-300 cursor-pointer"
+                              title={`Upload CA file or add question to ${activeModalCard.editionDate}`}
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              + Upload CA
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
 
                     {/* Topic Headline */}
@@ -3196,7 +3638,7 @@ export default function DailyCurrentAffairsTab({
                   </div>
                 )}
 
-                {/* Modal Footer: Previous / Progress Dots / Next Buttons */}
+                {/* Modal Footer: Previous / Page Number Buttons (with Page-Wise Delete & Upload) / Next Buttons */}
                 <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-t border-slate-800 bg-slate-950/90 shrink-0">
                   <button
                     type="button"
@@ -3208,41 +3650,75 @@ export default function DailyCurrentAffairsTab({
                     Previous Topic
                   </button>
 
-                  {/* Interactive Card Number Dots / Compact Selector for 30/31-Day Months */}
-                  {modalDeckCards.length <= 16 ? (
-                    <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-md">
-                      {modalDeckCards.map((c, idx) => (
-                        <button
-                          key={`${c.topic.id}-${idx}`}
-                          type="button"
-                          onClick={() => setFloatingCardIdx(idx)}
-                          className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer ${
-                            idx === floatingCardIdx
-                              ? "bg-emerald-500 text-slate-950 scale-110"
-                              : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
-                          }`}
-                          title={`${formatReadableDate(c.editionDate, "en")}: ${c.topic.headlineEn}`}
-                        >
-                          {idx + 1}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-400 font-mono">Jump to Card:</span>
-                      <select
-                        value={floatingCardIdx}
-                        onChange={(e) => setFloatingCardIdx(Number(e.target.value))}
-                        className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-emerald-300 max-w-[260px] cursor-pointer"
-                      >
+                  {/* Interactive Page Number Buttons / Selector */}
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {modalDeckCards.length <= 16 ? (
+                      <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-md">
                         {modalDeckCards.map((c, idx) => (
-                          <option key={`${c.topic.id}-${idx}`} value={idx}>
-                            #{idx + 1} · {c.editionDate} · {c.topic.headlineEn.slice(0, 32)}...
-                          </option>
+                          <button
+                            key={`${c.topic.id}-${idx}`}
+                            type="button"
+                            onClick={() => setFloatingCardIdx(idx)}
+                            className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                              idx === floatingCardIdx
+                                ? "bg-emerald-500 text-slate-950 scale-110"
+                                : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
+                            }`}
+                            title={`Page ${c.pageNumberInDate} (${formatReadableDate(c.editionDate, "en")}): ${c.topic.headlineEn}`}
+                          >
+                            {idx + 1}
+                          </button>
                         ))}
-                      </select>
-                    </div>
-                  )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-400 font-mono">Jump to Card:</span>
+                        <select
+                          value={floatingCardIdx}
+                          onChange={(e) => setFloatingCardIdx(Number(e.target.value))}
+                          className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-emerald-300 max-w-[260px] cursor-pointer"
+                        >
+                          {modalDeckCards.map((c, idx) => (
+                            <option key={`${c.topic.id}-${idx}`} value={idx}>
+                              #{idx + 1} (Page {c.pageNumberInDate}) · {c.editionDate} · {c.topic.headlineEn.slice(0, 28)}...
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Quick Page-Wise Delete & Upload Buttons right next to Page Numbers */}
+                    {isAdmin && activeModalCard && (
+                      <div className="flex items-center gap-1.5 pl-1 border-l border-slate-800">
+                        <button
+                          type="button"
+                          disabled={pageDeleteBusy}
+                          onClick={() =>
+                            void handleDeletePagesForDate({
+                              editionDate: activeModalCard.editionDate,
+                              topicId: activeModalCard.topic.id,
+                              pageNumbers: [activeModalCard.pageNumberInDate],
+                            })
+                          }
+                          title={`Delete Page ${activeModalCard.pageNumberInDate} of ${activeModalCard.editionDate}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-500/40 text-[11px] font-bold text-rose-300 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Del Page #{activeModalCard.pageNumberInDate}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setShowModalDateUpload((prev) => !prev)}
+                          title={`Upload CA & Question for ${activeModalCard.editionDate}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-500/40 text-[11px] font-bold text-sky-300 cursor-pointer"
+                        >
+                          <Upload className="w-3 h-3" />
+                          Upload CA
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                   <button
                     type="button"
