@@ -1,5 +1,13 @@
-import "dotenv/config";
-import { pathToFileURL } from "node:url";
+import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const __serverDir = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
+dotenv.config({ path: path.resolve(__serverDir, "../../../.env") });
+dotenv.config({ path: path.resolve(__serverDir, "../../.env") });
+
 import Fastify, { type FastifyInstance } from "fastify";
 import { authRoutes, ensureAdminAccount } from "./routes/auth";
 import { meRoutes, ensureSubscriptionSchemaReady } from "./routes/me";

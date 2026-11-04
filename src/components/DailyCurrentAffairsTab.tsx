@@ -777,7 +777,10 @@ export default function DailyCurrentAffairsTab({
     }
   };
 
-  const handleRunAgentForDate = async (targetDate: string) => {
+  const handleRunAgentForDate = async (
+    targetDate: string,
+    forceRegenerate: boolean = false
+  ) => {
     if (targetDate > todayIso) {
       onNotify?.(
         "error",
@@ -788,11 +791,11 @@ export default function DailyCurrentAffairsTab({
 
     const existingEdition = editionsByDate.get(targetDate);
     const existingCount = existingEdition?.topics?.length || 0;
-    if (existingCount >= 12) {
+    if (!forceRegenerate && existingCount >= 12) {
       openFloatingDeckForMonth(targetDate.slice(0, 7), targetDate);
       onNotify?.(
         "info",
-        `${formatReadableDate(targetDate, "en")} already has ${existingCount}/12 Current Affairs topics stored. Regeneration skipped.`
+        `${formatReadableDate(targetDate, "en")} already has ${existingCount}/12 Current Affairs topics stored. Click 'Force Re-Ground' to replace with fresh Google Search topics.`
       );
       return;
     }
@@ -813,6 +816,7 @@ export default function DailyCurrentAffairsTab({
           sourceUrl: agentSourceUrl,
           focusTopics: agentFocusTopics,
           targetTopicCount: 12,
+          forceRegenerate,
         },
       });
       await loadArchive();
@@ -821,13 +825,13 @@ export default function DailyCurrentAffairsTab({
       if (res.alreadyComplete) {
         onNotify?.(
           "info",
-          `${formatReadableDate(res.editionDate, "en")} already has ${res.topicsCount}/12 Current Affairs topics stored. Regeneration skipped.`
+          `${formatReadableDate(res.editionDate, "en")} already has ${res.topicsCount}/12 Current Affairs topics stored.`
         );
       } else {
         const addedCount = res.addedTopicsCount ?? res.topicsCount;
         onNotify?.(
           "success",
-          existingCount > 0
+          !forceRegenerate && existingCount > 0
             ? `Google Search Grounded + Vector DB Verified: Added ${addedCount} unique topics (now ${res.topicsCount} topics) for ${formatReadableDate(res.editionDate, "en")}.`
             : `Google Search Grounded + Vector DB Indexed: Collected ${res.topicsCount} unique topics & ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
         );
@@ -2020,38 +2024,53 @@ export default function DailyCurrentAffairsTab({
                 const isPickedComplete = pickedCount >= 12;
                 const pickedRemaining = Math.max(0, 12 - pickedCount);
                 return (
-                  <button
-                    type="button"
-                    disabled={agentBusy || isPickedComplete}
-                    onClick={() => void handleRunAgentForDate(agentEditionDate)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
-                      isPickedComplete
-                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
-                        : "bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 cursor-pointer"
-                    }`}
-                  >
-                    {agentBusy ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        Generating Topics...
-                      </>
-                    ) : isPickedComplete ? (
-                      <>
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        12/12 Topics Already Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
-                      </>
-                    ) : pickedCount > 0 ? (
-                      <>
-                        <Bot className="w-3.5 h-3.5" />
-                        Generate Remaining {pickedRemaining} Topics ({pickedCount}/12 Stored)
-                      </>
-                    ) : (
-                      <>
-                        <Bot className="w-3.5 h-3.5" />
-                        Collect 12 Topics for {formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")}
-                      </>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={agentBusy || isPickedComplete}
+                      onClick={() => void handleRunAgentForDate(agentEditionDate, false)}
+                      className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
+                        isPickedComplete
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
+                          : "bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 cursor-pointer"
+                      }`}
+                    >
+                      {agentBusy ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Grounding from Google Search...
+                        </>
+                      ) : isPickedComplete ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          12/12 Topics Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                        </>
+                      ) : pickedCount > 0 ? (
+                        <>
+                          <Bot className="w-3.5 h-3.5" />
+                          Ground Remaining {pickedRemaining} Topics ({pickedCount}/12 Stored)
+                        </>
+                      ) : (
+                        <>
+                          <Bot className="w-3.5 h-3.5" />
+                          Ground 12 Topics via Google Search ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                        </>
+                      )}
+                    </button>
+
+                    {pickedCount > 0 && (
+                      <button
+                        type="button"
+                        disabled={agentBusy}
+                        onClick={() => void handleRunAgentForDate(agentEditionDate, true)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/50 text-sky-200 disabled:opacity-50 cursor-pointer"
+                        title="Discard non-custom cards on this date and re-ground all 12 topics live from Google Search"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${agentBusy ? "animate-spin" : ""}`} />
+                        Force Re-Ground (Google Search)
+                      </button>
                     )}
-                  </button>
+                  </div>
                 );
               })()}
             </div>
