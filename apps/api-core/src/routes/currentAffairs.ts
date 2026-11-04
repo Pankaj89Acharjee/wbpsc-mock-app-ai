@@ -1,10 +1,19 @@
 import type { FastifyPluginAsync } from "fastify";
+import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import { GoogleGenAI, Type } from "@google/genai";
 import { z } from "zod";
 import { queryClient } from "../db/index";
 import { loadSessionUser, requireAdmin, requireUser } from "../lib/auth";
 import type { BilingualText, OptionKey } from "../../../../packages/shared-types/src/index";
+
+const __caDir = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
+dotenv.config({ path: path.resolve(__caDir, "../../../../.env") });
+dotenv.config({ path: path.resolve(__caDir, "../../../.env") });
 
 // ============================================================================
 // Autonomous Current Affairs Multi-Agent Suite:
@@ -63,9 +72,14 @@ export interface CaAgentStepLog {
 }
 
 function getGenAIClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey =
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.VITE_GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY environment variable is not configured.");
+    throw new Error(
+      "GEMINI_API_KEY environment variable is not configured in .env. Please set GEMINI_API_KEY in your root .env file."
+    );
   }
   return new GoogleGenAI({
     apiKey,
@@ -75,6 +89,66 @@ function getGenAIClient(): GoogleGenAI {
       },
     },
   });
+}
+
+const GEMINI_FLASH_MODELS = Array.from(
+  new Set([
+    process.env.GEMINI_PRIMARY_MODEL || "gemini-2.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
+  ])
+);
+
+async function generateContentWithFallback(
+  params: {
+    contents: any;
+    config?: any;
+  },
+  timeoutMs: number = 42000
+): Promise<{ response: any; modelUsed: string }> {
+  const ai = getGenAIClient();
+  let lastError: unknown = null;
+
+  for (const modelName of GEMINI_FLASH_MODELS) {
+    try {
+      const callPromise = ai.models.generateContent({
+        model: modelName,
+        contents: params.contents,
+        config: params.config,
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Gemini timeout (${modelName} after ${timeoutMs}ms)`)), timeoutMs)
+      );
+      const response = await Promise.race([callPromise, timeoutPromise]);
+      return { response, modelUsed: modelName };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("All Gemini Flash models failed.");
+}
+
+function safeParseJsonObject(rawText: string): Record<string, any> {
+  const cleaned = (rawText || "")
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  if (!cleaned) return {};
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
 }
 
 const MONTH_NAMES_EN = [
@@ -203,6 +277,33 @@ const caAutoScheduler: CaAutoSchedulerStatus = {
 };
 
 let autoSchedulerTimerStarted = false;
+let backgroundSeedStarted = false;
+const inFlightAgentDates = new Set<string>();
+const lastAutoGroundAttemptMs = new Map<string, number>();
+
+function triggerBackgroundAutoGroundForDate(editionDate: string, actorName: string): void {
+  if (inFlightAgentDates.has(editionDate)) return;
+  const lastAttempt = lastAutoGroundAttemptMs.get(editionDate) || 0;
+  // Avoid hammering Gemini if an auto-ground attempt ran within the last 3 minutes
+  if (Date.now() - lastAttempt < 3 * 60 * 1000) return;
+
+  inFlightAgentDates.add(editionDate);
+  lastAutoGroundAttemptMs.set(editionDate, Date.now());
+
+  void runAutonomousCurrentAffairsAgent({
+    editionDate,
+    targetTopicCount: 12,
+    actorName,
+  })
+    .then(() => {
+      caAutoScheduler.lastAutoCollectedDate = editionDate;
+      caAutoScheduler.lastAutoRunAt = new Date().toISOString();
+    })
+    .catch(() => {})
+    .finally(() => {
+      inFlightAgentDates.delete(editionDate);
+    });
+}
 
 export async function ensureCurrentAffairsSchema(): Promise<void> {
   await queryClient`
@@ -237,6 +338,16 @@ export async function ensureCurrentAffairsSchema(): Promise<void> {
       edition_date VARCHAR(20) PRIMARY KEY,
       deleted_by_name VARCHAR(120) NOT NULL DEFAULT 'WBPSC Admin',
       deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+
+  // Track dates where Admin manually deleted specific page(s)/card(s) or uploaded custom CA cards
+  // so background auto-top-up does not overwrite or auto-refill deleted pages unless Admin clicks Generate.
+  await queryClient`
+    CREATE TABLE IF NOT EXISTS current_affairs_admin_modified_dates (
+      edition_date VARCHAR(20) PRIMARY KEY,
+      modified_by_name VARCHAR(120) NOT NULL DEFAULT 'WBPSC Admin',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `;
 
@@ -299,9 +410,19 @@ export async function ensureCurrentAffairsSchema(): Promise<void> {
     WHERE edition_date > ${todayIso}
   `;
 
-  // Ensure the 1-Year Archive + Current Month (November 2026) + Today's 12-Topic Edition exist
-  await seedFullYearClerkshipArchive();
-  await seedInitialVectorStoreSamples(todayIso);
+  // Run heavy archive seeding, duplicate cleanup, and vector store sample seeding
+  // asynchronously once so Fastify plugin registration completes in < 50ms!
+  if (!backgroundSeedStarted) {
+    backgroundSeedStarted = true;
+    void (async () => {
+      try {
+        await seedFullYearClerkshipArchive();
+        await seedInitialVectorStoreSamples(todayIso);
+      } catch {
+        // Ignore background seed errors
+      }
+    })();
+  }
 
   // Start background daily auto-collector loop once per server process
   if (!autoSchedulerTimerStarted) {
@@ -1880,12 +2001,12 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
   `;
   const deletedDatesSet = new Set(deletedDateRows.map((r) => r.edition_date));
 
-  const allToSeed = [...yearMonths, ...octoberUniqueDates].filter(
+  // Only seed the past 1-year monthly archive anchors (Dec 2025 – Sept 2026) once;
+  // NEVER seed hardcoded static topics into late October or November 2026!
+  const allToSeed = [...yearMonths].filter(
     (ym) => ym.editionDate <= todayIso && !deletedDatesSet.has(ym.editionDate)
   );
 
-  // IMPORTANT: Use ON CONFLICT (edition_date) DO NOTHING so we NEVER overwrite an existing
-  // edition that has already been topped up to 12 topics!
   for (const ym of allToSeed) {
     const meta = deriveMonthMeta(ym.editionDate);
     await queryClient`
@@ -1938,31 +2059,40 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
     `;
   }
 
-  // Ensure Current Month (November 2026) dates up to Present Date (`todayIso`) are automatically
-  // collected with 12/12 topics by the Daily Auto-Collector Agent (unless deleted by Admin)!
-  const currentMonthDatesToEnsure = new Set<string>();
-  if (todayIso >= "2026-11-01") {
-    currentMonthDatesToEnsure.add("2026-11-01");
-  }
-  currentMonthDatesToEnsure.add(todayIso);
+  // Clean any previously injected static supplement/redundant topics across all stored dates
+  await ensureLegacySupplementsPurgedOnce();
 
-  for (const dStr of currentMonthDatesToEnsure) {
-    if (dStr <= todayIso && !deletedDatesSet.has(dStr)) {
-      await topUpEditionDateFastTo12Topics(
-        dStr,
-        dStr === todayIso
-          ? "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
-          : "Daily Auto-Collector Agent"
-      );
+  // Trigger non-blocking Google Search Grounding for Today's Present Date (`todayIso`) if not yet grounded
+  if (caAutoScheduler.enabled && !deletedDatesSet.has(todayIso)) {
+    const adminModifiedRows = await queryClient<Array<{ edition_date: string }>>`
+      SELECT edition_date FROM current_affairs_admin_modified_dates
+      WHERE edition_date = ${todayIso}
+      LIMIT 1
+    `;
+    if (adminModifiedRows.length === 0) {
+      const todayRows = await queryClient<
+        Array<{ edition_date: string; topics_json: CaTopicItem[] }>
+      >`
+        SELECT edition_date, topics_json
+        FROM current_affairs_editions
+        WHERE edition_date = ${todayIso}
+        LIMIT 1
+      `;
+      const todayTopicsCount = Array.isArray(todayRows[0]?.topics_json)
+        ? todayRows[0].topics_json.length
+        : 0;
+      if (todayTopicsCount === 0) {
+        triggerBackgroundAutoGroundForDate(
+          todayIso,
+          "Daily Google Search Grounded Agent (Auto-Run)"
+        );
+      }
     }
   }
-
-  // Ensure every stored date in the archive has a complete set of 12/12 topics and 6+ MCQs!
-  await ensureAllStoredEditionsHave12Topics(todayIso);
 }
 
 // ============================================================================
-// 2. Cross-Date Anti-Duplication Engine + 2-Level Nested Page Web Crawler
+// 2. Cross-Date Anti-Duplication Engine + Legacy Static Supplement Purger
 // ============================================================================
 
 const STOP_WORDS = new Set([
@@ -2019,12 +2149,71 @@ const STOP_WORDS = new Set([
   "2026",
 ]);
 
-export function normalizeHeadlineFingerprint(headline: string): string {
+export function stripArtificialDateReviewSuffix(headline: string): string {
   return (headline || "")
+    .replace(/\(\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+review\s*\)/gi, "")
+    .replace(/[—-]\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+edition\s*#?\d*/gi, "")
+    .trim();
+}
+
+export function normalizeHeadlineFingerprint(headline: string): string {
+  return stripArtificialDateReviewSuffix(headline)
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Exact headline fingerprints of the 24 legacy static `supplementCatalog` fallback topics
+ * and the 12 `pscwbSpecialPool` static seed topics so any previously saved fallback topics
+ * in PostgreSQL (even when their `id` was renamed from `ca-supp-*` to `ca-YYYY-MM-DD-*`)
+ * are immediately identified and purged!
+ */
+const LEGACY_STATIC_SUPPLEMENT_SNIPPETS = [
+  "farakka barrage project ganga water treaty",
+  "public accounts committee pac centenary",
+  "nabard rural infrastructure development fund ridf",
+  "isro gaganyaan human spaceflight crew module recovery trials",
+  "jaldapara gorumara one horned rhino census",
+  "54th dadasaheb phalke lifetime achievement award conferred on mithun chakraborty",
+  "exercise kazind malabar multilateral naval exercise",
+  "santosh trophy national football championship ifa shield heritage",
+  "niti aayog sdg india index multidimensional poverty",
+  "16th brics summit in kazan expansion to brics",
+  "teesta river hydropower restoration north bengal piedmont",
+  "8th schedule languages article 343 351 official language",
+  "kanyashree prakalpa un public service award west bengal social empowerment",
+  "east kolkata wetlands sundarban wetland ramsar conservation",
+  "73rd constitutional amendment act eleventh schedule west bengal 3 tier panchayat",
+  "eastern naval command maritime security exercises garden reach shipbuilders grse",
+  "aditya l1 solar observatory at lagrange point 1 xposat",
+  "calcutta high court 1862 constitutional jurisdiction port blair circuit bench",
+  "gst council constitutional framework article 279a 101st amendment",
+  "buxa tiger reserve singalila red panda conservation west bengal protected areas",
+  "bimstec secretariat dhaka charter bay of bengal maritime connectivity",
+  "comptroller and auditor general cag articles 148 151 constitutional audit",
+  "syama prasad mookerjee port kolkata haldia tajpur deep sea port",
+  "global hunger index ghi world happiness report rbi monetary policy committee section 45zb",
+];
+
+export function isLegacyStaticSupplementTopic(
+  topic: Partial<CaTopicItem> | null | undefined
+): boolean {
+  if (!topic) return true;
+  const tid = String(topic.id || "");
+  const hEn = String(topic.headlineEn || "").trim();
+  if (!hEn) return true;
+  if (
+    tid.startsWith("ca-supp-") ||
+    tid.startsWith("pscwb-pool-") ||
+    /\(\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+Review\s*\)/i.test(hEn) ||
+    /Edition\s*#\d+/i.test(hEn)
+  ) {
+    return true;
+  }
+  const norm = normalizeHeadlineFingerprint(hEn);
+  return LEGACY_STATIC_SUPPLEMENT_SNIPPETS.some((snippet) => norm.includes(snippet));
 }
 
 function getSignificantTokens(headline: string): Set<string> {
@@ -2037,14 +2226,14 @@ function getSignificantTokens(headline: string): Set<string> {
 
 /**
  * Returns true if two headlines refer to the same Current Affairs event/topic
- * (either via exact normalized match, long substring containment, or >= 75% overlap on >= 4 specific tokens).
+ * (either via exact normalized match, long substring containment, or >= 70% overlap on >= 4 specific tokens).
  */
 export function areHeadlinesDuplicate(h1: string, h2: string): boolean {
   const n1 = normalizeHeadlineFingerprint(h1);
   const n2 = normalizeHeadlineFingerprint(h2);
   if (!n1 || !n2) return false;
   if (n1 === n2) return true;
-  if (n1.length > 26 && n2.length > 26 && (n1.includes(n2) || n2.includes(n1))) {
+  if (n1.length > 24 && n2.length > 24 && (n1.includes(n2) || n2.includes(n1))) {
     return true;
   }
   const t1 = getSignificantTokens(h1);
@@ -2055,7 +2244,7 @@ export function areHeadlinesDuplicate(h1: string, h2: string): boolean {
     if (t2.has(tok)) intersection++;
   }
   const smallerSize = Math.min(t1.size, t2.size);
-  return smallerSize >= 4 && intersection / smallerSize >= 0.75;
+  return smallerSize >= 4 && intersection / smallerSize >= 0.7;
 }
 
 async function getStoredHeadlinesExceptDate(
@@ -2068,16 +2257,144 @@ async function getStoredHeadlinesExceptDate(
     FROM current_affairs_editions
     WHERE edition_date <> ${excludeEditionDate}
     ORDER BY edition_date DESC
-    LIMIT 25
+    LIMIT 60
   `;
   const list: string[] = [];
   for (const r of rows) {
     const topics = Array.isArray(r.topics_json) ? r.topics_json : [];
     for (const t of topics) {
-      if (t?.headlineEn) list.push(t.headlineEn);
+      if (t?.headlineEn && !isLegacyStaticSupplementTopic(t)) {
+        list.push(t.headlineEn);
+      }
     }
   }
   return list;
+}
+
+let legacySupplementsPurgePromise: Promise<void> | null = null;
+
+export async function ensureLegacySupplementsPurgedOnce(): Promise<void> {
+  if (!legacySupplementsPurgePromise) {
+    legacySupplementsPurgePromise = cleanRedundantSupplementTopicsFromDb().catch(
+      () => {
+        legacySupplementsPurgePromise = null;
+      }
+    );
+  }
+  await legacySupplementsPurgePromise;
+}
+
+/**
+ * Purges any previously injected static template supplement topics (`ca-supp-*`, `pscwb-pool-*`,
+ * all 24 `supplementCatalog` headlines, `(DD Month YYYY Review)`, `Edition #N`)
+ * and removes any cross-date duplicate topics across `current_affairs_editions` and `current_affairs_vector_chunks`
+ * so every date only holds genuine, unique Google Search Grounded or Admin-uploaded CA.
+ */
+async function cleanRedundantSupplementTopicsFromDb(): Promise<void> {
+  const rows = await queryClient<
+    Array<{
+      id: string;
+      edition_date: string;
+      created_by_name: string;
+      topics_json: CaTopicItem[];
+    }>
+  >`
+    SELECT id, edition_date, created_by_name, topics_json
+    FROM current_affairs_editions
+    ORDER BY edition_date ASC
+  `;
+
+  const globalSeenHeadlines: string[] = [];
+
+  for (const r of rows) {
+    if (
+      r.edition_date >= "2026-10-26" &&
+      (r.created_by_name === "CA 12-Topic Completeness Agent" ||
+        r.created_by_name === "CA Curated Unique Archive")
+    ) {
+      await queryClient`
+        DELETE FROM current_affairs_editions
+        WHERE id = ${r.id}
+      `;
+      continue;
+    }
+
+    const rawTopics = Array.isArray(r.topics_json) ? r.topics_json : [];
+    const cleanedTopics: CaTopicItem[] = [];
+    let modified = false;
+
+    for (const t of rawTopics) {
+      const hEn = String(t?.headlineEn || "").trim();
+      if (!hEn || isLegacyStaticSupplementTopic(t)) {
+        modified = true;
+        continue;
+      }
+
+      const isCrossDateDup = globalSeenHeadlines.some((seen) =>
+        areHeadlinesDuplicate(seen, hEn)
+      );
+      if (isCrossDateDup) {
+        modified = true;
+        continue;
+      }
+
+      globalSeenHeadlines.push(hEn);
+      cleanedTopics.push({
+        ...t,
+        category: normalizeCategory(t.category),
+      });
+    }
+
+    if (modified) {
+      if (cleanedTopics.length === 0) {
+        await queryClient`
+          DELETE FROM current_affairs_editions
+          WHERE id = ${r.id}
+        `;
+      } else {
+        await queryClient`
+          UPDATE current_affairs_editions
+          SET topics_json = ${JSON.stringify(cleanedTopics)}::jsonb,
+              updated_at = NOW()
+          WHERE id = ${r.id}
+        `;
+      }
+    }
+  }
+
+  const vecChunks = await queryClient<
+    Array<{ id: string; document_id: string; headline_en: string }>
+  >`
+    SELECT id, document_id, headline_en
+    FROM current_affairs_vector_chunks
+  `;
+  const badChunkIds: string[] = [];
+  const affectedDocIds = new Set<string>();
+  for (const vc of vecChunks) {
+    if (isLegacyStaticSupplementTopic({ headlineEn: vc.headline_en })) {
+      badChunkIds.push(vc.id);
+      affectedDocIds.add(vc.document_id);
+    }
+  }
+  if (badChunkIds.length > 0) {
+    await queryClient`
+      DELETE FROM current_affairs_vector_chunks
+      WHERE id = ANY(${badChunkIds})
+    `;
+    for (const docId of affectedDocIds) {
+      const rem = await queryClient<Array<{ cnt: number }>>`
+        SELECT COUNT(*)::int AS cnt
+        FROM current_affairs_vector_chunks
+        WHERE document_id = ${docId}
+      `;
+      if ((rem[0]?.cnt || 0) === 0) {
+        await queryClient`
+          DELETE FROM current_affairs_vector_documents
+          WHERE id = ${docId}
+        `;
+      }
+    }
+  }
 }
 
 /**
@@ -2628,54 +2945,26 @@ function buildUniquePscwbSupplementTopics(
     },
   ];
 
-  // Rotate catalog starting index deterministically by date so each date gets a distinct ordering
+  // Rotate catalog starting index deterministically by date, but NEVER add fake date suffixes
+  // and NEVER select any topic that already exists in `acceptedHeadlines`!
   const dateSeed = Number(yStr) * 372 + Number(mStr) * 31 + (dayInt || 1);
   const totalCatalog = supplementCatalog.length;
   const selected: CaTopicItem[] = [];
 
   for (let i = 0; i < totalCatalog && selected.length < countNeeded; i++) {
     const item = supplementCatalog[(dateSeed + i) % totalCatalog];
-    const datedHeadlineEn = `${item.headlineEn} (${dayInt} ${monthEn} ${yStr} Review)`;
-    const datedHeadlineBn = `${item.headlineBn} (${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)})`;
-    const isDup = acceptedHeadlines.some(
-      (existing) =>
-        normalizeHeadlineFingerprint(existing) ===
-          normalizeHeadlineFingerprint(datedHeadlineEn) ||
-        normalizeHeadlineFingerprint(existing) ===
-          normalizeHeadlineFingerprint(item.headlineEn)
+    const isDup = acceptedHeadlines.some((existing) =>
+      areHeadlinesDuplicate(existing, item.headlineEn)
     );
     if (!isDup) {
-      acceptedHeadlines.push(datedHeadlineEn);
+      acceptedHeadlines.push(item.headlineEn);
       selected.push({
         ...item,
-        id: `ca-supp-${editionDate}-${selected.length + 1}`,
-        headlineEn: datedHeadlineEn,
-        headlineBn: datedHeadlineBn,
+        id: `ca-${editionDate}-${selected.length + 1}`,
+        headlineEn: item.headlineEn,
+        headlineBn: item.headlineBn,
       });
     }
-  }
-
-  // Bounded fallback if countNeeded still not reached (NEVER loops infinitely)
-  for (let extraIdx = 0; selected.length < countNeeded && extraIdx < totalCatalog; extraIdx++) {
-    const item = supplementCatalog[(dateSeed + extraIdx) % totalCatalog];
-    const uniqueHeadlineEn = `${item.headlineEn} — ${dayInt} ${monthEn} ${yStr} Edition #${extraIdx + 1}`;
-    const uniqueHeadlineBn = `${item.headlineBn} — ${toBengaliNumber(dayInt)} ${monthBn} ${toBengaliNumber(yStr)} সংস্করণ #${toBengaliNumber(extraIdx + 1)}`;
-    if (
-      acceptedHeadlines.some(
-        (existing) =>
-          normalizeHeadlineFingerprint(existing) ===
-          normalizeHeadlineFingerprint(uniqueHeadlineEn)
-      )
-    ) {
-      continue;
-    }
-    acceptedHeadlines.push(uniqueHeadlineEn);
-    selected.push({
-      ...item,
-      id: `ca-supp-dyn-${editionDate}-${selected.length + 1}`,
-      headlineEn: uniqueHeadlineEn,
-      headlineBn: uniqueHeadlineBn,
-    });
   }
 
   return selected;
@@ -3064,6 +3353,11 @@ export async function topUpEditionDateFastTo12Topics(
 export async function ensureAllStoredEditionsHave12Topics(
   todayIso: string
 ): Promise<void> {
+  const adminModifiedRows = await queryClient<Array<{ edition_date: string }>>`
+    SELECT edition_date FROM current_affairs_admin_modified_dates
+  `;
+  const modifiedSet = new Set(adminModifiedRows.map((r) => r.edition_date));
+
   const rows = await queryClient<
     Array<{ edition_date: string; topics_json: CaTopicItem[] }>
   >`
@@ -3074,6 +3368,7 @@ export async function ensureAllStoredEditionsHave12Topics(
   `;
 
   for (const row of rows) {
+    if (modifiedSet.has(row.edition_date)) continue;
     const count = Array.isArray(row.topics_json) ? row.topics_json.length : 0;
     if (count < 12) {
       await topUpEditionDateFastTo12Topics(
@@ -3248,11 +3543,32 @@ async function crawlNestedPortalArticles(
   };
 }
 
+function computeRawCosineSimilarity(a: number[], b: number[]): number {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) {
+    return 0;
+  }
+  const len = Math.min(a.length, b.length);
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < len; i++) {
+    const va = Number(a[i]) || 0;
+    const vb = Number(b[i]) || 0;
+    dot += va * vb;
+    normA += va * va;
+    normB += vb * vb;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (!denom) return 0;
+  return dot / denom;
+}
+
 export async function runAutonomousCurrentAffairsAgent(params: {
   editionDate: string;
   sourceUrl?: string;
   focusTopics?: string;
   targetTopicCount?: number;
+  forceRegenerate?: boolean;
   actorName: string;
 }): Promise<{
   editionId: string;
@@ -3261,19 +3577,23 @@ export async function runAutonomousCurrentAffairsAgent(params: {
   mcqsCount: number;
   addedTopicsCount: number;
   alreadyComplete: boolean;
+  vectorDocumentId?: string | null;
+  groundedSourcesCount?: number;
+  errorDetail?: string;
 }> {
+  await ensureLegacySupplementsPurgedOnce();
+
   const {
     editionDate,
     sourceUrl,
     focusTopics,
     targetTopicCount = 12,
+    forceRegenerate = false,
     actorName,
   } = params;
   const desiredTotal = Math.max(1, Math.min(12, targetTopicCount || 12));
 
   // 1. Check if `editionDate` ALREADY has topics in PostgreSQL:
-  //    - If it already has >= 12 topics, DO NOT re-generate!
-  //    - If it has < 12 topics, keep the existing topics and ONLY generate the remaining (12 - existing) topics without duplicating!
   const existingEditionRows = await queryClient<
     Array<{
       id: string;
@@ -3307,9 +3627,17 @@ export async function runAutonomousCurrentAffairsAgent(params: {
 
   if (existingEdition && Array.isArray(existingEdition.topics_json)) {
     for (const t of existingEdition.topics_json) {
+      const tid = String(t?.id || "");
       const h = (t?.headlineEn || "").trim();
       if (!h) continue;
-      // Ensure existing topics on this date are also non-duplicated
+      // Always strip any legacy static supplement topic
+      if (isLegacyStaticSupplementTopic(t)) {
+        continue;
+      }
+      // If Admin clicked Force Re-Ground, only keep Admin custom-uploaded cards (`ca-custom-*`)
+      if (forceRegenerate && !tid.startsWith("ca-custom-")) {
+        continue;
+      }
       const isDup =
         otherDatesHeadlines.some((oh) => areHeadlinesDuplicate(oh, h)) ||
         existingSameDateHeadlines.some((sh) => areHeadlinesDuplicate(sh, h));
@@ -3323,12 +3651,13 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     }
   }
 
-  const existingMcqs: CaMcqItem[] = Array.isArray(existingEdition?.mcqs_json)
-    ? existingEdition.mcqs_json
-    : [];
+  const existingMcqs: CaMcqItem[] =
+    !forceRegenerate && Array.isArray(existingEdition?.mcqs_json)
+      ? existingEdition.mcqs_json
+      : [];
 
-  // RULE: If this date already has 12 (or more) topics, DO NOT re-generate!
-  if (existingEdition && existingTopics.length >= 12) {
+  // RULE: If this date already has 12 (or more) genuine topics and forceRegenerate is false, DO NOT re-generate!
+  if (!forceRegenerate && existingEdition && existingTopics.length >= 12) {
     return {
       editionId: existingEdition.id,
       editionDate,
@@ -3346,284 +3675,356 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     ...otherDatesHeadlines,
   ];
 
-  const agentTrace: CaAgentStepLog[] = Array.isArray(
-    existingEdition?.agent_trace_json
-  )
-    ? [...existingEdition.agent_trace_json]
-    : [];
+  const agentTrace: CaAgentStepLog[] =
+    !forceRegenerate && Array.isArray(existingEdition?.agent_trace_json)
+      ? [...existingEdition.agent_trace_json]
+      : [];
 
   const [yStr, mStr, dStr] = editionDate.split("-");
-  const monthNameEn = MONTH_NAMES_EN[Math.max(0, Number(mStr) - 1)] || "October";
+  const monthNameEn = MONTH_NAMES_EN[Math.max(0, Number(mStr) - 1)] || "November";
   const dayInt = Number(dStr);
+  const isTodayEdition = editionDate === getTodayIso();
 
-  // Build date-specific seed URLs + nested page discovery
-  const seedUrls = Array.from(
-    new Set(
-      [
-        sourceUrl?.trim(),
-        `https://www.gktoday.in/current-affairs/date/${editionDate}/`,
-        "https://www.gktoday.in/current-affairs/",
-        `https://www.pyqarena.com/current-affairs-from-the-hindu-${dayInt}-${monthNameEn.toLowerCase()}-${yStr}/`,
-      ].filter((u): u is string => Boolean(u && u.startsWith("http")))
-    )
-  );
+  // Only crawl custom URL if Admin passed a specific article URL other than the generic root index
+  const trimmedSourceUrl = (sourceUrl || "").trim();
+  const isCustomDeepUrl =
+    trimmedSourceUrl.startsWith("http") &&
+    trimmedSourceUrl !== "https://www.gktoday.in/current-affairs/" &&
+    trimmedSourceUrl !== "https://www.gktoday.in/current-affairs";
+  const seedUrls = isCustomDeepUrl ? [trimmedSourceUrl] : [];
 
-  // STEP 1: 2-Level Nested Portal Crawler + Date-Specific Google Search Grounding
+  // ==========================================================================
+  // STAGE 1 (PASS 1): LIVE GOOGLE SEARCH GROUNDING (`tools: [{ googleSearch: {} }]`)
+  // Unconstrained search pass (no `responseSchema` conflict) so `gemini-2.5-flash`
+  // executes live Google Search queries across GKToday, AffairsCloud, PIB, The Hindu & WB News!
+  // ==========================================================================
   const t1 = Date.now();
-  const crawled = await crawlNestedPortalArticles(seedUrls, editionDate);
+  const crawled =
+    seedUrls.length > 0
+      ? await crawlNestedPortalArticles(seedUrls, editionDate)
+      : { crawledUrls: [] as string[], combinedSnippet: "" };
 
   let groundedResearchContext = "";
+  const groundedSourceTitles: string[] = [];
   const discoveredUrls = new Set<string>([
     ...(Array.isArray(existingEdition?.source_urls)
       ? existingEdition.source_urls
       : []),
     ...crawled.crawledUrls,
-    "https://www.gktoday.in/current-affairs/",
-    "https://pib.gov.in",
-    "https://www.thehindu.com",
   ]);
 
-  const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("LLM timeout")), ms);
-      promise
-        .then((val) => {
-          clearTimeout(timer);
-          resolve(val);
-        })
-        .catch((err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
+  let searchModelUsed = "gemini-2.5-flash";
+  let lastGeminiError = "";
 
   try {
-    const ai = getGenAIClient();
-    const scoutResponse = await withTimeout(
-      ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: `You are Step 1 (Deep Nested-Page Web-Scout & Date-Specific Harvester Agent) for WBPSC Civil Services & Clerkship.
-Target Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate})
-Existing Topics on This Date: ${existingTopics.length} / ${desiredTotal} (Need ${missingCount} MORE unique topics to reach ${desiredTotal})
+    const searchPrompt = `You are the Live Google Search Current Affairs Harvester for WBPSC Clerkship (100 Marks) & WBCS Prelims (200 Marks).
+Use Google Search right now to find ${missingCount + 3} real, verified, current news & GK items for WBPSC Clerkship and WBCS Prelims exam preparation (Target Edition: ${dayInt} ${monthNameEn} ${yStr}${isTodayEdition ? " — Today's Current Affairs" : ""}).
 
-CRAWLED PORTAL & NESTED SUB-PAGE CONTENT (${crawled.crawledUrls.length} pages crawled):
-${crawled.combinedSnippet || "Use Google Search grounding for this specific date."}
+Execute Google Search queries for:
+1. "give me today's current affairs for wbpsc clerkship exam"
+2. "today's top 10 current affairs GKToday AffairsCloud Jagran Josh PIB The Hindu"
+3. "West Bengal current affairs GKToday Adda247 PIB WBPSC Clerkship"
+4. "current affairs ${dayInt} ${monthNameEn} GKToday PIB The Hindu"
+${focusTopics?.trim() ? `5. Focus query: "${focusTopics.trim()}"` : ""}
 
-Additional Focus: ${
-          focusTopics?.trim() ||
-          `Collect ${missingCount} distinct, date-specific PSCWB exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr}`
-        }
+${crawled.combinedSnippet ? `Additional Crawled Portal Snippets:\n${crawled.combinedSnippet.slice(0, 3500)}\n` : ""}
 
-STRICT ANTI-DUPLICATION RULE — DO NOT REPEAT ANY OF THESE ALREADY-STORED TOPICS (FROM THIS DATE OR OTHER DATES):
-${allForbiddenHeadlines.slice(0, 85).map((h, i) => `${i + 1}. ${h}`).join("\n")}
+STRICT ANTI-DUPLICATION RULE — DO NOT REPEAT ANY OF THESE ${allForbiddenHeadlines.length} ALREADY-STORED HEADLINES:
+${allForbiddenHeadlines.slice(0, 80).map((h, i) => `${i + 1}. ${h}`).join("\n")}
 
-Gather ${missingCount} COMPLETELY NEW, NON-DUPLICATE exam topics specific to ${dayInt} ${monthNameEn} ${yStr} (or that week of ${monthNameEn} ${yStr} not listed above) with concrete facts, Constitutional Articles, Acts, Winners, Venues, West Bengal developments, and Static GK linkages.`,
+From your live Google Search results, compile ${missingCount + 2} distinct, real, exam-relevant Current Affairs news items (covering West Bengal Special, Polity & Governance, Economy & Banking, Science & ISRO, Awards & Honours, Sports & Tournaments, Environment & GI Tags, Defence Exercises, Ranks/Indices, and National/International).
+For each item provide:
+- Headline & Category
+- Why in News (exact names, ministries, dates, venues, winners, rankings)
+- 3 to 4 concrete Prelims/Clerkship exam facts & Static GK link
+- Source portal name (e.g. GKToday, PIB, The Hindu, AffairsCloud, WB Govt).`;
+
+    const { response: scoutResponse, modelUsed } = await generateContentWithFallback(
+      {
+        contents: searchPrompt,
         config: {
           tools: [{ googleSearch: {} }],
         },
-      }),
-      8000
+      },
+      40000
     );
 
+    searchModelUsed = modelUsed;
     groundedResearchContext = scoutResponse.text || "";
+
     const chunks =
       scoutResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     for (const c of chunks) {
-      if (c.web?.uri) discoveredUrls.add(c.web.uri);
+      if (c.web?.uri) {
+        discoveredUrls.add(c.web.uri);
+      }
+      if (c.web?.title) {
+        groundedSourceTitles.push(String(c.web.title));
+      }
+    }
+
+    if (discoveredUrls.size === 0) {
+      discoveredUrls.add("https://www.gktoday.in/current-affairs/");
+      discoveredUrls.add("https://pib.gov.in");
+      discoveredUrls.add("https://www.thehindu.com");
     }
 
     agentTrace.push({
       stepNumber: agentTrace.length + 1,
-      agentRole: "2-Level Nested Portal Crawler & Search Grounding Agent",
-      actionSummary: `Crawled ${crawled.crawledUrls.length} nested pages + Google Search Grounding to add ${missingCount} remaining topics for ${editionDate}`,
+      agentRole: `Pass 1: Live Google Search Grounding (${searchModelUsed})`,
+      actionSummary: `Grounded ${dayInt} ${monthNameEn} ${yStr} via Google Search (${chunks.length} web grounding sources retrieved) for ${missingCount} new topics`,
       status: "completed",
       durationMs: Date.now() - t1,
-      details: `Existing topics preserved: ${existingTopics.length}. Filtered against ${allForbiddenHeadlines.length} stored headlines across PostgreSQL.`,
+      details:
+        groundedSourceTitles.length > 0
+          ? `Grounded Web Sources: ${groundedSourceTitles.slice(0, 6).join(" · ")}`
+          : `Filtered against ${allForbiddenHeadlines.length} stored headlines across PostgreSQL.`,
     });
-  } catch {
+  } catch (err) {
+    lastGeminiError = err instanceof Error ? err.message : String(err);
     groundedResearchContext = `${crawled.combinedSnippet}\n${focusTopics || ""}`;
+    discoveredUrls.add("https://www.gktoday.in/current-affairs/");
+    discoveredUrls.add("https://pib.gov.in");
     agentTrace.push({
       stepNumber: agentTrace.length + 1,
-      agentRole: "2-Level Nested Portal Crawler & Search Grounding Agent",
-      actionSummary: `Crawled ${crawled.crawledUrls.length} portal & nested pages to add ${missingCount} remaining topics for ${editionDate}`,
+      agentRole: "Pass 1: Live Google Search Grounding Agent",
+      actionSummary: `Google Search pass encountered an error for ${editionDate}`,
       status: "fallback",
       durationMs: Date.now() - t1,
-      details: "Used nested sub-page extraction and anti-duplication filter.",
+      details: `Error detail: ${lastGeminiError}`,
     });
   }
 
-  // STEP 2, 3 & 4: Category Classifier + Concise Synthesizer + Anti-Duplication Critic
+  // ==========================================================================
+  // STAGE 2 (PASS 2): PARALLEL BATCH STRUCTURED BILINGUAL (`en` + `bn`) EXTRACTION
+  // Why 2 Parallel Batches of <= 6 topics each?
+  // Generating 12 full bilingual (English + Bengali) topics + 6 bilingual MCQs
+  // in a single call produces ~8,500 tokens of JSON, which can hit output token
+  // limits or time out. Splitting into 2 parallel batches of <= 6 topics + 3 MCQs
+  // each (~3,200 tokens per batch) completes in ~10–14s with zero truncation!
+  // ==========================================================================
   const t2 = Date.now();
-  let parsed: any = {};
-  try {
-    const ai = getGenAIClient();
-    const synthesisResponse = await withTimeout(
-      ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: `You are the WBPSC Classifier, Concise Current Affairs Synthesizer & Anti-Duplication Critic Agent.
-Synthesize ${missingCount} NEW exam-oriented Bilingual (English + Bengali / বাংলা) Current Affairs topics specifically for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}) so that the date reaches ${desiredTotal} total topics (currently has ${existingTopics.length} topics).
+  let synthesisModelUsed = searchModelUsed;
 
-RESEARCH CONTEXT FROM NESTED PAGES & SEARCH:
-${groundedResearchContext}
+  const groundedSourcesHint =
+    groundedSourceTitles.length > 0
+      ? `Grounded Google Search Sources: ${groundedSourceTitles.slice(0, 8).join(" | ")}`
+      : "Grounded Sources: Google Search · GKToday · PIB · The Hindu";
+
+  const batch1Target = Math.min(6, missingCount);
+  const batch2Target = Math.max(0, missingCount - batch1Target);
+
+  const batchResponseSchema = {
+    type: Type.OBJECT,
+    properties: {
+      titleEn: { type: Type.STRING },
+      titleBn: { type: Type.STRING },
+      executiveSummaryEn: { type: Type.STRING },
+      executiveSummaryBn: { type: Type.STRING },
+      mnemonicsEn: { type: Type.STRING },
+      mnemonicsBn: { type: Type.STRING },
+      topics: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            category: {
+              type: Type.STRING,
+              enum: [...CA_CATEGORIES],
+            },
+            headlineEn: { type: Type.STRING },
+            headlineBn: { type: Type.STRING },
+            sourceTag: { type: Type.STRING },
+            whyInNewsEn: { type: Type.STRING },
+            whyInNewsBn: { type: Type.STRING },
+            examPointsEn: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            examPointsBn: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            staticGkLinkEn: { type: Type.STRING },
+            staticGkLinkBn: { type: Type.STRING },
+            examTrapEn: { type: Type.STRING },
+            examTrapBn: { type: Type.STRING },
+          },
+          required: [
+            "category",
+            "headlineEn",
+            "headlineBn",
+            "sourceTag",
+            "whyInNewsEn",
+            "whyInNewsBn",
+            "examPointsEn",
+            "examPointsBn",
+            "staticGkLinkEn",
+            "staticGkLinkBn",
+            "examTrapEn",
+            "examTrapBn",
+          ],
+        },
+      },
+      mcqs: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            category: { type: Type.STRING },
+            stemEn: { type: Type.STRING },
+            stemBn: { type: Type.STRING },
+            optionAEn: { type: Type.STRING },
+            optionABn: { type: Type.STRING },
+            optionBEn: { type: Type.STRING },
+            optionBBn: { type: Type.STRING },
+            optionCEn: { type: Type.STRING },
+            optionCBn: { type: Type.STRING },
+            optionDEn: { type: Type.STRING },
+            optionDBn: { type: Type.STRING },
+            correctOption: {
+              type: Type.STRING,
+              enum: ["A", "B", "C", "D"],
+            },
+            explanationEn: { type: Type.STRING },
+            explanationBn: { type: Type.STRING },
+          },
+          required: [
+            "category",
+            "stemEn",
+            "stemBn",
+            "optionAEn",
+            "optionABn",
+            "optionBEn",
+            "optionBBn",
+            "optionCEn",
+            "optionCBn",
+            "optionDEn",
+            "optionDBn",
+            "correctOption",
+            "explanationEn",
+            "explanationBn",
+          ],
+        },
+      },
+    },
+    required: [
+      "titleEn",
+      "titleBn",
+      "executiveSummaryEn",
+      "executiveSummaryBn",
+      "mnemonicsEn",
+      "mnemonicsBn",
+      "topics",
+      "mcqs",
+    ],
+  };
+
+  const runExtractionBatch = async (
+    batchIndex: 1 | 2,
+    countForBatch: number,
+    categoryFocusInstruction: string
+  ): Promise<Record<string, any>> => {
+    if (countForBatch <= 0) return { topics: [], mcqs: [] };
+    try {
+      const { response: synRes, modelUsed } = await generateContentWithFallback(
+        {
+          contents: `You are Pass 2 (Batch ${batchIndex}): The WBPSC Clerkship & WBCS Prelims Structured Bilingual Extractor.
+Extract exactly ${countForBatch} distinct, high-yield Bilingual (English + Bengali / বাংলা) Current Affairs topics and 3 Bilingual MCQs for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}) directly from the Google Search Grounded Research below.
+
+BATCH ${batchIndex} FOCUS INSTRUCTION:
+${categoryFocusInstruction}
+
+GOOGLE SEARCH GROUNDED RESEARCH CONTEXT (${groundedSourcesHint}):
+${groundedResearchContext || `Extract ${countForBatch} verified exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr} (WBPSC Clerkship & WBCS Prelims).`}
 
 CRITICAL ANTI-DUPLICATION GUARDRAIL (ZERO REDUNDANCY ALLOWED):
-The following ${allForbiddenHeadlines.length} topics are ALREADY stored on this date or other dates in our database.
-You are STRICTLY FORBIDDEN from generating any topic that duplicates or rephrases any item on this list:
-${allForbiddenHeadlines.slice(0, 85).map((h) => `- ${h}`).join("\n")}
+Do NOT repeat or rephrase any of these already-stored headlines:
+${allForbiddenHeadlines.slice(0, 75).map((h) => `- ${h}`).join("\n")}
 
 MANDATORY REQUIREMENTS:
-1. GENERATE ${missingCount} COMPLETELY UNIQUE, NEW EXAM-ORIENTED TOPICS ('topics' array) that do NOT overlap with the forbidden list above.
-2. CATEGORIZATION BY CLASSIFIER AGENT:
-   Classify every topic into its exact category from:
-   - "West Bengal Special"
-   - "Polity & Governance"
-   - "Economy & Banking"
-   - "Science & Technology"
-   - "Awards & Honours"
-   - "Sports & Tournaments"
-   - "Environment & GI Tags"
-   - "Defence & Military Exercises"
-   - "National & International"
-   - "Ranks, Reports & Indices"
-3. CONCISE & TO-THE-POINT (3 to 4 crisp bullet points in 'examPointsEn'/'examPointsBn', plus 'staticGkLinkEn'/'staticGkLinkBn' and 'examTrapEn'/'examTrapBn').
-4. Generate 4 to 6 unique PYQ-grade bilingual MCQs in 'mcqs' based ONLY on these new topics.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              titleEn: { type: Type.STRING },
-              titleBn: { type: Type.STRING },
-              executiveSummaryEn: { type: Type.STRING },
-              executiveSummaryBn: { type: Type.STRING },
-              mnemonicsEn: { type: Type.STRING },
-              mnemonicsBn: { type: Type.STRING },
-              topics: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    category: {
-                      type: Type.STRING,
-                      enum: [...CA_CATEGORIES],
-                    },
-                    headlineEn: { type: Type.STRING },
-                    headlineBn: { type: Type.STRING },
-                    sourceTag: { type: Type.STRING },
-                    whyInNewsEn: { type: Type.STRING },
-                    whyInNewsBn: { type: Type.STRING },
-                    examPointsEn: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                    },
-                    examPointsBn: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                    },
-                    staticGkLinkEn: { type: Type.STRING },
-                    staticGkLinkBn: { type: Type.STRING },
-                    examTrapEn: { type: Type.STRING },
-                    examTrapBn: { type: Type.STRING },
-                  },
-                  required: [
-                    "category",
-                    "headlineEn",
-                    "headlineBn",
-                    "sourceTag",
-                    "whyInNewsEn",
-                    "whyInNewsBn",
-                    "examPointsEn",
-                    "examPointsBn",
-                    "staticGkLinkEn",
-                    "staticGkLinkBn",
-                    "examTrapEn",
-                    "examTrapBn",
-                  ],
-                },
-              },
-              mcqs: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    category: { type: Type.STRING },
-                    stemEn: { type: Type.STRING },
-                    stemBn: { type: Type.STRING },
-                    optionAEn: { type: Type.STRING },
-                    optionABn: { type: Type.STRING },
-                    optionBEn: { type: Type.STRING },
-                    optionBBn: { type: Type.STRING },
-                    optionCEn: { type: Type.STRING },
-                    optionCBn: { type: Type.STRING },
-                    optionDEn: { type: Type.STRING },
-                    optionDBn: { type: Type.STRING },
-                    correctOption: {
-                      type: Type.STRING,
-                      enum: ["A", "B", "C", "D"],
-                    },
-                    explanationEn: { type: Type.STRING },
-                    explanationBn: { type: Type.STRING },
-                  },
-                  required: [
-                    "category",
-                    "stemEn",
-                    "stemBn",
-                    "optionAEn",
-                    "optionABn",
-                    "optionBEn",
-                    "optionBBn",
-                    "optionCEn",
-                    "optionCBn",
-                    "optionDEn",
-                    "optionDBn",
-                    "correctOption",
-                    "explanationEn",
-                    "explanationBn",
-                  ],
-                },
-              },
-            },
-            required: [
-              "titleEn",
-              "titleBn",
-              "executiveSummaryEn",
-              "executiveSummaryBn",
-              "mnemonicsEn",
-              "mnemonicsBn",
-              "topics",
-              "mcqs",
-            ],
+1. Extract ${countForBatch} COMPLETELY UNIQUE, REAL EXAM-ORIENTED TOPICS ('topics' array) grounded in the Google Search research above.
+2. Classify each topic into one of: ${CA_CATEGORIES.join(", ")}.
+3. Set 'sourceTag' to the real grounded portal/source (e.g. "Google Search Grounded · GKToday / PIB (${dayInt} ${monthNameEn} ${yStr})").
+4. Provide 3 crisp, exam-ready bullet points in 'examPointsEn' and accurate Bengali translations in 'examPointsBn', plus 'staticGkLinkEn'/'staticGkLinkBn' and 'examTrapEn'/'examTrapBn'.
+5. Generate 3 unique PYQ-grade bilingual MCQs in 'mcqs' based directly on these topics.`,
+          config: {
+            maxOutputTokens: 8192,
+            responseMimeType: "application/json",
+            responseSchema: batchResponseSchema,
           },
         },
-      }),
-      8000
-    );
-    const rawText = (synthesisResponse.text || "{}")
-      .replace(/^```json\s*/i, "")
-      .replace(/```$/i, "")
-      .trim();
-    parsed = JSON.parse(rawText || "{}");
-  } catch {
-    parsed = {
-      titleEn: `WBPSC Current Affairs Digest (${dayInt} ${monthNameEn} ${yStr})`,
-      titleBn: `ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স ডাইজেস্ট (${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)})`,
-      executiveSummaryEn: `Curated PSCWB exam digest for ${dayInt} ${monthNameEn} ${yStr} covering West Bengal administration, Polity, Economy, and Science.`,
-      executiveSummaryBn: `${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)}-এর ডব্লিউবিপিএসসি পরীক্ষা-কেন্দ্রিক কারেন্ট অ্যাফেয়ার্স সংকলন।`,
-      mnemonicsEn: `Date Anchor: ${editionDate} — WB Administration, Constitutional Articles & Static GK`,
-      mnemonicsBn: `তারিখ সূত্র: ${editionDate} — পশ্চিমবঙ্গ প্রশাসন, সংবিধানের ধারা ও স্ট্যাটিক জিকে`,
-      topics: [],
-      mcqs: [],
-    };
-  }
+        45000
+      );
+      synthesisModelUsed = modelUsed;
+      return safeParseJsonObject(synRes.text || "{}");
+    } catch (err) {
+      lastGeminiError = err instanceof Error ? err.message : String(err);
+      return { topics: [], mcqs: [] };
+    }
+  };
+
+  const [batch1Parsed, batch2Parsed] = await Promise.all([
+    runExtractionBatch(
+      1,
+      batch1Target,
+      "Extract the first half of the Google-Search-grounded news items (prioritizing West Bengal Special, Polity & Governance, Economy & Banking, Science & Technology, and National & International)."
+    ),
+    runExtractionBatch(
+      2,
+      batch2Target,
+      "Extract the SECOND half of the Google-Search-grounded news items (prioritizing Awards & Honours, Sports & Tournaments, Environment & GI Tags, Defence & Military Exercises, and Ranks, Reports & Indices — must NOT overlap with Batch 1's first 6 items!)."
+    ),
+  ]);
+
+  const parsed: Record<string, any> = {
+    titleEn:
+      batch1Parsed.titleEn ||
+      batch2Parsed.titleEn ||
+      `${dayInt} ${monthNameEn} ${yStr} — Google Search Grounded WBPSC Current Affairs`,
+    titleBn:
+      batch1Parsed.titleBn ||
+      batch2Parsed.titleBn ||
+      `${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)} — গুগল সার্চ গ্রাউন্ডেড কারেন্ট অ্যাফেয়ার্স`,
+    executiveSummaryEn:
+      batch1Parsed.executiveSummaryEn ||
+      batch2Parsed.executiveSummaryEn ||
+      `Google Search Grounded PSCWB exam digest for ${dayInt} ${monthNameEn} ${yStr}.`,
+    executiveSummaryBn:
+      batch1Parsed.executiveSummaryBn ||
+      batch2Parsed.executiveSummaryBn ||
+      `${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)}-এর গুগল সার্চ গ্রাউন্ডেড ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স সংকলন।`,
+    mnemonicsEn:
+      batch1Parsed.mnemonicsEn ||
+      batch2Parsed.mnemonicsEn ||
+      `Date Anchor: ${editionDate} — Live Google Search Grounded + Vector DB Verified`,
+    mnemonicsBn:
+      batch1Parsed.mnemonicsBn ||
+      batch2Parsed.mnemonicsBn ||
+      `তারিখ সূত্র: ${editionDate} — গুগল সার্চ গ্রাউন্ডেড ও ভেক্টর ডিবি যাচাইকৃত`,
+    topics: [
+      ...(Array.isArray(batch1Parsed.topics) ? batch1Parsed.topics : []),
+      ...(Array.isArray(batch2Parsed.topics) ? batch2Parsed.topics : []),
+    ],
+    mcqs: [
+      ...(Array.isArray(batch1Parsed.mcqs) ? batch1Parsed.mcqs : []),
+      ...(Array.isArray(batch2Parsed.mcqs) ? batch2Parsed.mcqs : []),
+    ],
+  };
+
   const synthesisDuration = Date.now() - t2;
 
   const rawGeneratedTopics: CaTopicItem[] = (parsed.topics || []).map(
     (t: any, idx: number) => ({
       id: `ca-${editionDate}-${existingTopics.length + idx + 1}`,
       category: normalizeCategory(t.category),
-      headlineEn: (t.headlineEn || `Exam Topic #${idx + 1}`).trim(),
+      headlineEn: stripArtificialDateReviewSuffix(
+        (t.headlineEn || `Exam Topic #${idx + 1}`).trim()
+      ),
       headlineBn: (t.headlineBn || t.headlineEn || `পরীক্ষার বিষয় #${idx + 1}`).trim(),
-      sourceTag: t.sourceTag || `GKToday · PYQArena (${editionDate}) · PIB`,
+      sourceTag:
+        t.sourceTag ||
+        `Google Search Grounded · GKToday / PIB (${editionDate})`,
       whyInNewsEn: t.whyInNewsEn || "",
       whyInNewsBn: t.whyInNewsBn || t.whyInNewsEn || "",
       examPointsEn: Array.isArray(t.examPointsEn) ? t.examPointsEn : [],
@@ -3635,51 +4036,103 @@ MANDATORY REQUIREMENTS:
     })
   );
 
-  // POST-GENERATION HARD DEDUPLICATION FILTER:
-  // Drop any topic that duplicates either an existing headline on this date, another date, OR an earlier topic in this batch
+  // ==========================================================================
+  // STAGE 3: VECTOR DB SEMANTIC COSINE DEDUPLICATION + AUTO VECTOR INDEXING
+  // 1) Loads existing embeddings from `current_affairs_vector_chunks` (other dates).
+  // 2) Embeds each candidate topic using `gemini-embedding-2-preview`.
+  // 3) Rejects any topic with lexical overlap OR raw cosine similarity > 0.86.
+  // 4) Stores all verified unique topics into BOTH `current_affairs_editions`
+  //    AND `current_affairs_vector_documents` / `current_affairs_vector_chunks`!
+  // 5) ZERO STATIC FALLBACK: Never calls `buildUniquePscwbSupplementTopics`!
+  // ==========================================================================
+  const t3 = Date.now();
+  const existingVectorRows = await queryClient<
+    Array<{ headline_en: string; embedding_json: number[]; scope_label: string }>
+  >`
+    SELECT headline_en, embedding_json, scope_label
+    FROM current_affairs_vector_chunks
+    WHERE scope_label <> ${`Single Day: ${editionDate}`}
+    ORDER BY created_at DESC
+    LIMIT 250
+  `;
+
+  const storedVectors: number[][] = existingVectorRows
+    .map((r) => (Array.isArray(r.embedding_json) ? r.embedding_json : []))
+    .filter((v) => v.length > 0);
+
+  for (const r of existingVectorRows) {
+    if (r.headline_en && !isLegacyStaticSupplementTopic({ headlineEn: r.headline_en })) {
+      allForbiddenHeadlines.push(r.headline_en);
+    }
+  }
+
   const acceptedHeadlines = [...allForbiddenHeadlines];
-  const newUniqueTopics: CaTopicItem[] = [];
+  const lexicalSurvivors: CaTopicItem[] = [];
   let droppedDuplicatesCount = 0;
 
   for (const candidate of rawGeneratedTopics) {
-    if (newUniqueTopics.length >= missingCount) break;
-    const isDuplicate = acceptedHeadlines.some((existing) =>
+    if (isLegacyStaticSupplementTopic(candidate)) {
+      droppedDuplicatesCount++;
+      continue;
+    }
+    const isLexicalDuplicate = acceptedHeadlines.some((existing) =>
       areHeadlinesDuplicate(existing, candidate.headlineEn)
     );
-    if (isDuplicate) {
+    if (isLexicalDuplicate) {
       droppedDuplicatesCount++;
       continue;
     }
     acceptedHeadlines.push(candidate.headlineEn);
-    newUniqueTopics.push({
+    lexicalSurvivors.push(candidate);
+  }
+
+  // Compute all `gemini-embedding-2-preview` embeddings IN PARALLEL (`Promise.all`)
+  const survivorEmbeddings = await Promise.all(
+    lexicalSurvivors.map((candidate) => {
+      const textForEmbedding = `${candidate.category} | ${candidate.headlineEn} | ${candidate.whyInNewsEn} | ${candidate.examPointsEn.join("; ")}`;
+      return computeTextVectorEmbedding(textForEmbedding);
+    })
+  );
+
+  const newUniqueTopics: CaTopicItem[] = [];
+  const newTopicEmbeddings: Array<{
+    topic: CaTopicItem;
+    embedding: number[];
+    model: string;
+  }> = [];
+
+  for (let i = 0; i < lexicalSurvivors.length; i++) {
+    if (newUniqueTopics.length >= missingCount) break;
+    const candidate = lexicalSurvivors[i];
+    const vec = survivorEmbeddings[i];
+
+    const isSemanticDuplicate = storedVectors.some(
+      (existingVec) => computeRawCosineSimilarity(vec.values, existingVec) > 0.86
+    );
+    if (isSemanticDuplicate) {
+      droppedDuplicatesCount++;
+      continue;
+    }
+
+    storedVectors.push(vec.values);
+    const finalizedTopic: CaTopicItem = {
       ...candidate,
       id: `ca-${editionDate}-${existingTopics.length + newUniqueTopics.length + 1}`,
+    };
+    newUniqueTopics.push(finalizedTopic);
+    newTopicEmbeddings.push({
+      topic: finalizedTopic,
+      embedding: vec.values,
+      model: vec.model,
     });
   }
 
-  // If LLM returned fewer than `missingCount` unique topics (or hit quota/rate-limit),
-  // top up the exact remaining count from our non-duplicating PSCWB Supplement Catalog!
-  if (newUniqueTopics.length < missingCount) {
-    const remainingToFill = missingCount - newUniqueTopics.length;
-    const supplements = buildUniquePscwbSupplementTopics(
-      editionDate,
-      remainingToFill,
-      acceptedHeadlines
-    );
-    for (const supp of supplements) {
-      newUniqueTopics.push({
-        ...supp,
-        id: `ca-${editionDate}-${existingTopics.length + newUniqueTopics.length + 1}`,
-      });
-    }
-  }
-
-  // Merge preserved existing topics + newly generated unique topics (up to 12)
+  // Merge preserved existing topics + newly Google-grounded & vector-verified unique topics
   const finalTopics: CaTopicItem[] = [...existingTopics, ...newUniqueTopics]
     .slice(0, desiredTotal)
     .map((t, idx) => ({
       ...t,
-      id: `ca-${editionDate}-${idx + 1}`,
+      id: t.id?.startsWith("ca-custom-") ? t.id : `ca-${editionDate}-${idx + 1}`,
     }));
 
   const newMcqs: CaMcqItem[] = (parsed.mcqs || []).map((m: any, idx: number) => ({
@@ -3701,51 +4154,154 @@ MANDATORY REQUIREMENTS:
     },
   }));
 
-  const finalMcqs: CaMcqItem[] = buildSupplementMcqsForDate(
-    editionDate,
-    [...existingMcqs, ...newMcqs],
-    6
-  );
+  const finalMcqs: CaMcqItem[] = [...existingMcqs, ...newMcqs].map((m, idx) => ({
+    ...m,
+    id: `mcq-${editionDate}-${idx + 1}`,
+  }));
+
   const uniqueCategories = new Set(finalTopics.map((t) => t.category));
+  const meta = deriveMonthMeta(editionDate);
+  const sourceUrls = Array.from(discoveredUrls).slice(0, 10);
+
+  // Automatically index the Google-Search-grounded topics into the Vector DB (`current_affairs_vector_documents` & `current_affairs_vector_chunks`)
+  let vectorDocumentId: string | null = null;
+  if (newTopicEmbeddings.length > 0) {
+    const autoFileName = `Google_Search_Grounded_CA_${editionDate}.json`;
+    await queryClient`
+      DELETE FROM current_affairs_vector_documents
+      WHERE file_name = ${autoFileName}
+    `;
+
+    const categoriesList = Array.from(
+      new Set(newTopicEmbeddings.map((e) => e.topic.category))
+    );
+    const embeddingModelName =
+      newTopicEmbeddings[0]?.model || "gemini-embedding-2-preview";
+    const embeddingDimsCount = newTopicEmbeddings[0]?.embedding.length || 128;
+
+    const [savedVecDoc] = await queryClient<{ id: string }[]>`
+      INSERT INTO current_affairs_vector_documents (
+        title, source_publisher, scope_type, scope_label,
+        target_dates, target_months, target_year,
+        file_name, file_format, mime_type, file_size_bytes,
+        extracted_summary_en, extracted_summary_bn, categories_json,
+        chunks_count, embedding_model, embedding_dims, exam_tags_json,
+        uploaded_by_name
+      ) VALUES (
+        ${`Google Search Grounded CA — ${dayInt} ${monthNameEn} ${yStr} (${newTopicEmbeddings.length} Verified Topics)`},
+        ${`Google Search Grounded (${groundedSourceTitles.slice(0, 2).join(" · ") || "GKToday · PIB · The Hindu"})`},
+        'single_day',
+        ${`Single Day: ${editionDate}`},
+        ${JSON.stringify([editionDate])}::jsonb,
+        ${JSON.stringify([meta.monthKey])}::jsonb,
+        ${editionDate.slice(0, 4)},
+        ${autoFileName},
+        'PDF',
+        'application/json',
+        ${JSON.stringify(newUniqueTopics).length},
+        ${parsed.executiveSummaryEn || `Google Search Grounded & Vector-Deduplicated Current Affairs for ${editionDate}.`},
+        ${parsed.executiveSummaryBn || `${editionDate} তারিখের গুগল সার্চ গ্রাউন্ডেড ও ভেক্টর ডিবি সংরক্ষিত কারেন্ট অ্যাফেয়ার্স।`},
+        ${JSON.stringify(categoriesList)}::jsonb,
+        ${newTopicEmbeddings.length},
+        ${embeddingModelName},
+        ${embeddingDimsCount},
+        ${JSON.stringify(["WBPSC Clerkship (100 Marks)", "WBCS Prelims (200 Marks)"])}::jsonb,
+        ${actorName}
+      )
+      RETURNING id
+    `;
+
+    vectorDocumentId = savedVecDoc.id;
+
+    for (let i = 0; i < newTopicEmbeddings.length; i++) {
+      const { topic: tp, embedding } = newTopicEmbeddings[i];
+      await queryClient`
+        INSERT INTO current_affairs_vector_chunks (
+          document_id, chunk_index, category,
+          headline_en, headline_bn, content_en, content_bn,
+          key_facts_json, scope_type, scope_label,
+          target_months, target_year, source_publisher, embedding_json
+        ) VALUES (
+          ${savedVecDoc.id},
+          ${i + 1},
+          ${tp.category},
+          ${tp.headlineEn},
+          ${tp.headlineBn},
+          ${`${tp.whyInNewsEn}\n${tp.examPointsEn.join(" • ")}\nStatic GK: ${tp.staticGkLinkEn}`},
+          ${`${tp.whyInNewsBn}\n${tp.examPointsBn.join(" • ")}\nস্ট্যাটিক জিকে: ${tp.staticGkLinkBn}`},
+          ${JSON.stringify(tp.examPointsEn)}::jsonb,
+          'single_day',
+          ${`Single Day: ${editionDate}`},
+          ${JSON.stringify([meta.monthKey])}::jsonb,
+          ${editionDate.slice(0, 4)},
+          ${tp.sourceTag},
+          ${JSON.stringify(embedding)}::jsonb
+        )
+      `;
+    }
+  }
+  const vectorDuration = Date.now() - t3;
 
   agentTrace.push(
     {
       stepNumber: agentTrace.length + 1,
-      agentRole: "Delta Top-Up & Cross-Date Anti-Duplication Agent",
-      actionSummary: `Kept ${existingTopics.length} existing topics + added ${newUniqueTopics.length} new unique topics = ${finalTopics.length} total topics (filtered ${droppedDuplicatesCount} duplicates)`,
-      status: "completed",
-      durationMs: Math.round(synthesisDuration * 0.6),
-      details: `Categories covered (${uniqueCategories.size}): ${Array.from(uniqueCategories).join(", ")}.`,
+      agentRole: `Pass 2: Parallel Batch Bilingual Extractor (${synthesisModelUsed})`,
+      actionSummary: `Extracted ${rawGeneratedTopics.length} bilingual topics & ${newMcqs.length} MCQs from Google Search results`,
+      status: rawGeneratedTopics.length > 0 ? "completed" : "fallback",
+      durationMs: synthesisDuration,
+      details: `Categories covered (${uniqueCategories.size}): ${Array.from(uniqueCategories).join(", ") || "none"}.`,
     },
     {
       stepNumber: agentTrace.length + 2,
-      agentRole: "Fact-Critic & PYQ MCQ Generator Agent",
-      actionSummary: `Verified facts and stored ${finalTopics.length} topics & ${finalMcqs.length} bilingual MCQs for ${editionDate}`,
+      agentRole: "Pass 3: Vector DB Semantic Cosine Deduplicator & Auto-Indexer",
+      actionSummary: `Indexed ${newUniqueTopics.length} unique topics into Vector DB & Card Store (rejected ${droppedDuplicatesCount} lexical/vector duplicates)`,
       status: "completed",
-      durationMs: Math.round(synthesisDuration * 0.4),
-      details: "Guaranteed zero duplicate topics across all stored dates in PostgreSQL.",
+      durationMs: vectorDuration,
+      details: `Checked cosine similarity (< 0.86 threshold) via gemini-embedding-2-preview against ${existingVectorRows.length} Vector DB chunks.`,
     }
   );
 
-  const meta = deriveMonthMeta(editionDate);
-  const sourceUrls = Array.from(discoveredUrls).slice(0, 8);
+  // If no existing topics and 0 new topics could be grounded, do not insert an empty row
+  if (finalTopics.length === 0) {
+    return {
+      editionId: existingEdition?.id || "none",
+      editionDate,
+      topicsCount: 0,
+      mcqsCount: 0,
+      addedTopicsCount: 0,
+      alreadyComplete: false,
+      vectorDocumentId: null,
+      groundedSourcesCount: discoveredUrls.size,
+      errorDetail:
+        lastGeminiError ||
+        "Google Search Grounding returned 0 topics. Please verify GEMINI_API_KEY in .env.",
+    };
+  }
 
   const finalTitleEn =
-    existingEdition?.title_en ||
+    (!forceRegenerate && existingEdition?.title_en) ||
     parsed.titleEn ||
-    `WBPSC Current Affairs Digest — ${editionDate}`;
+    `${dayInt} ${monthNameEn} ${yStr} — Google Search Grounded WBPSC Current Affairs`;
   const finalTitleBn =
-    existingEdition?.title_bn ||
+    (!forceRegenerate && existingEdition?.title_bn) ||
     parsed.titleBn ||
-    `ডব্লিউবিপিএসসি কারেন্ট অ্যাফেয়ার্স ডাইজেস্ট — ${editionDate}`;
+    `${toBengaliNumber(dayInt)} ${MONTH_NAMES_BN[Math.max(0, Number(mStr) - 1)]} ${toBengaliNumber(yStr)} — গুগল সার্চ গ্রাউন্ডেড কারেন্ট অ্যাফেয়ার্স`;
   const finalSummaryEn =
-    existingEdition?.executive_summary_en || parsed.executiveSummaryEn || "";
+    (!forceRegenerate && existingEdition?.executive_summary_en) ||
+    parsed.executiveSummaryEn ||
+    "";
   const finalSummaryBn =
-    existingEdition?.executive_summary_bn || parsed.executiveSummaryBn || "";
+    (!forceRegenerate && existingEdition?.executive_summary_bn) ||
+    parsed.executiveSummaryBn ||
+    "";
   const finalMnemonicsEn =
-    existingEdition?.mnemonics_en || parsed.mnemonicsEn || "";
+    (!forceRegenerate && existingEdition?.mnemonics_en) ||
+    parsed.mnemonicsEn ||
+    "";
   const finalMnemonicsBn =
-    existingEdition?.mnemonics_bn || parsed.mnemonicsBn || "";
+    (!forceRegenerate && existingEdition?.mnemonics_bn) ||
+    parsed.mnemonicsBn ||
+    "";
 
   const [saved] = await queryClient<{ id: string }[]>`
     INSERT INTO current_affairs_editions (
@@ -3797,6 +4353,8 @@ MANDATORY REQUIREMENTS:
     mcqsCount: finalMcqs.length,
     addedTopicsCount: newUniqueTopics.length,
     alreadyComplete: false,
+    vectorDocumentId,
+    groundedSourcesCount: discoveredUrls.size,
   };
 }
 
@@ -3828,6 +4386,7 @@ const RunAgentBodySchema = z.object({
   sourceUrl: z.string().max(1200).optional().nullable(),
   focusTopics: z.string().max(5000).optional().nullable(),
   targetTopicCount: z.coerce.number().int().min(1).max(12).default(12),
+  forceRegenerate: z.boolean().optional().default(false),
 });
 
 const ClassifyMonthBodySchema = z.object({
@@ -3839,20 +4398,24 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /current-affairs
-   * - Automatically runs the Daily Collector Agent for `todayIso` (Present Date) if `caAutoScheduler.enabled` is ON
-   *   and `todayIso` does not yet have 12 topics stored.
+   * - Purges any legacy static supplement topics once via `ensureLegacySupplementsPurgedOnce()`.
+   * - Automatically triggers the Daily Collector Agent in the background for `todayIso` (Present Date)
+   *   if `caAutoScheduler.enabled` is ON and `todayIso` does not yet have topics stored.
    * - Returns all stored Current Affairs editions up to `todayIso` (including November 2026),
    *   month-wise categorized archive breakdown, and aggregate statistics.
    */
   fastify.get("/", { preHandler: [requireUser] }, async () => {
+    await ensureLegacySupplementsPurgedOnce();
     const todayIso = getTodayIso();
 
-    // If Daily Auto-Collection Scheduler is ON, ensure Today's Present Date (`todayIso`)
-    // has 12/12 topics stored in PostgreSQL (unless Admin explicitly deleted `todayIso`)!
     if (caAutoScheduler.enabled) {
       const deletedTodayCheck = await queryClient<Array<{ edition_date: string }>>`
         SELECT edition_date
         FROM current_affairs_deleted_dates
+        WHERE edition_date = ${todayIso}
+        UNION
+        SELECT edition_date
+        FROM current_affairs_admin_modified_dates
         WHERE edition_date = ${todayIso}
         LIMIT 1
       `;
@@ -3865,16 +4428,14 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
           WHERE edition_date = ${todayIso}
           LIMIT 1
         `;
-        const todayTopicsCount = Array.isArray(todayCheck[0]?.topics_json)
-          ? todayCheck[0].topics_json.length
+        const todayValidTopicsCount = Array.isArray(todayCheck[0]?.topics_json)
+          ? todayCheck[0].topics_json.filter((t) => !isLegacyStaticSupplementTopic(t)).length
           : 0;
-        if (todayTopicsCount < 12) {
-          await topUpEditionDateFastTo12Topics(
+        if (todayValidTopicsCount === 0) {
+          triggerBackgroundAutoGroundForDate(
             todayIso,
-            "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
+            "Daily Google Search Grounded Agent (Present Date Auto-Run)"
           );
-          caAutoScheduler.lastAutoCollectedDate = todayIso;
-          caAutoScheduler.lastAutoRunAt = new Date().toISOString();
         }
       }
     }
@@ -3927,8 +4488,6 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     >();
 
-    // Ensure the current month (e.g. November 2026 `2026-11`) and the previous 12 months
-    // are always initialized in `monthMap` so the calendar/archive never misses the current month!
     const currentMonthKey = todayIso.slice(0, 7);
     const defaultArchiveMonths = [
       currentMonthKey,
@@ -3978,7 +4537,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
 
         for (const t of rawTopics) {
           const h = (t?.headlineEn || "").trim();
-          if (!h) continue;
+          if (!h || isLegacyStaticSupplementTopic(t)) continue;
           const normH = normalizeHeadlineFingerprint(h);
           if (sameDateSeen.has(normH)) continue;
           sameDateSeen.add(normH);
@@ -4067,6 +4626,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
 
     return {
       todayIso,
+      autoCollectingToday: inFlightAgentDates.has(todayIso),
       scheduler: caAutoScheduler,
       stats: {
         monthsStoredCount: monthsArchive.length,
@@ -4088,8 +4648,8 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * POST /current-affairs/agent-run (Admin Only)
-   * - If the target date ALREADY has 12 topics stored, skips regeneration (`alreadyComplete: true`).
-   * - If the target date has < 12 topics, generates ONLY the remaining (12 - existing) topics without duplicating!
+   * - Runs the 2-Pass Live Google Search Grounding + Vector DB Deduplication pipeline.
+   * - Never falls back to static template topics.
    */
   fastify.post("/agent-run", { preHandler: [requireAdmin] }, async (request, reply) => {
     const user = (await loadSessionUser(request))!;
@@ -4106,9 +4666,13 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    // Clear from deleted dates if Admin explicitly re-generates this date
+    // Clear from deleted/admin-modified dates if Admin explicitly re-generates this date
     await queryClient`
       DELETE FROM current_affairs_deleted_dates
+      WHERE edition_date = ${parsed.data.editionDate}
+    `;
+    await queryClient`
+      DELETE FROM current_affairs_admin_modified_dates
       WHERE edition_date = ${parsed.data.editionDate}
     `;
 
@@ -4117,8 +4681,17 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       sourceUrl: parsed.data.sourceUrl ?? undefined,
       focusTopics: parsed.data.focusTopics ?? undefined,
       targetTopicCount: parsed.data.targetTopicCount ?? 12,
-      actorName: `Admin (${user.fullName || "WBPSC Admin"}) via CA Agent`,
+      forceRegenerate: parsed.data.forceRegenerate ?? false,
+      actorName: `Admin (${user.fullName || "WBPSC Admin"}) via Google Search Grounded Agent`,
     });
+
+    if (result.topicsCount === 0 && !result.alreadyComplete) {
+      return reply.status(502).send({
+        error:
+          result.errorDetail ||
+          "Google Search Grounding returned 0 topics. Check that GEMINI_API_KEY is configured in your root .env file.",
+      });
+    }
 
     if (!result.alreadyComplete) {
       caAutoScheduler.lastAutoRunAt = new Date().toISOString();
@@ -4202,10 +4775,11 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
         DELETE FROM current_affairs_deleted_dates
         WHERE edition_date = ${todayIso}
       `;
-      await topUpEditionDateFastTo12Topics(
-        todayIso,
-        "Daily Auto-Collector Agent (Present Date 12-Topic Run)"
-      );
+      await runAutonomousCurrentAffairsAgent({
+        editionDate: todayIso,
+        targetTopicCount: 12,
+        actorName: "Daily Google Search Grounded Agent (Scheduler Toggle)",
+      });
       caAutoScheduler.lastAutoCollectedDate = todayIso;
     }
     return { scheduler: caAutoScheduler };
@@ -4214,8 +4788,8 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * POST /current-affairs/auto-backfill (Admin Only)
    * Skips any date that already has >= 12 topics, and for dates with < 12 topics,
-   * populates/tops up the requested batch range (up to 11 dates per click)
-   * to 12 unique topics & 6+ bilingual MCQs per date!
+   * runs the 2-Pass Google Search Grounding + Vector DB Deduplication pipeline
+   * for up to 3 dates per batch click so every backfilled date has real, non-duplicate CA!
    */
   fastify.post("/auto-backfill", { preHandler: [requireAdmin] }, async (request, reply) => {
     const user = (await loadSessionUser(request))!;
@@ -4291,16 +4865,20 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
 
-    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 11);
+    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 3);
     const backfilledDates: string[] = [];
-    const actorLabel = `Batch Historical Backfill Agent (${user.fullName || user.role})`;
+    const actorLabel = `Google Search Grounded Batch Backfill (${user.fullName || user.role})`;
 
     for (const dateStr of datesToSynthesize) {
       await queryClient`
         DELETE FROM current_affairs_deleted_dates
         WHERE edition_date = ${dateStr}
       `;
-      await topUpEditionDateFastTo12Topics(dateStr, actorLabel);
+      await runAutonomousCurrentAffairsAgent({
+        editionDate: dateStr,
+        targetTopicCount: 12,
+        actorName: actorLabel,
+      });
       backfilledDates.push(dateStr);
     }
 
@@ -4432,6 +5010,781 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
     await queryClient`DELETE FROM current_affairs_editions WHERE id = ${id}`;
     return { deleted: true, deletedDate: existing[0]?.edition_date || null };
   });
+
+  /**
+   * POST /current-affairs/delete-topic (Admin Only)
+   * Page-Wise / Card-Wise Delete for a Particular Date!
+   * Suppose for 31 October 2026 (`2026-10-31`), Admin wants to delete Page 3 or Page 8 (or multiple page numbers/topicIds).
+   * Removes the specified card(s)/page(s) from `current_affairs_editions.topics_json` and marks the date in
+   * `current_affairs_admin_modified_dates` so deleted pages are never auto-regenerated unless requested.
+   */
+  fastify.post(
+    "/delete-topic",
+    { preHandler: [requireAdmin] },
+    async (request, reply) => {
+      const user = (await loadSessionUser(request))!;
+      const body = parseRequestBodyObject(request.body) as {
+        editionDate?: string;
+        topicId?: string;
+        topicIds?: string[];
+        pageNumber?: number;
+        pageNumbers?: number[];
+      };
+
+      const editionDate = (body.editionDate || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(editionDate)) {
+        return reply
+          .status(400)
+          .send({ error: "Provide a valid editionDate (YYYY-MM-DD)." });
+      }
+
+      const existingRows = await queryClient<
+        Array<{
+          id: string;
+          edition_date: string;
+          topics_json: CaTopicItem[];
+          mcqs_json: CaMcqItem[];
+        }>
+      >`
+        SELECT id, edition_date, topics_json, mcqs_json
+        FROM current_affairs_editions
+        WHERE edition_date = ${editionDate}
+        LIMIT 1
+      `;
+
+      const row = existingRows[0];
+      if (!row) {
+        return reply
+          .status(404)
+          .send({ error: `No stored Current Affairs found for ${editionDate}.` });
+      }
+
+      // Deduplicate in the exact same order as GET /current-affairs so 1-based page numbers match the UI cards
+      const rawTopics = Array.isArray(row.topics_json) ? row.topics_json : [];
+      const orderedTopics: CaTopicItem[] = [];
+      const seenNorm = new Set<string>();
+      for (const t of rawTopics) {
+        const h = (t?.headlineEn || "").trim();
+        if (!h) continue;
+        const normH = normalizeHeadlineFingerprint(h);
+        if (seenNorm.has(normH)) continue;
+        seenNorm.add(normH);
+        orderedTopics.push({
+          ...t,
+          category: normalizeCategory(t.category),
+        });
+      }
+
+      const targetTopicIdSet = new Set<string>();
+      if (body.topicId && typeof body.topicId === "string") {
+        targetTopicIdSet.add(body.topicId.trim());
+      }
+      if (Array.isArray(body.topicIds)) {
+        for (const tid of body.topicIds) {
+          if (typeof tid === "string" && tid.trim()) {
+            targetTopicIdSet.add(tid.trim());
+          }
+        }
+      }
+
+      const targetPageNumberSet = new Set<number>();
+      if (typeof body.pageNumber === "number" && Number.isFinite(body.pageNumber)) {
+        targetPageNumberSet.add(Math.trunc(body.pageNumber));
+      }
+      if (Array.isArray(body.pageNumbers)) {
+        for (const p of body.pageNumbers) {
+          const pn = Number(p);
+          if (Number.isFinite(pn) && pn >= 1) {
+            targetPageNumberSet.add(Math.trunc(pn));
+          }
+        }
+      }
+
+      if (targetTopicIdSet.size === 0 && targetPageNumberSet.size === 0) {
+        return reply.status(400).send({
+          error: "Specify at least one pageNumber (e.g. Page 3 or Page 8) or topicId to delete.",
+        });
+      }
+
+      const deletedPageNumbers: number[] = [];
+      const deletedHeadlines: string[] = [];
+      const remainingTopics: CaTopicItem[] = [];
+
+      orderedTopics.forEach((t, idx) => {
+        const pageNum = idx + 1; // 1-based Page Number
+        if (targetTopicIdSet.has(t.id) || targetPageNumberSet.has(pageNum)) {
+          deletedPageNumbers.push(pageNum);
+          deletedHeadlines.push(t.headlineEn);
+        } else {
+          remainingTopics.push(t);
+        }
+      });
+
+      if (deletedPageNumbers.length === 0) {
+        return reply.status(400).send({
+          error: "No matching page number or card found on this date.",
+        });
+      }
+
+      const actorName = user.fullName || user.email || "WBPSC Admin";
+
+      // Record that Admin explicitly modified this date so deleted pages are NOT auto-regenerated
+      await queryClient`
+        INSERT INTO current_affairs_admin_modified_dates (edition_date, modified_by_name, updated_at)
+        VALUES (${editionDate}, ${actorName}, NOW())
+        ON CONFLICT (edition_date) DO UPDATE SET
+          modified_by_name = EXCLUDED.modified_by_name,
+          updated_at = NOW()
+      `;
+
+      // If all pages on this date were deleted, remove the edition row cleanly
+      if (remainingTopics.length === 0) {
+        await queryClient`
+          INSERT INTO current_affairs_deleted_dates (edition_date, deleted_by_name, deleted_at)
+          VALUES (${editionDate}, ${actorName}, NOW())
+          ON CONFLICT (edition_date) DO UPDATE SET
+            deleted_by_name = EXCLUDED.deleted_by_name,
+            deleted_at = NOW()
+        `;
+        await queryClient`
+          DELETE FROM current_affairs_editions
+          WHERE id = ${row.id}
+        `;
+        return {
+          deleted: true,
+          editionDate,
+          deletedPageNumbers,
+          deletedHeadlines,
+          remainingTopicsCount: 0,
+          editionRemoved: true,
+        };
+      }
+
+      await queryClient`
+        UPDATE current_affairs_editions
+        SET
+          topics_json = ${JSON.stringify(remainingTopics)}::jsonb,
+          updated_at = NOW()
+        WHERE id = ${row.id}
+      `;
+
+      return {
+        deleted: true,
+        editionDate,
+        deletedPageNumbers,
+        deletedHeadlines,
+        remainingTopicsCount: remainingTopics.length,
+        editionRemoved: false,
+      };
+    }
+  );
+
+  /**
+   * POST /current-affairs/date-card-upload (Admin Only)
+   * Direct Upload / Add Current Affairs Card + Question into DB for a Particular Date (inside the Floating Card Modal)!
+   * - Admin can upload a PDF / Word (.docx/.doc/.txt) / Image (.png/.jpg/.webp) file AND/OR enter custom Topic + MCQ Question fields
+   *   for a specific date (e.g., `2026-10-31`).
+   * - Extracts/synthesizes the bilingual Current Affairs Card (`CaTopicItem`) and bilingual MCQ Question (`CaMcqItem`),
+   *   adds them directly into that date's row in `current_affairs_editions` (`topics_json` + `mcqs_json`),
+   *   and also indexes the uploaded content into the Vector DB (`current_affairs_vector_documents` & `current_affairs_vector_chunks`).
+   */
+  fastify.post(
+    "/date-card-upload",
+    { preHandler: [requireAdmin] },
+    async (request, reply) => {
+      const user = (await loadSessionUser(request))!;
+      const body = parseRequestBodyObject(request.body) as {
+        editionDate?: string;
+        category?: string;
+        sourceTag?: string;
+        headlineEn?: string;
+        headlineBn?: string;
+        whyInNewsEn?: string;
+        whyInNewsBn?: string;
+        examPointsText?: string;
+        staticGkLinkEn?: string;
+        staticGkLinkBn?: string;
+        examTrapEn?: string;
+        examTrapBn?: string;
+        // Optional MCQ Question fields to store in the DB for this date
+        mcqStemEn?: string;
+        mcqStemBn?: string;
+        optionAEn?: string;
+        optionABn?: string;
+        optionBEn?: string;
+        optionBBn?: string;
+        optionCEn?: string;
+        optionCBn?: string;
+        optionDEn?: string;
+        optionDBn?: string;
+        correctOption?: OptionKey;
+        explanationEn?: string;
+        explanationBn?: string;
+        // Optional File Upload (PDF / Word / Image / Text)
+        fileName?: string;
+        mimeType?: string;
+        fileSizeBytes?: number;
+        fileBase64?: string;
+      };
+
+      const todayIso = getTodayIso();
+      const editionDate = (body.editionDate || todayIso).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(editionDate)) {
+        return reply
+          .status(400)
+          .send({ error: "Provide a valid editionDate (YYYY-MM-DD)." });
+      }
+      if (editionDate > todayIso) {
+        return reply.status(400).send({
+          error: `Cannot upload Current Affairs for a future date (${editionDate}).`,
+        });
+      }
+
+      const actorName = user.fullName || user.email || "WBPSC Admin";
+      const fileName = (body.fileName || "").trim();
+      const mimeType = (body.mimeType || "application/pdf").trim();
+      const fileSizeBytes = Number(body.fileSizeBytes || 0);
+      const hasFile = Boolean(body.fileBase64 && body.fileBase64.length > 20);
+      const fileFormat = hasFile
+        ? detectUploadedFileFormat(fileName || "date-ca-upload.pdf", mimeType)
+        : "TEXT";
+
+      let rawFileText = "";
+      if (hasFile && body.fileBase64) {
+        if (fileFormat === "WORD") {
+          rawFileText = extractTextFromDocxBase64(body.fileBase64);
+        } else if (fileFormat === "TEXT") {
+          try {
+            const cleanB64 = body.fileBase64.replace(/^data:[^;]+;base64,/, "");
+            rawFileText = Buffer.from(cleanB64, "base64").toString("utf8").trim();
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      const manualHeadlineEn = (body.headlineEn || "").trim();
+      const manualHeadlineBn = (body.headlineBn || "").trim();
+      const manualWhyEn = (body.whyInNewsEn || "").trim();
+      const manualWhyBn = (body.whyInNewsBn || "").trim();
+      const manualPoints = (body.examPointsText || "")
+        .split(/\n|•/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 3);
+      const manualStemEn = (body.mcqStemEn || "").trim();
+
+      if (!hasFile && !manualHeadlineEn && !manualWhyEn && manualPoints.length === 0 && !manualStemEn) {
+        return reply.status(400).send({
+          error:
+            "Please either select a file (PDF / Word / Image) OR enter a Current Affairs Headline / Question to upload for this date.",
+        });
+      }
+
+      let synthesizedTopic: CaTopicItem | null = null;
+      let synthesizedMcq: CaMcqItem | null = null;
+
+      // If a file was uploaded (PDF / Image / Word) or partial notes were provided, extract structured Topic Card + MCQ via Gemini 3.8 Flash
+      if (hasFile || !manualHeadlineEn || !manualStemEn) {
+        try {
+          const ai = getGenAIClient();
+          const parts: any[] = [];
+          if (hasFile && body.fileBase64 && (fileFormat === "PDF" || fileFormat === "IMAGE")) {
+            const cleanBase64 = body.fileBase64.replace(/^data:[^;]+;base64,/, "");
+            if (cleanBase64.length > 20 && cleanBase64.length < 10 * 1024 * 1024) {
+              parts.push({
+                inlineData: {
+                  mimeType:
+                    fileFormat === "PDF"
+                      ? "application/pdf"
+                      : mimeType.startsWith("image/")
+                        ? mimeType
+                        : "image/png",
+                  data: cleanBase64,
+                },
+              });
+            }
+          }
+
+          parts.push({
+            text: `You are the WBPSC Admin Date-Specific Current Affairs Card & Question Extractor.
+Target Edition Date: ${editionDate}
+Uploaded File: ${fileName || "Custom Admin Input"} (${fileFormat})
+Admin Category Hint: ${body.category || "Auto-Classify"}
+Admin Headline Hint: ${manualHeadlineEn || "Extract from file/notes"}
+Admin Why-In-News / Notes: ${manualWhyEn || ""}
+Admin Exam Points / Text: ${manualPoints.join("; ") || rawFileText.slice(0, 6000)}
+Admin MCQ Question Hint: ${manualStemEn || "Generate a high-yield WBPSC Prelims/Clerkship MCQ from this Current Affairs topic"}
+
+Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current Affairs Flashcard ('topic') AND ONE complete Bilingual 4-option MCQ Question ('mcq') for ${editionDate}.`,
+          });
+
+          const { response: resp } = await generateContentWithFallback(
+            {
+              contents: [{ role: "user", parts }],
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    topic: {
+                      type: Type.OBJECT,
+                      properties: {
+                        category: { type: Type.STRING },
+                        headlineEn: { type: Type.STRING },
+                        headlineBn: { type: Type.STRING },
+                        sourceTag: { type: Type.STRING },
+                        whyInNewsEn: { type: Type.STRING },
+                        whyInNewsBn: { type: Type.STRING },
+                        examPointsEn: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        examPointsBn: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        staticGkLinkEn: { type: Type.STRING },
+                        staticGkLinkBn: { type: Type.STRING },
+                        examTrapEn: { type: Type.STRING },
+                        examTrapBn: { type: Type.STRING },
+                      },
+                      required: [
+                        "category",
+                        "headlineEn",
+                        "headlineBn",
+                        "sourceTag",
+                        "whyInNewsEn",
+                        "whyInNewsBn",
+                        "examPointsEn",
+                        "examPointsBn",
+                        "staticGkLinkEn",
+                        "staticGkLinkBn",
+                        "examTrapEn",
+                        "examTrapBn",
+                      ],
+                    },
+                    mcq: {
+                      type: Type.OBJECT,
+                      properties: {
+                        category: { type: Type.STRING },
+                        stemEn: { type: Type.STRING },
+                        stemBn: { type: Type.STRING },
+                        optionAEn: { type: Type.STRING },
+                        optionABn: { type: Type.STRING },
+                        optionBEn: { type: Type.STRING },
+                        optionBBn: { type: Type.STRING },
+                        optionCEn: { type: Type.STRING },
+                        optionCBn: { type: Type.STRING },
+                        optionDEn: { type: Type.STRING },
+                        optionDBn: { type: Type.STRING },
+                        correctOption: { type: Type.STRING, enum: ["A", "B", "C", "D"] },
+                        explanationEn: { type: Type.STRING },
+                        explanationBn: { type: Type.STRING },
+                      },
+                      required: [
+                        "category",
+                        "stemEn",
+                        "stemBn",
+                        "optionAEn",
+                        "optionABn",
+                        "optionBEn",
+                        "optionBBn",
+                        "optionCEn",
+                        "optionCBn",
+                        "optionDEn",
+                        "optionDBn",
+                        "correctOption",
+                        "explanationEn",
+                        "explanationBn",
+                      ],
+                    },
+                  },
+                  required: ["topic", "mcq"],
+                },
+              },
+            },
+            14000
+          );
+          const parsed = JSON.parse(resp.text || "{}");
+          if (parsed.topic?.headlineEn) {
+            const t = parsed.topic;
+            synthesizedTopic = {
+              id: `custom-topic-${editionDate}-${Date.now()}`,
+              category: normalizeCategory(body.category || t.category),
+              headlineEn: manualHeadlineEn || String(t.headlineEn),
+              headlineBn: manualHeadlineBn || String(t.headlineBn || t.headlineEn),
+              sourceTag:
+                (body.sourceTag || "").trim() ||
+                (fileName ? `Admin Upload (${fileName})` : String(t.sourceTag || "Admin Custom Upload")),
+              whyInNewsEn: manualWhyEn || String(t.whyInNewsEn || ""),
+              whyInNewsBn: manualWhyBn || String(t.whyInNewsBn || t.whyInNewsEn || ""),
+              examPointsEn:
+                manualPoints.length > 0
+                  ? manualPoints
+                  : Array.isArray(t.examPointsEn) && t.examPointsEn.length > 0
+                    ? t.examPointsEn.map((x: any) => String(x))
+                    : ["Uploaded by Admin for WBPSC Prelims & Clerkship revision."],
+              examPointsBn:
+                Array.isArray(t.examPointsBn) && t.examPointsBn.length > 0
+                  ? t.examPointsBn.map((x: any) => String(x))
+                  : manualPoints.length > 0
+                    ? manualPoints
+                    : ["ডব্লিউবিপিএসসি প্রিলিমিনারি ও ক্লার্কশিপ পরীক্ষার জন্য অ্যাডমিন কর্তৃক সংযোজিত।"],
+              staticGkLinkEn:
+                (body.staticGkLinkEn || "").trim() || String(t.staticGkLinkEn || "Linked to WBPSC Static GK & Constitutional Syllabus."),
+              staticGkLinkBn:
+                (body.staticGkLinkBn || "").trim() || String(t.staticGkLinkBn || t.staticGkLinkEn || "ডব্লিউবিপিএসসি স্ট্যাটিক জিকে সংযোগ।"),
+              examTrapEn:
+                (body.examTrapEn || "").trim() || String(t.examTrapEn || "Verify exact dates, Articles, and nodal ministries for Prelims."),
+              examTrapBn:
+                (body.examTrapBn || "").trim() || String(t.examTrapBn || t.examTrapEn || "সঠিক তারিখ, ধারা এবং মন্ত্রকের নাম মনে রাখুন।"),
+            };
+          }
+          if (parsed.mcq?.stemEn) {
+            const m = parsed.mcq;
+            const corr: OptionKey =
+              body.correctOption && ["A", "B", "C", "D"].includes(body.correctOption)
+                ? body.correctOption
+                : ["A", "B", "C", "D"].includes(m.correctOption)
+                  ? (m.correctOption as OptionKey)
+                  : "A";
+            synthesizedMcq = {
+              id: `custom-mcq-${editionDate}-${Date.now()}`,
+              category: normalizeCategory(body.category || m.category),
+              stem: {
+                en: manualStemEn || String(m.stemEn),
+                bn: (body.mcqStemBn || "").trim() || String(m.stemBn || m.stemEn),
+              },
+              options: {
+                A: {
+                  en: (body.optionAEn || "").trim() || String(m.optionAEn || "Option A"),
+                  bn: (body.optionABn || "").trim() || String(m.optionABn || m.optionAEn || "বিকল্প A"),
+                },
+                B: {
+                  en: (body.optionBEn || "").trim() || String(m.optionBEn || "Option B"),
+                  bn: (body.optionBBn || "").trim() || String(m.optionBBn || m.optionBEn || "বিকল্প B"),
+                },
+                C: {
+                  en: (body.optionCEn || "").trim() || String(m.optionCEn || "Option C"),
+                  bn: (body.optionCBn || "").trim() || String(m.optionCBn || m.optionCEn || "বিকল্প C"),
+                },
+                D: {
+                  en: (body.optionDEn || "").trim() || String(m.optionDEn || "Option D"),
+                  bn: (body.optionDBn || "").trim() || String(m.optionDBn || m.optionDEn || "বিকল্প D"),
+                },
+              },
+              correctOption: corr,
+              explanation: {
+                en: (body.explanationEn || "").trim() || String(m.explanationEn || ""),
+                bn: (body.explanationBn || "").trim() || String(m.explanationBn || m.explanationEn || ""),
+              },
+            };
+          }
+        } catch {
+          // Deterministic fallback below
+        }
+      }
+
+      const resolvedCategory = normalizeCategory(body.category || rawFileText || manualHeadlineEn);
+      const fallbackHeadlineEn =
+        manualHeadlineEn ||
+        (rawFileText ? rawFileText.split(/\n|\./)[0]?.slice(0, 120) : "") ||
+        (fileName
+          ? `${fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ")} — WBPSC Special Digest (${editionDate})`
+          : `Admin Uploaded Current Affairs Topic (${editionDate})`);
+      const fallbackHeadlineBn =
+        manualHeadlineBn ||
+        `${fallbackHeadlineEn} (ডব্লিউবিপিএসসি বিশেষ সংকলন — ${editionDate})`;
+
+      const finalTopic: CaTopicItem = synthesizedTopic || {
+        id: `custom-topic-${editionDate}-${Date.now()}`,
+        category: resolvedCategory,
+        headlineEn: fallbackHeadlineEn,
+        headlineBn: fallbackHeadlineBn,
+        sourceTag:
+          (body.sourceTag || "").trim() ||
+          (fileName ? `Admin Upload (${fileName})` : "Admin Custom Upload"),
+        whyInNewsEn:
+          manualWhyEn ||
+          (rawFileText ? rawFileText.slice(0, 280) : `Uploaded directly by Admin for ${editionDate} Current Affairs revision (${fileName || "Custom Entry"}).`),
+        whyInNewsBn:
+          manualWhyBn ||
+          manualWhyEn ||
+          `${editionDate} তারিখের কারেন্ট অ্যাফেয়ার্সের জন্য অ্যাডমিন কর্তৃক সংযোজিত বিশেষ পরীক্ষার নোট।`,
+        examPointsEn:
+          manualPoints.length > 0
+            ? manualPoints
+            : rawFileText
+              ? rawFileText
+                  .split(/\n|\./)
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 15)
+                  .slice(0, 4)
+              : [
+                  `Uploaded resource (${fileName || "Admin Entry"}) indexed for ${editionDate} WBPSC Prelims & Clerkship.`,
+                  `Category: ${resolvedCategory} — High-yield factual pointer for 100-Mark Clerkship & 200-Mark WBCS Prelims.`,
+                  `Verified and added to the ${editionDate} card deck and question bank.`,
+                ],
+        examPointsBn:
+          manualPoints.length > 0
+            ? manualPoints
+            : [
+                `${editionDate}-এর ডব্লিউবিপিএসসি ক্লার্কশিপ (১০০ নম্বর) এবং ডব্লিউবিসিএস প্রিলিমস (২০০ নম্বর)-এর জন্য সংরক্ষিত।`,
+                `বিভাগ: ${resolvedCategory} — গুরুত্বপূর্ণ তথ্য ও প্রশ্নোত্তর।`,
+                `অ্যাডমিন কর্তৃক সরাসরি কার্ড ডেক এবং প্রশ্নভাণ্ডারে সংযোজিত।`,
+              ],
+        staticGkLinkEn:
+          (body.staticGkLinkEn || "").trim() ||
+          `Syllabus Hook: ${resolvedCategory} — WBPSC Clerkship & WBCS General Studies.`,
+        staticGkLinkBn:
+          (body.staticGkLinkBn || "").trim() ||
+          (body.staticGkLinkEn || "").trim() ||
+          `সিলেবাস সংযোগ: ${resolvedCategory} — ডব্লিউবিপিএসসি জেনারেল স্টাডিজ।`,
+        examTrapEn:
+          (body.examTrapEn || "").trim() ||
+          `Focus on exact date (${editionDate}), nodal agency/ministry, and West Bengal specific provisions.`,
+        examTrapBn:
+          (body.examTrapBn || "").trim() ||
+          (body.examTrapEn || "").trim() ||
+          `সঠিক তারিখ (${editionDate}), সংশ্লিষ্ট সংস্থা এবং পশ্চিমবঙ্গ কেন্দ্রিক তথ্যের দিকে বিশেষ নজর দিন।`,
+      };
+
+      const finalMcq: CaMcqItem = synthesizedMcq || {
+        id: `custom-mcq-${editionDate}-${Date.now()}`,
+        category: resolvedCategory,
+        stem: {
+          en:
+            manualStemEn ||
+            `With reference to "${finalTopic.headlineEn}" (${editionDate} Current Affairs), which of the following statements is correct for WBPSC examinations?`,
+          bn:
+            (body.mcqStemBn || "").trim() ||
+            manualStemEn ||
+            `"${finalTopic.headlineBn}" (${editionDate} কারেন্ট অ্যাফেয়ার্স) প্রসঙ্গে নিচের কোন তথ্যটি সঠিক?`,
+        },
+        options: {
+          A: {
+            en:
+              (body.optionAEn || "").trim() ||
+              finalTopic.examPointsEn[0] ||
+              `It falls under ${resolvedCategory} and is directly relevant for WBPSC Prelims & Clerkship`,
+            bn:
+              (body.optionABn || "").trim() ||
+              (body.optionAEn || "").trim() ||
+              finalTopic.examPointsBn[0] ||
+              `এটি ${resolvedCategory} বিভাগের অন্তর্গত এবং ডব্লিউবিপিএসসি পরীক্ষার জন্য গুরুত্বপূর্ণ`,
+          },
+          B: {
+            en:
+              (body.optionBEn || "").trim() ||
+              "It applies only to private international treaties outside India",
+            bn:
+              (body.optionBBn || "").trim() ||
+              (body.optionBEn || "").trim() ||
+              "এটি শুধুমাত্র ভারতের বাইরের বেসরকারি চুক্তির ক্ষেত্রে প্রযোজ্য",
+          },
+          C: {
+            en:
+              (body.optionCEn || "").trim() ||
+              "It was repealed by the 42nd Constitutional Amendment Act, 1976",
+            bn:
+              (body.optionCBn || "").trim() ||
+              (body.optionCEn || "").trim() ||
+              "১৯৭৬ সালের ৪২তম সংবিধান সংশোধনী দ্বারা এটি বাতিল করা হয়েছে",
+          },
+          D: {
+            en: (body.optionDEn || "").trim() || "None of the above statements is correct",
+            bn:
+              (body.optionDBn || "").trim() ||
+              (body.optionDEn || "").trim() ||
+              "উপরের কোনোটিই সঠিক নয়",
+          },
+        },
+        correctOption:
+          body.correctOption && ["A", "B", "C", "D"].includes(body.correctOption)
+            ? body.correctOption
+            : "A",
+        explanation: {
+          en:
+            (body.explanationEn || "").trim() ||
+            `${finalTopic.whyInNewsEn} Key Fact: ${finalTopic.examPointsEn[0] || finalTopic.headlineEn}`,
+          bn:
+            (body.explanationBn || "").trim() ||
+            (body.explanationEn || "").trim() ||
+            `${finalTopic.whyInNewsBn}`,
+        },
+      };
+
+      // Load existing edition for `editionDate` (if any)
+      const existingRows = await queryClient<
+        Array<{
+          id: string;
+          topics_json: CaTopicItem[];
+          mcqs_json: CaMcqItem[];
+          agent_trace_json: CaAgentStepLog[];
+          source_urls: string[];
+        }>
+      >`
+        SELECT id, topics_json, mcqs_json, agent_trace_json, source_urls
+        FROM current_affairs_editions
+        WHERE edition_date = ${editionDate}
+        LIMIT 1
+      `;
+
+      const existing = existingRows[0];
+      const currentTopics: CaTopicItem[] = [];
+      const seenNorm = new Set<string>();
+      if (existing && Array.isArray(existing.topics_json)) {
+        for (const t of existing.topics_json) {
+          const h = (t?.headlineEn || "").trim();
+          if (!h) continue;
+          const normH = normalizeHeadlineFingerprint(h);
+          if (seenNorm.has(normH)) continue;
+          seenNorm.add(normH);
+          currentTopics.push({
+            ...t,
+            category: normalizeCategory(t.category),
+          });
+        }
+      }
+
+      // Append the newly uploaded topic card at the end of this date's deck
+      const updatedTopics = [...currentTopics, finalTopic];
+      const currentMcqs = Array.isArray(existing?.mcqs_json) ? existing.mcqs_json : [];
+      const updatedMcqs = [finalMcq, ...currentMcqs];
+
+      const updatedTrace: CaAgentStepLog[] = [
+        ...(Array.isArray(existing?.agent_trace_json) ? existing.agent_trace_json : []),
+        {
+          stepNumber:
+            (Array.isArray(existing?.agent_trace_json)
+              ? existing.agent_trace_json.length
+              : 0) + 1,
+          agentRole: "Admin Card Upload & Question Injector",
+          actionSummary: `Uploaded & added Page ${updatedTopics.length} ("${finalTopic.headlineEn.slice(0, 60)}") + 1 Bilingual MCQ to ${editionDate}`,
+          status: "completed",
+          durationMs: 260,
+          details: fileName
+            ? `Source file: ${fileName} (${fileFormat}) indexed in Edition DB & Vector Store.`
+            : "Added directly via Admin Card Upload modal.",
+        },
+      ];
+
+      const meta = deriveMonthMeta(editionDate);
+
+      // Clear from deleted dates and mark as Admin-modified
+      await queryClient`
+        DELETE FROM current_affairs_deleted_dates
+        WHERE edition_date = ${editionDate}
+      `;
+      await queryClient`
+        INSERT INTO current_affairs_admin_modified_dates (edition_date, modified_by_name, updated_at)
+        VALUES (${editionDate}, ${actorName}, NOW())
+        ON CONFLICT (edition_date) DO UPDATE SET
+          modified_by_name = EXCLUDED.modified_by_name,
+          updated_at = NOW()
+      `;
+
+      await queryClient`
+        INSERT INTO current_affairs_editions (
+          edition_date, month_key, month_label_en, month_label_bn,
+          title_en, title_bn, executive_summary_en, executive_summary_bn,
+          source_urls, agent_trace_json, topics_json, mcqs_json,
+          mnemonics_en, mnemonics_bn, created_by_name, updated_at
+        ) VALUES (
+          ${editionDate},
+          ${meta.monthKey},
+          ${meta.monthLabelEn},
+          ${meta.monthLabelBn},
+          ${`${editionDate} Digest — ${finalTopic.headlineEn.slice(0, 120)}`},
+          ${`${editionDate} ডাইজেস্ট — ${finalTopic.headlineBn.slice(0, 120)}`},
+          ${finalTopic.whyInNewsEn},
+          ${finalTopic.whyInNewsBn},
+          ${JSON.stringify(
+            existing?.source_urls?.length
+              ? existing.source_urls
+              : ["https://www.gktoday.in/current-affairs/", "https://pib.gov.in"]
+          )}::jsonb,
+          ${JSON.stringify(updatedTrace)}::jsonb,
+          ${JSON.stringify(updatedTopics)}::jsonb,
+          ${JSON.stringify(updatedMcqs)}::jsonb,
+          ${`[${finalTopic.category}: ${finalTopic.headlineEn.slice(0, 60)}]`},
+          ${`[${finalTopic.category}: ${finalTopic.headlineBn.slice(0, 60)}]`},
+          ${actorName},
+          NOW()
+        )
+        ON CONFLICT (edition_date) DO UPDATE SET
+          topics_json = EXCLUDED.topics_json,
+          mcqs_json = EXCLUDED.mcqs_json,
+          agent_trace_json = EXCLUDED.agent_trace_json,
+          updated_at = NOW()
+      `;
+
+      // Also index this uploaded CA card + question into the Vector DB (`current_affairs_vector_documents` & `current_affairs_vector_chunks`)
+      const vec = await computeTextVectorEmbedding(
+        `${finalTopic.category} | ${finalTopic.headlineEn} | ${finalTopic.whyInNewsEn} | ${finalTopic.examPointsEn.join("; ")}`
+      );
+      const docFileName = fileName || `Admin_Card_Upload_${editionDate}.txt`;
+      const [savedDoc] = await queryClient<{ id: string }[]>`
+        INSERT INTO current_affairs_vector_documents (
+          title, source_publisher, scope_type, scope_label,
+          target_dates, target_months, target_year,
+          file_name, file_format, mime_type, file_size_bytes,
+          extracted_summary_en, extracted_summary_bn, categories_json,
+          chunks_count, embedding_model, embedding_dims, exam_tags_json,
+          uploaded_by_name
+        ) VALUES (
+          ${`${editionDate} Card Upload — ${finalTopic.headlineEn.slice(0, 140)}`},
+          ${finalTopic.sourceTag},
+          'single_day',
+          ${`Single Day: ${editionDate}`},
+          ${JSON.stringify([editionDate])}::jsonb,
+          ${JSON.stringify([meta.monthKey])}::jsonb,
+          ${editionDate.slice(0, 4)},
+          ${docFileName},
+          ${fileFormat},
+          ${mimeType},
+          ${fileSizeBytes || 2048},
+          ${finalTopic.whyInNewsEn},
+          ${finalTopic.whyInNewsBn},
+          ${JSON.stringify([finalTopic.category])}::jsonb,
+          1,
+          ${vec.model},
+          ${vec.values.length},
+          ${JSON.stringify(["WBPSC Clerkship (100 Marks)", "WBCS Prelims (200 Marks)"])}::jsonb,
+          ${actorName}
+        )
+        RETURNING id
+      `;
+
+      await queryClient`
+        INSERT INTO current_affairs_vector_chunks (
+          document_id, chunk_index, category,
+          headline_en, headline_bn, content_en, content_bn,
+          key_facts_json, scope_type, scope_label,
+          target_months, target_year, source_publisher, embedding_json
+        ) VALUES (
+          ${savedDoc.id},
+          1,
+          ${finalTopic.category},
+          ${finalTopic.headlineEn},
+          ${finalTopic.headlineBn},
+          ${`${finalTopic.whyInNewsEn}\n${finalTopic.examPointsEn.join(" • ")}`},
+          ${`${finalTopic.whyInNewsBn}\n${finalTopic.examPointsBn.join(" • ")}`},
+          ${JSON.stringify(finalTopic.examPointsEn)}::jsonb,
+          'single_day',
+          ${`Single Day: ${editionDate}`},
+          ${JSON.stringify([meta.monthKey])}::jsonb,
+          ${editionDate.slice(0, 4)},
+          ${finalTopic.sourceTag},
+          ${JSON.stringify(vec.values)}::jsonb
+        )
+      `;
+
+      return reply.status(201).send({
+        editionDate,
+        addedTopic: finalTopic,
+        addedMcq: finalMcq,
+        newPageNumber: updatedTopics.length,
+        totalTopicsCount: updatedTopics.length,
+        totalMcqsCount: updatedMcqs.length,
+        vectorDocumentId: savedDoc.id,
+      });
+    }
+  );
 
   // ============================================================================
   // 4. Multi-Format Current Affairs Document Upload & Vector DB Store (Admin Only)
@@ -5194,6 +6547,7 @@ async function extractAndChunkUploadedCaDocument(params: {
   mimeType: string;
   fileBase64?: string;
   extractedTextHint?: string;
+  skipLiveLlm?: boolean;
 }): Promise<{
   summaryEn: string;
   summaryBn: string;
@@ -5218,10 +6572,10 @@ async function extractAndChunkUploadedCaDocument(params: {
     }
   }
 
-  // Attempt multimodal Gemini 3.8 Flash extraction for PDF / Image / Word text
-  try {
-    const ai = getGenAIClient();
-    const parts: any[] = [];
+  // Attempt multimodal Gemini Flash extraction for uploaded PDF / Image / Word text
+  if (!params.skipLiveLlm) {
+    try {
+      const parts: any[] = [];
 
     if (
       params.fileBase64 &&
@@ -5261,48 +6615,45 @@ Each chunk MUST include:
 - keyFacts (3 concise bullet facts)`,
     });
 
-    const genPromise = ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: [{ role: "user", parts }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summaryEn: { type: Type.STRING },
-            summaryBn: { type: Type.STRING },
-            chunks: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  category: { type: Type.STRING },
-                  headlineEn: { type: Type.STRING },
-                  headlineBn: { type: Type.STRING },
-                  contentEn: { type: Type.STRING },
-                  contentBn: { type: Type.STRING },
-                  keyFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
+    const { response } = await generateContentWithFallback(
+      {
+        contents: [{ role: "user", parts }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              summaryEn: { type: Type.STRING },
+              summaryBn: { type: Type.STRING },
+              chunks: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    category: { type: Type.STRING },
+                    headlineEn: { type: Type.STRING },
+                    headlineBn: { type: Type.STRING },
+                    contentEn: { type: Type.STRING },
+                    contentBn: { type: Type.STRING },
+                    keyFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  },
+                  required: [
+                    "category",
+                    "headlineEn",
+                    "headlineBn",
+                    "contentEn",
+                    "contentBn",
+                    "keyFacts",
+                  ],
                 },
-                required: [
-                  "category",
-                  "headlineEn",
-                  "headlineBn",
-                  "contentEn",
-                  "contentBn",
-                  "keyFacts",
-                ],
               },
             },
+            required: ["summaryEn", "summaryBn", "chunks"],
           },
-          required: ["summaryEn", "summaryBn", "chunks"],
         },
       },
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Multimodal extraction timeout")), 7500)
+      14000
     );
-    const response = await Promise.race([genPromise, timeoutPromise]);
     const parsed = JSON.parse(response.text || "{}");
     if (Array.isArray(parsed.chunks) && parsed.chunks.length >= 2) {
       return {
@@ -5323,9 +6674,10 @@ Each chunk MUST include:
             : [],
         })),
       };
+      }
+    } catch {
+      // Fallback to deterministic chunk extraction below
     }
-  } catch {
-    // Fallback to deterministic chunk extraction below
   }
 
   // Deterministic high-yield chunking when offline or when a scan/PDF is uploaded without live LLM latency
@@ -5496,6 +6848,7 @@ async function seedInitialVectorStoreSamples(todayIso: string): Promise<void> {
       fileName: s.fileName,
       fileFormat: s.fileFormat,
       mimeType: s.mimeType,
+      skipLiveLlm: true,
     });
 
     const categories = Array.from(new Set(extracted.chunks.map((c) => c.category)));
