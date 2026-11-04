@@ -37,6 +37,7 @@ export async function buildApiCoreApp(): Promise<FastifyInstance> {
     },
     trustProxy: true,
     bodyLimit: 25 * 1024 * 1024,
+    pluginTimeout: 60000,
   });
 
   // Healthcheck endpoint for container / reverse-proxy liveness probes

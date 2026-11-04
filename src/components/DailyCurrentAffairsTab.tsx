@@ -502,51 +502,64 @@ export default function DailyCurrentAffairsTab({
     }
   }, [isAdmin]);
 
-  const loadArchive = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api<{
-        todayIso?: string;
-        scheduler?: CaAutoSchedulerStatus;
-        stats: CaDashboardStats;
-        monthsArchive: CaMonthArchiveSummary[];
-        editions: CaEditionDto[];
-      }>("/current-affairs");
-      const serverToday = res.todayIso || getClientTodayIso();
-      const serverMonthKey = serverToday.slice(0, 7);
-      setTodayIso(serverToday);
-      if (res.scheduler) setScheduler(res.scheduler);
-      setStats(res.stats);
+  const loadArchive = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const res = await api<{
+          todayIso?: string;
+          autoCollectingToday?: boolean;
+          scheduler?: CaAutoSchedulerStatus;
+          stats: CaDashboardStats;
+          monthsArchive: CaMonthArchiveSummary[];
+          editions: CaEditionDto[];
+        }>("/current-affairs");
+        const serverToday = res.todayIso || getClientTodayIso();
+        const serverMonthKey = serverToday.slice(0, 7);
+        setTodayIso(serverToday);
+        if (res.scheduler) setScheduler(res.scheduler);
+        setStats(res.stats);
 
-      // Strictly filter out any future editions on client side as well
-      const validEditions = (res.editions || []).filter(
-        (e) => e.editionDate <= serverToday
-      );
-      const validMonths = (res.monthsArchive || []).filter(
-        (m) => m.monthKey <= serverMonthKey
-      );
-
-      setEditions(validEditions);
-      setMonthsArchive(validMonths);
-
-      if (validMonths.length > 0) {
-        setModalMonthKey((prev) =>
-          validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
+        // Strictly filter out any future editions on client side as well
+        const validEditions = (res.editions || []).filter(
+          (e) => e.editionDate <= serverToday
         );
-        setClassifierSelectedMonth((prev) =>
-          validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
+        const validMonths = (res.monthsArchive || []).filter(
+          (m) => m.monthKey <= serverMonthKey
         );
+
+        setEditions(validEditions);
+        setMonthsArchive(validMonths);
+
+        if (validMonths.length > 0) {
+          setModalMonthKey((prev) =>
+            validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
+          );
+          setClassifierSelectedMonth((prev) =>
+            validMonths.some((m) => m.monthKey === prev) ? prev : serverMonthKey
+          );
+        }
+        setAgentEditionDate((prev) => (prev > serverToday ? serverToday : prev));
+
+        // If background Google Search Grounding or initial archive seeding is running,
+        // silently re-fetch once it finishes without blocking the UI!
+        if (res.autoCollectingToday || validEditions.length === 0) {
+          setTimeout(() => {
+            void loadArchive(true);
+            void loadVectorStore();
+          }, validEditions.length === 0 ? 1500 : 10000);
+        }
+      } catch (err) {
+        onError(err, "Failed to load Current Affairs archive.");
+      } finally {
+        if (!silent) setLoading(false);
       }
-      setAgentEditionDate((prev) => (prev > serverToday ? serverToday : prev));
-    } catch (err) {
-      onError(err, "Failed to load Current Affairs archive.");
-    } finally {
-      setLoading(false);
-    }
-  }, [onError]);
+    },
+    [onError, loadVectorStore]
+  );
 
   useEffect(() => {
-    void loadArchive();
+    void loadArchive(false);
     void loadVectorStore();
   }, [loadArchive, loadVectorStore]);
 
