@@ -119,6 +119,11 @@ export interface CaAutoSchedulerStatus {
   lastAutoCollectedDate: string;
   pastDaysAutoBackfilled: boolean;
   totalAutoRunsCount: number;
+  lastRunStatus?: "idle" | "running" | "success" | "failed";
+  lastErrorReason?: string | null;
+  lastErrorAt?: string | null;
+  lastFailedDate?: string | null;
+  missingRecentDates?: string[];
 }
 
 export interface CaVectorDocumentDto {
@@ -376,7 +381,9 @@ export default function DailyCurrentAffairsTab({
     getClientTodayIso()
   );
   const [modalCategoryFilter, setModalCategoryFilter] = useState<string>("all");
-  const [showModalCalendar, setShowModalCalendar] = useState<boolean>(true);
+  const [showModalCalendar, setShowModalCalendar] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth >= 1024 : false
+  );
   const [floatingCardIdx, setFloatingCardIdx] = useState<number>(0);
   const [cardAnimDirection, setCardAnimDirection] = useState<"next" | "prev">("next");
 
@@ -384,8 +391,11 @@ export default function DailyCurrentAffairsTab({
   // AGENT MANAGEMENT CONSOLE STATE
   // =========================================================================
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [lastAgentErrorShort, setLastAgentErrorShort] = useState<string | null>(null);
   const [backfillBusy, setBackfillBusy] = useState<boolean>(false);
-  const [backfillMonthKey, setBackfillMonthKey] = useState<string>("2026-10");
+  const [backfillMonthKey, setBackfillMonthKey] = useState<string>(() =>
+    getClientTodayIso().slice(0, 7)
+  );
   const [backfillBatchRange, setBackfillBatchRange] = useState<
     "days-1-10" | "days-11-20" | "days-21-end" | "full-month"
   >("full-month");
@@ -702,12 +712,16 @@ export default function DailyCurrentAffairsTab({
   /**
    * Helper to open the Floating Animated Card Modal for a given month (and optional date).
    * By default (`dateFilter = "all"`), it loads the WHOLE month's Current Affairs into the modal!
+   * On mobile screens (< 1024px), defaults `showModalCalendar` to false so card content is immediately visible.
    */
   const openFloatingDeckForMonth = (monthKey: string, dateFilter: string = "all") => {
     setModalMonthKey(monthKey);
     setModalDateFilter(dateFilter);
     setModalCategoryFilter("all");
     setFloatingCardIdx(0);
+    if (typeof window !== "undefined") {
+      setShowModalCalendar(window.innerWidth >= 1024);
+    }
     setFloatingModalOpen(true);
   };
 
@@ -801,6 +815,7 @@ export default function DailyCurrentAffairsTab({
     }
 
     setAgentBusy(true);
+    setLastAgentErrorShort(null);
     try {
       const res = await api<{
         editionId: string;
@@ -809,23 +824,25 @@ export default function DailyCurrentAffairsTab({
         mcqsCount: number;
         addedTopicsCount?: number;
         alreadyComplete?: boolean;
+        scheduler?: CaAutoSchedulerStatus;
       }>("/current-affairs/agent-run", {
         method: "POST",
         body: {
           editionDate: targetDate,
           sourceUrl: agentSourceUrl,
           focusTopics: agentFocusTopics,
-          targetTopicCount: 12,
+          targetTopicCount: 14,
           forceRegenerate,
         },
       });
+      if (res.scheduler) setScheduler(res.scheduler);
       await loadArchive();
       await loadVectorStore();
       openFloatingDeckForMonth(res.editionDate.slice(0, 7), res.editionDate);
       if (res.alreadyComplete) {
         onNotify?.(
           "info",
-          `${formatReadableDate(res.editionDate, "en")} already has ${res.topicsCount}/12 Current Affairs topics stored.`
+          `${formatReadableDate(res.editionDate, "en")} already has ${res.topicsCount} Current Affairs topics stored.`
         );
       } else {
         const addedCount = res.addedTopicsCount ?? res.topicsCount;
@@ -833,10 +850,13 @@ export default function DailyCurrentAffairsTab({
           "success",
           !forceRegenerate && existingCount > 0
             ? `Google Search Grounded + Vector DB Verified: Added ${addedCount} unique topics (now ${res.topicsCount} topics) for ${formatReadableDate(res.editionDate, "en")}.`
-            : `Google Search Grounded + Vector DB Indexed: Collected ${res.topicsCount} unique topics & ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
+            : `Google Search Grounded + Vector DB Indexed: Collected ${res.topicsCount} unique topics (12–14 target) & ${res.mcqsCount} MCQs for ${formatReadableDate(res.editionDate, "en")}.`
         );
       }
     } catch (err) {
+      const shortMsg =
+        err instanceof Error ? err.message : "Model call failed during Google Search Grounding.";
+      setLastAgentErrorShort(shortMsg.slice(0, 180));
       onError(err, "Autonomous Current Affairs Agent execution failed.");
     } finally {
       setAgentBusy(false);
@@ -1782,11 +1802,11 @@ export default function DailyCurrentAffairsTab({
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* CARD 1: Daily Automatic Collection Scheduler */}
           <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
                   <Clock className="w-4 h-4" />
-                  1. Daily Collector Agent
+                  1. Daily Collector Agent (12–14 Topics/Day)
                 </span>
                 <span
                   className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
@@ -1801,14 +1821,71 @@ export default function DailyCurrentAffairsTab({
 
               <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
                 <strong className="text-white">What this does:</strong> Runs{" "}
-                <strong>automatically every day</strong>. Grounded on{" "}
-                <span className="text-emerald-300">GK Today</span>,{" "}
-                <span className="text-emerald-300">PYQArena (The Hindu)</span>,{" "}
+                <strong>automatically every day</strong> and catches up missed recent days of the current month. Grounded on{" "}
+                <span className="text-emerald-300">Google Search</span>,{" "}
+                <span className="text-emerald-300">GKToday</span>,{" "}
                 <span className="text-emerald-300">PIB</span>, and{" "}
-                <span className="text-emerald-300">WB State Gazette</span>, it collects{" "}
-                <strong>12 PSCWB exam-oriented topics</strong> for today&apos;s date (
-                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>) including West Bengal schemes, GI tags, Constitutional articles, and Static GK.
+                <span className="text-emerald-300">The Hindu</span>, it generates{" "}
+                <strong>12 to 14 unique PSCWB exam topics</strong> (via 2 parallel batches of 8 + top-up pass) for{" "}
+                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>.
               </p>
+
+              {/* Short Model Failure / Diagnostic Banner for Admin */}
+              {(scheduler?.lastErrorReason || lastAgentErrorShort) && (
+                <div className="rounded-lg border border-rose-500/50 bg-rose-950/40 px-3 py-2 text-xs text-rose-200 flex flex-wrap items-center justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <div className="font-bold text-rose-300 flex items-center gap-1.5">
+                      <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                      Model / Agent Failure Reason
+                      {scheduler?.lastFailedDate ? ` (${scheduler.lastFailedDate})` : ""}:
+                    </div>
+                    <div className="text-[11px] text-rose-100 font-mono">
+                      {lastAgentErrorShort || scheduler?.lastErrorReason}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={agentBusy}
+                    onClick={() =>
+                      void handleRunAgentForDate(
+                        scheduler?.lastFailedDate || todayIso,
+                        false
+                      )
+                    }
+                    className="px-2.5 py-1 rounded bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+                  >
+                    Retry Now
+                  </button>
+                </div>
+              )}
+
+              {/* Missing Recent Days in Current Month Indicator (e.g. Nov 7, 8, 9, 10) */}
+              {scheduler?.missingRecentDates &&
+                scheduler.missingRecentDates.length > 0 && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-bold text-amber-300">
+                        Pending Recent Days ({scheduler.missingRecentDates.length}):{" "}
+                      </span>
+                      <span className="font-mono text-[11px]">
+                        {scheduler.missingRecentDates.join(", ")}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={backfillBusy}
+                      onClick={() =>
+                        void handleAutoBackfillPastDays(
+                          todayIso.slice(0, 7),
+                          "days-1-10"
+                        )
+                      }
+                      className="px-2.5 py-1 rounded bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+                    >
+                      {backfillBusy ? "Backfilling..." : "Fill Missing Days Now"}
+                    </button>
+                  </div>
+                )}
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
@@ -1825,7 +1902,7 @@ export default function DailyCurrentAffairsTab({
               {(() => {
                 const todayCount = editionsByDate.get(todayIso)?.topics.length || 0;
                 const isTodayComplete = todayCount >= 12;
-                const todayRemaining = Math.max(0, 12 - todayCount);
+                const todayRemaining = Math.max(0, 14 - todayCount);
                 return (
                   <button
                     type="button"
@@ -1840,22 +1917,22 @@ export default function DailyCurrentAffairsTab({
                     {agentBusy ? (
                       <>
                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        Collecting Today&apos;s Topics...
+                        Collecting 12–14 Topics...
                       </>
                     ) : isTodayComplete ? (
                       <>
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        Today&apos;s 12/12 Topics Complete
+                        Today&apos;s {todayCount} Topics Complete
                       </>
                     ) : todayCount > 0 ? (
                       <>
                         <Play className="w-3.5 h-3.5" />
-                        Generate Remaining {todayRemaining} Topics ({todayCount}/12 Stored)
+                        Generate Remaining {todayRemaining} Topics ({todayCount} Stored)
                       </>
                     ) : (
                       <>
                         <Play className="w-3.5 h-3.5" />
-                        Collect Today&apos;s 12 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
+                        Collect Today&apos;s 12–14 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
                       </>
                     )}
                   </button>
@@ -2022,7 +2099,7 @@ export default function DailyCurrentAffairsTab({
               {(() => {
                 const pickedCount = editionsByDate.get(agentEditionDate)?.topics.length || 0;
                 const isPickedComplete = pickedCount >= 12;
-                const pickedRemaining = Math.max(0, 12 - pickedCount);
+                const pickedRemaining = Math.max(0, 14 - pickedCount);
                 return (
                   <div className="flex flex-wrap items-center gap-2">
                     <button
@@ -2038,22 +2115,22 @@ export default function DailyCurrentAffairsTab({
                       {agentBusy ? (
                         <>
                           <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          Grounding from Google Search...
+                          Grounding 12–14 Topics...
                         </>
                       ) : isPickedComplete ? (
                         <>
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          12/12 Topics Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                          {pickedCount} Topics Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
                         </>
                       ) : pickedCount > 0 ? (
                         <>
                           <Bot className="w-3.5 h-3.5" />
-                          Ground Remaining {pickedRemaining} Topics ({pickedCount}/12 Stored)
+                          Ground Remaining {pickedRemaining} Topics ({pickedCount} Stored)
                         </>
                       ) : (
                         <>
                           <Bot className="w-3.5 h-3.5" />
-                          Ground 12 Topics via Google Search ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                          Ground 12–14 Topics via Google Search ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
                         </>
                       )}
                     </button>
@@ -2064,10 +2141,10 @@ export default function DailyCurrentAffairsTab({
                         disabled={agentBusy}
                         onClick={() => void handleRunAgentForDate(agentEditionDate, true)}
                         className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/50 text-sky-200 disabled:opacity-50 cursor-pointer"
-                        title="Discard non-custom cards on this date and re-ground all 12 topics live from Google Search"
+                        title="Discard non-custom cards on this date and re-ground 12–14 topics live from Google Search"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${agentBusy ? "animate-spin" : ""}`} />
-                        Force Re-Ground (Google Search)
+                        Force Re-Ground (12–14 Topics)
                       </button>
                     )}
                   </div>
@@ -2773,28 +2850,30 @@ export default function DailyCurrentAffairsTab({
       ==================================================================== */}
       {floatingModalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-3 sm:p-5"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-1.5 sm:p-4"
           onClick={() => setFloatingModalOpen(false)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-6xl bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] transition-all duration-300"
+            className="relative w-full max-w-6xl bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[95vh] sm:h-auto sm:max-h-[92vh] transition-all duration-300"
           >
-            {/* Modal Top Header Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-800 bg-slate-950 shrink-0">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <span className="px-3 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-mono font-bold text-emerald-300">
+            {/* Modal Top Header Bar (Compact on Mobile so Card Content is Never Squeezed) */}
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 sm:px-5 sm:py-3.5 border-b border-slate-800 bg-slate-950 shrink-0">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2.5">
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-[11px] sm:text-xs font-mono font-bold text-emerald-300">
                   {modalDeckCards.length > 0
-                    ? `Card ${floatingCardIdx + 1} of ${modalDeckCards.length}`
+                    ? `Card ${floatingCardIdx + 1} / ${modalDeckCards.length}`
                     : "0 Cards"}
                 </span>
 
                 {/* Prominent Human-Readable Month & Date Indicator */}
-                <span className="px-3 py-1 rounded-lg bg-amber-500/15 border border-amber-500/40 text-xs font-bold text-amber-300 flex items-center gap-1.5">
-                  <CalendarIcon className="w-3.5 h-3.5" />
-                  {modalDateFilter === "all"
-                    ? `Showing Whole Month: ${formatReadableMonth(modalMonthKey, lang)} (${storedEditionsInModalMonth.length} Stored ${storedEditionsInModalMonth.length === 1 ? "Date" : "Dates"})`
-                    : `Showing Selected Date: ${formatReadableDate(modalDateFilter, lang)}`}
+                <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[11px] sm:text-xs font-bold text-amber-300 flex items-center gap-1.5 max-w-[220px] sm:max-w-none truncate">
+                  <CalendarIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">
+                    {modalDateFilter === "all"
+                      ? `${formatReadableMonth(modalMonthKey, lang)} (${storedEditionsInModalMonth.length}d)`
+                      : formatReadableDate(modalDateFilter, lang)}
+                  </span>
                 </span>
 
                 {/* Admin Top-Up Button if Selected Single Date has < 12 Topics */}
@@ -2804,34 +2883,34 @@ export default function DailyCurrentAffairsTab({
                   (() => {
                     const selectedDateCount =
                       editionsByDate.get(modalDateFilter)?.topics.length || 0;
-                    const remainingTo12 = Math.max(0, 12 - selectedDateCount);
+                    const remainingTo14 = Math.max(0, 14 - selectedDateCount);
                     if (selectedDateCount >= 12) {
                       return (
-                        <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-bold text-emerald-300 inline-flex items-center gap-1">
+                        <span className="hidden md:inline-flex px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-bold text-emerald-300 items-center gap-1">
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          12/12 Topics Complete
+                          {selectedDateCount} Topics Complete
                         </span>
                       );
                     }
-                     return (
+                    return (
                       <button
                         type="button"
                         disabled={agentBusy}
                         onClick={() => void handleRunAgentForDate(modalDateFilter)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-purple-500 hover:bg-purple-400 disabled:opacity-50 text-xs font-bold text-slate-950 cursor-pointer shadow-sm"
-                        title={`Generate remaining ${remainingTo12} unique Current Affairs topics for ${modalDateFilter}`}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-500 hover:bg-purple-400 disabled:opacity-50 text-[11px] sm:text-xs font-bold text-slate-950 cursor-pointer shadow-sm"
+                        title={`Generate remaining ${remainingTo14} unique Current Affairs topics for ${modalDateFilter}`}
                       >
                         <Bot className="w-3.5 h-3.5" />
                         {agentBusy
                           ? "Generating..."
                           : selectedDateCount > 0
-                            ? `+ Generate Remaining ${remainingTo12} Topics (${selectedDateCount}/12)`
-                            : `+ Collect 12 Topics`}
+                            ? `+ Top-Up (${selectedDateCount} Stored)`
+                            : `+ Collect 12–14 Topics`}
                       </button>
                     );
                   })()}
 
-                {/* Admin Single-Date Delete Button directly inside Modal Header */}
+                {/* Admin Single-Date Delete Button (Desktop Header) */}
                 {isAdmin &&
                   modalDateFilter !== "all" &&
                   editionsByDate.has(modalDateFilter) && (
@@ -2842,68 +2921,27 @@ export default function DailyCurrentAffairsTab({
                         const ed = editionsByDate.get(modalDateFilter);
                         if (ed) void handleDeleteEdition(ed.id, ed.editionDate);
                       }}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-xs font-bold text-rose-300 cursor-pointer"
+                      className="hidden md:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-xs font-bold text-rose-300 cursor-pointer"
                       title={`Delete all pages of ${modalDateFilter}`}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      Delete Whole Date ({modalDateFilter})
+                      Delete Date ({modalDateFilter})
                     </button>
                   )}
-
-                {/* Admin Page-Wise Delete Button for Current Page (e.g. Page 3 or Page 8) */}
-                {isAdmin && activeModalCard && (
-                  <button
-                    type="button"
-                    disabled={pageDeleteBusy}
-                    onClick={() =>
-                      void handleDeletePagesForDate({
-                        editionDate: activeModalCard.editionDate,
-                        topicId: activeModalCard.topic.id,
-                        pageNumbers: [activeModalCard.pageNumberInDate],
-                      })
-                    }
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500 hover:bg-rose-400 disabled:opacity-50 text-xs font-bold text-slate-950 cursor-pointer shadow-sm"
-                    title={`Delete only Page ${activeModalCard.pageNumberInDate} of ${activeModalCard.editionDate}`}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    {pageDeleteBusy
-                      ? "Deleting Page..."
-                      : `Delete Page ${activeModalCard.pageNumberInDate} (${activeModalCard.editionDate})`}
-                  </button>
-                )}
-
-                {/* Admin Upload / Add CA Button for Particular Date directly inside Card Modal */}
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => setShowModalDateUpload((prev) => !prev)}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
-                      showModalDateUpload
-                        ? "bg-sky-400 text-slate-950 border-sky-300 shadow-sm"
-                        : "bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border-sky-500/40"
-                    }`}
-                    title="Upload a file (PDF/Word/Image) or add a custom Current Affairs card & MCQ question for this date"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    {showModalDateUpload
-                      ? "Close Upload Panel"
-                      : `+ Upload CA to ${
-                          modalDateFilter !== "all"
-                            ? modalDateFilter
-                            : activeModalCard?.editionDate || todayIso
-                        }`}
-                  </button>
-                )}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2">
                 <button
                   type="button"
                   onClick={() => setShowModalCalendar((prev) => !prev)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 cursor-pointer border border-slate-700"
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold cursor-pointer border transition-colors ${
+                    showModalCalendar
+                      ? "bg-amber-400 text-slate-950 border-amber-300 lg:bg-slate-800 lg:text-slate-200 lg:border-slate-700"
+                      : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                  }`}
                 >
-                  <CalendarIcon className="w-3.5 h-3.5 text-emerald-400" />
-                  {showModalCalendar ? "Hide Calendar Sidebar" : "Show Month & Date Calendar"}
+                  <CalendarIcon className="w-3.5 h-3.5 text-emerald-400 lg:text-emerald-400" />
+                  <span>{showModalCalendar ? "Close Calendar" : "Calendar"}</span>
                 </button>
 
                 <button
@@ -2915,16 +2953,17 @@ export default function DailyCurrentAffairsTab({
                       `WBPSC-CA-Categorized-${modalMonthKey}`
                     )
                   }
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-slate-950 cursor-pointer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-[11px] sm:text-xs font-bold text-slate-950 cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  Download {formatReadableMonth(modalMonthKey, "en")} PDF
+                  <span className="hidden sm:inline">Download {formatReadableMonth(modalMonthKey, "en")}</span>
+                  <span>PDF</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setFloatingModalOpen(false)}
-                  className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                  className="p-1.5 sm:p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
                   title="Close Floating Deck (Esc)"
                 >
                   <X className="w-4 h-4" />
@@ -2932,11 +2971,11 @@ export default function DailyCurrentAffairsTab({
               </div>
             </div>
 
-            {/* Modal Main Body: Left Calendar/Month Picker + Right Animated Card Deck */}
-            <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-12">
+            {/* Modal Main Body: On Mobile, toggles cleanly between Calendar Picker and Card Content so Card Content always has full height! */}
+            <div className="flex-1 min-h-0 overflow-hidden flex flex-col lg:grid lg:grid-cols-12">
               {/* LEFT SIDEBAR INSIDE MODAL: Month Selector + Interactive Date Calendar */}
               {showModalCalendar && (
-                <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-slate-800 bg-slate-950/80 p-4 overflow-y-auto space-y-4">
+                <div className="flex-1 min-h-0 lg:col-span-4 border-b lg:border-b-0 lg:border-r border-slate-800 bg-slate-950/90 p-3.5 sm:p-4 overflow-y-auto space-y-4">
                   {/* Step 1: Select Month */}
                   <div className="space-y-1.5">
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
@@ -2993,6 +3032,9 @@ export default function DailyCurrentAffairsTab({
                       onClick={() => {
                         setModalDateFilter("all");
                         setFloatingCardIdx(0);
+                        if (typeof window !== "undefined" && window.innerWidth < 1024) {
+                          setShowModalCalendar(false);
+                        }
                       }}
                       className={`w-full py-2 px-3 rounded-lg text-xs font-bold border transition-all flex items-center justify-between cursor-pointer ${
                         modalDateFilter === "all"
@@ -3034,6 +3076,9 @@ export default function DailyCurrentAffairsTab({
                                 if (isFutureDate) return;
                                 setModalDateFilter(cell.dateStr!);
                                 setFloatingCardIdx(0);
+                                if (typeof window !== "undefined" && window.innerWidth < 1024) {
+                                  setShowModalCalendar(false);
+                                }
                               }}
                               title={
                                 isFutureDate
@@ -3115,6 +3160,9 @@ export default function DailyCurrentAffairsTab({
                             onClick={() => {
                               setModalDateFilter(ed.editionDate);
                               setFloatingCardIdx(0);
+                              if (typeof window !== "undefined" && window.innerWidth < 1024) {
+                                setShowModalCalendar(false);
+                              }
                             }}
                             className="flex-1 text-left flex items-center justify-between cursor-pointer"
                           >
@@ -3160,14 +3208,25 @@ export default function DailyCurrentAffairsTab({
                       ))}
                     </select>
                   </div>
+
+                  {/* Mobile Button to Switch Back to Cards View */}
+                  <button
+                    type="button"
+                    onClick={() => setShowModalCalendar(false)}
+                    className="w-full lg:hidden py-2.5 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs text-center cursor-pointer shadow-md"
+                  >
+                    View Current Affairs Cards ({modalDeckCards.length})
+                  </button>
                 </div>
               )}
 
               {/* RIGHT AREA INSIDE MODAL: Animated Flashcard Content + Page-Wise Delete + Date Upload */}
               <div
                 className={`${
-                  showModalCalendar ? "lg:col-span-8" : "lg:col-span-12"
-                } flex flex-col overflow-hidden`}
+                  showModalCalendar
+                    ? "hidden lg:flex lg:col-span-8"
+                    : "flex lg:col-span-12"
+                } flex-1 min-h-0 flex-col overflow-hidden`}
               >
                 {/* INLINE ADMIN UPLOAD CA + QUESTION PANEL FOR THIS PARTICULAR DATE */}
                 {isAdmin && showModalDateUpload && (() => {
@@ -3537,23 +3596,23 @@ export default function DailyCurrentAffairsTab({
                 ) : (
                   <div
                     key={`${activeModalCard.topic.id}-${cardAnimDirection}`}
-                    className="p-6 overflow-y-auto space-y-4 flex-1 transition-all duration-300 ease-out"
+                    className="p-3.5 sm:p-6 overflow-y-auto space-y-3.5 sm:space-y-4 flex-1 min-h-0 transition-all duration-300 ease-out"
                   >
                     {/* Top Metadata Bar on the Card: PROMINENT HUMAN-READABLE DATE + PAGE NUMBER + ADMIN PAGE DELETE / UPLOAD */}
                     <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="px-3 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-xs font-bold text-emerald-300">
-                          📅 Date: {formatReadableDate(activeModalCard.editionDate, lang)}
+                      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-[11px] sm:text-xs font-bold text-emerald-300">
+                          📅 {formatReadableDate(activeModalCard.editionDate, lang)}
                         </span>
-                        <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-xs font-mono font-bold text-amber-300">
+                        <span className="px-2 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[11px] sm:text-xs font-mono font-bold text-amber-300">
                           Page {activeModalCard.pageNumberInDate} of {activeModalCard.totalPagesInDate}
                         </span>
-                        <span className="px-3 py-1 rounded-lg bg-sky-500/20 border border-sky-500/40 text-xs font-bold text-sky-300 uppercase tracking-wider">
+                        <span className="px-2.5 py-1 rounded-lg bg-sky-500/20 border border-sky-500/40 text-[11px] sm:text-xs font-bold text-sky-300 uppercase tracking-wider">
                           {activeModalCard.topic.category}
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                         <span className="text-[11px] text-slate-400">
                           Source: {activeModalCard.topic.sourceTag}
                         </span>
@@ -3570,11 +3629,11 @@ export default function DailyCurrentAffairsTab({
                                   pageNumbers: [activeModalCard.pageNumberInDate],
                                 })
                               }
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-500/50 text-xs font-bold text-rose-300 cursor-pointer"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-500/50 text-[11px] font-bold text-rose-300 cursor-pointer"
                               title={`Delete Page ${activeModalCard.pageNumberInDate} from ${activeModalCard.editionDate}`}
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Delete Page {activeModalCard.pageNumberInDate}
+                              <Trash2 className="w-3 h-3" />
+                              Del Page {activeModalCard.pageNumberInDate}
                             </button>
 
                             <button
@@ -3582,19 +3641,19 @@ export default function DailyCurrentAffairsTab({
                               onClick={() =>
                                 setShowPageDeletePicker((prev) => !prev)
                               }
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-rose-200 cursor-pointer"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-semibold text-rose-200 cursor-pointer"
                               title="Pick specific page numbers (e.g. Page 3, Page 8) to delete from this date"
                             >
-                              Delete Specific Pages...
+                              Pages...
                             </button>
 
                             <button
                               type="button"
                               onClick={() => setShowModalDateUpload((prev) => !prev)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-500/50 text-xs font-bold text-sky-300 cursor-pointer"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-500/50 text-[11px] font-bold text-sky-300 cursor-pointer"
                               title={`Upload CA file or add question to ${activeModalCard.editionDate}`}
                             >
-                              <Upload className="w-3.5 h-3.5" />
+                              <Upload className="w-3 h-3" />
                               + Upload CA
                             </button>
                           </>
@@ -3604,7 +3663,7 @@ export default function DailyCurrentAffairsTab({
 
                     {/* Topic Headline */}
                     <div className="space-y-1">
-                      <h2 className="text-lg lg:text-xl font-bold text-white leading-snug">
+                      <h2 className="text-base sm:text-lg lg:text-xl font-bold text-white leading-snug">
                         {lang === "bn"
                           ? activeModalCard.topic.headlineBn
                           : activeModalCard.topic.headlineEn}
@@ -3617,7 +3676,7 @@ export default function DailyCurrentAffairsTab({
                     </div>
 
                     {/* Why in News Box */}
-                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs lg:text-sm text-slate-200 leading-relaxed">
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 sm:p-4 text-xs lg:text-sm text-slate-200 leading-relaxed">
                       <strong className="text-emerald-400">
                         {lang === "bn" ? "সংবাদে কেন (Why in News): " : "Why in News: "}
                       </strong>
@@ -3627,13 +3686,13 @@ export default function DailyCurrentAffairsTab({
                     </div>
 
                     {/* To-The-Point Exam Facts */}
-                    <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-5 space-y-2.5">
+                    <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 sm:p-5 space-y-2.5">
                       <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">
                         {lang === "bn"
                           ? "পরীক্ষা-কেন্দ্রিক মূল তথ্য (To-The-Point Exam Facts — WBPSC Prelims & Mains)"
                           : "To-The-Point Exam Facts (WBPSC Prelims & Mains)"}
                       </h3>
-                      <ul className="space-y-2.5 text-xs lg:text-sm text-slate-100 leading-relaxed pl-5 list-disc marker:text-emerald-400">
+                      <ul className="space-y-2 text-xs lg:text-sm text-slate-100 leading-relaxed pl-5 list-disc marker:text-emerald-400">
                         {(lang === "bn" && activeModalCard.topic.examPointsBn?.length
                           ? activeModalCard.topic.examPointsBn
                           : activeModalCard.topic.examPointsEn
@@ -3644,8 +3703,8 @@ export default function DailyCurrentAffairsTab({
                     </div>
 
                     {/* Static GK Hook & Exam Hall Trap */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="bg-sky-500/10 border border-sky-500/30 rounded-xl p-4 text-xs lg:text-sm text-sky-100 leading-relaxed">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
+                      <div className="bg-sky-500/10 border border-sky-500/30 rounded-xl p-3.5 sm:p-4 text-xs lg:text-sm text-sky-100 leading-relaxed">
                         <div className="font-bold text-sky-300 mb-1 flex items-center gap-1.5">
                           <BookOpen className="w-4 h-4" />
                           {lang === "bn"
@@ -3657,7 +3716,7 @@ export default function DailyCurrentAffairsTab({
                           : activeModalCard.topic.staticGkLinkEn}
                       </div>
 
-                      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-xs lg:text-sm text-amber-100 leading-relaxed">
+                      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 sm:p-4 text-xs lg:text-sm text-amber-100 leading-relaxed">
                         <div className="font-bold text-amber-300 mb-1 flex items-center gap-1.5">
                           <ShieldAlert className="w-4 h-4" />
                           {lang === "bn"
@@ -3672,30 +3731,49 @@ export default function DailyCurrentAffairsTab({
                   </div>
                 )}
 
-                {/* Modal Footer: Previous / Page Number Buttons (with Page-Wise Delete & Upload) / Next Buttons */}
-                <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-t border-slate-800 bg-slate-950/90 shrink-0">
+                {/* Modal Footer: Compact Single-Row on Mobile (Dropdown Page Selector) + Page Buttons on Desktop */}
+                <div className="flex items-center justify-between gap-2 sm:gap-4 px-3 py-2.5 sm:px-6 sm:py-3.5 border-t border-slate-800 bg-slate-950/95 shrink-0">
                   <button
                     type="button"
                     disabled={modalDeckCards.length === 0}
                     onClick={goPrevCard}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 rounded-xl transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1 sm:gap-2 px-3 py-2 sm:px-4 sm:py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 rounded-xl transition-colors cursor-pointer shrink-0"
                   >
                     <ChevronLeft className="w-4 h-4" />
-                    Previous Topic
+                    <span className="hidden sm:inline">Previous Topic</span>
+                    <span className="sm:hidden">Prev</span>
                   </button>
 
-                  {/* Interactive Page Number Buttons / Selector */}
-                  <div className="flex flex-wrap items-center justify-center gap-2">
+                  {/* MOBILE Page Selector (< sm): Single Compact Dropdown so Page Buttons NEVER wrap or hide content */}
+                  <div className="flex sm:hidden items-center justify-center flex-1 min-w-0">
+                    {modalDeckCards.length > 0 && (
+                      <select
+                        value={floatingCardIdx}
+                        onChange={(e) => setFloatingCardIdx(Number(e.target.value))}
+                        aria-label="Select Current Affairs Page"
+                        className="w-full max-w-[190px] bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-emerald-300 cursor-pointer truncate"
+                      >
+                        {modalDeckCards.map((c, idx) => (
+                          <option key={`${c.topic.id}-mob-${idx}`} value={idx}>
+                            Page {c.pageNumberInDate}/{c.totalPagesInDate} (#{idx + 1}) · {c.topic.headlineEn.slice(0, 22)}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  {/* DESKTOP / TABLET Page Number Buttons (>= sm) */}
+                  <div className="hidden sm:flex flex-wrap items-center justify-center gap-2 min-w-0">
                     {modalDeckCards.length <= 16 ? (
-                      <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-md">
+                      <div className="flex items-center gap-1.5 overflow-x-auto max-w-md py-0.5">
                         {modalDeckCards.map((c, idx) => (
                           <button
                             key={`${c.topic.id}-${idx}`}
                             type="button"
                             onClick={() => setFloatingCardIdx(idx)}
-                            className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                            className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer shrink-0 ${
                               idx === floatingCardIdx
-                                ? "bg-emerald-500 text-slate-950 scale-110"
+                                ? "bg-emerald-500 text-slate-950 scale-105"
                                 : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
                             }`}
                             title={`Page ${c.pageNumberInDate} (${formatReadableDate(c.editionDate, "en")}): ${c.topic.headlineEn}`}
@@ -3720,47 +3798,16 @@ export default function DailyCurrentAffairsTab({
                         </select>
                       </div>
                     )}
-
-                    {/* Quick Page-Wise Delete & Upload Buttons right next to Page Numbers */}
-                    {isAdmin && activeModalCard && (
-                      <div className="flex items-center gap-1.5 pl-1 border-l border-slate-800">
-                        <button
-                          type="button"
-                          disabled={pageDeleteBusy}
-                          onClick={() =>
-                            void handleDeletePagesForDate({
-                              editionDate: activeModalCard.editionDate,
-                              topicId: activeModalCard.topic.id,
-                              pageNumbers: [activeModalCard.pageNumberInDate],
-                            })
-                          }
-                          title={`Delete Page ${activeModalCard.pageNumberInDate} of ${activeModalCard.editionDate}`}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-500/40 text-[11px] font-bold text-rose-300 cursor-pointer"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          Del Page #{activeModalCard.pageNumberInDate}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setShowModalDateUpload((prev) => !prev)}
-                          title={`Upload CA & Question for ${activeModalCard.editionDate}`}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-500/40 text-[11px] font-bold text-sky-300 cursor-pointer"
-                        >
-                          <Upload className="w-3 h-3" />
-                          Upload CA
-                        </button>
-                      </div>
-                    )}
                   </div>
 
                   <button
                     type="button"
                     disabled={modalDeckCards.length === 0}
                     onClick={goNextCard}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-sm"
+                    className="inline-flex items-center gap-1 sm:gap-2 px-3 py-2 sm:px-4 sm:py-2.5 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-sm shrink-0"
                   >
-                    Next Topic
+                    <span className="hidden sm:inline">Next Topic</span>
+                    <span className="sm:hidden">Next</span>
                     <ChevronRight className="w-4 h-4" />
                   </button>
                 </div>

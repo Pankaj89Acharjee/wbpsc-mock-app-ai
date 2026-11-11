@@ -264,45 +264,175 @@ export interface CaAutoSchedulerStatus {
   lastAutoCollectedDate: string;
   pastDaysAutoBackfilled: boolean;
   totalAutoRunsCount: number;
+  lastRunStatus?: "idle" | "running" | "success" | "failed";
+  lastErrorReason?: string | null;
+  lastErrorAt?: string | null;
+  lastFailedDate?: string | null;
+  missingRecentDates?: string[];
+}
+
+export function summarizeGeminiErrorReason(rawErr: string | undefined): string {
+  const msg = (rawErr || "").trim();
+  if (!msg) {
+    return "Gemini model returned 0 topics. Verify GEMINI_API_KEY in root .env.";
+  }
+  const lower = msg.toLowerCase();
+  if (lower.includes("gemini_api_key is not configured") || lower.includes("missing api key")) {
+    return "GEMINI_API_KEY is missing in root .env file.";
+  }
+  if (lower.includes("429") || lower.includes("resource_exhausted") || lower.includes("quota")) {
+    return "Gemini API Quota / Rate Limit Exceeded (HTTP 429). Wait 60s or check API billing.";
+  }
+  if (lower.includes("api_key_invalid") || lower.includes("403") || lower.includes("permission_denied")) {
+    return "Invalid or unauthorized GEMINI_API_KEY (HTTP 403). Check root .env.";
+  }
+  if (lower.includes("timed out") || lower.includes("timeout")) {
+    return "Gemini Google Search Grounding timed out (>40s). Retrying on next cycle.";
+  }
+  return msg.length > 160 ? `${msg.slice(0, 157)}...` : msg;
 }
 
 const caAutoScheduler: CaAutoSchedulerStatus = {
   enabled: true,
-  scheduleCronLabel: "Every Day at 06:00 AM IST (Auto-Collects 12 Topics + Backfills Past Days)",
-  targetTopicsPerDay: 12,
+  scheduleCronLabel: "Every Day at 06:00 AM IST (Auto-Collects 12–14 Topics + Catch-Up Recent Days)",
+  targetTopicsPerDay: 14,
   lastAutoRunAt: new Date().toISOString(),
   lastAutoCollectedDate: getTodayIso(),
   pastDaysAutoBackfilled: true,
   totalAutoRunsCount: 16,
+  lastRunStatus: "idle",
+  lastErrorReason: null,
+  lastErrorAt: null,
+  lastFailedDate: null,
+  missingRecentDates: [],
 };
 
 let autoSchedulerTimerStarted = false;
 let backgroundSeedStarted = false;
 const inFlightAgentDates = new Set<string>();
+const autoGroundQueue: Array<{ editionDate: string; actorName: string }> = [];
+let autoGroundWorkerRunning = false;
 const lastAutoGroundAttemptMs = new Map<string, number>();
 
-function triggerBackgroundAutoGroundForDate(editionDate: string, actorName: string): void {
-  if (inFlightAgentDates.has(editionDate)) return;
-  const lastAttempt = lastAutoGroundAttemptMs.get(editionDate) || 0;
-  // Avoid hammering Gemini if an auto-ground attempt ran within the last 3 minutes
-  if (Date.now() - lastAttempt < 3 * 60 * 1000) return;
+function processAutoGroundQueue(): void {
+  if (autoGroundWorkerRunning) return;
+  const nextItem = autoGroundQueue.shift();
+  if (!nextItem) return;
 
+  autoGroundWorkerRunning = true;
+  const { editionDate, actorName } = nextItem;
   inFlightAgentDates.add(editionDate);
   lastAutoGroundAttemptMs.set(editionDate, Date.now());
+  caAutoScheduler.lastRunStatus = "running";
 
   void runAutonomousCurrentAffairsAgent({
     editionDate,
-    targetTopicCount: 12,
+    targetTopicCount: 14,
     actorName,
   })
-    .then(() => {
-      caAutoScheduler.lastAutoCollectedDate = editionDate;
-      caAutoScheduler.lastAutoRunAt = new Date().toISOString();
+    .then((res) => {
+      if (res.topicsCount > 0 || res.alreadyComplete) {
+        caAutoScheduler.lastAutoCollectedDate = editionDate;
+        caAutoScheduler.lastAutoRunAt = new Date().toISOString();
+        caAutoScheduler.lastRunStatus = "success";
+        caAutoScheduler.lastErrorReason = null;
+        caAutoScheduler.lastFailedDate = null;
+        if (!res.alreadyComplete) {
+          caAutoScheduler.totalAutoRunsCount += 1;
+        }
+        caAutoScheduler.missingRecentDates = (caAutoScheduler.missingRecentDates || []).filter(
+          (d) => d !== editionDate
+        );
+      } else {
+        caAutoScheduler.lastRunStatus = "failed";
+        caAutoScheduler.lastErrorReason = summarizeGeminiErrorReason(res.errorDetail);
+        caAutoScheduler.lastErrorAt = new Date().toISOString();
+        caAutoScheduler.lastFailedDate = editionDate;
+      }
     })
-    .catch(() => {})
+    .catch((err) => {
+      caAutoScheduler.lastRunStatus = "failed";
+      caAutoScheduler.lastErrorReason = summarizeGeminiErrorReason(
+        err instanceof Error ? err.message : String(err)
+      );
+      caAutoScheduler.lastErrorAt = new Date().toISOString();
+      caAutoScheduler.lastFailedDate = editionDate;
+    })
     .finally(() => {
       inFlightAgentDates.delete(editionDate);
+      autoGroundWorkerRunning = false;
+      if (autoGroundQueue.length > 0) {
+        setTimeout(() => {
+          processAutoGroundQueue();
+        }, 2000);
+      }
     });
+}
+
+function triggerBackgroundAutoGroundForDate(editionDate: string, actorName: string): void {
+  if (inFlightAgentDates.has(editionDate)) return;
+  if (autoGroundQueue.some((q) => q.editionDate === editionDate)) return;
+  const lastAttempt = lastAutoGroundAttemptMs.get(editionDate) || 0;
+  // Avoid hammering Gemini if an auto-ground attempt ran within the last 2 minutes
+  if (Date.now() - lastAttempt < 2 * 60 * 1000) return;
+
+  autoGroundQueue.push({ editionDate, actorName });
+  processAutoGroundQueue();
+}
+
+async function findAndQueueRecentMissingCurrentMonthDates(
+  todayIso: string,
+  actorName: string
+): Promise<string[]> {
+  const currentMonthKey = todayIso.slice(0, 7);
+  const todayDayNum = Number(todayIso.slice(8, 10)) || 1;
+  // Check today and up to the last 4 days of the current month (e.g., Nov 10, 9, 8, 7)
+  const startDay = Math.max(1, todayDayNum - 4);
+  const candidateDates: string[] = [];
+  for (let d = todayDayNum; d >= startDay; d--) {
+    candidateDates.push(`${currentMonthKey}-${String(d).padStart(2, "0")}`);
+  }
+
+  const skippedRows = await queryClient<Array<{ edition_date: string }>>`
+    SELECT edition_date FROM current_affairs_deleted_dates
+    WHERE edition_date LIKE ${currentMonthKey + "-%"}
+    UNION
+    SELECT edition_date FROM current_affairs_admin_modified_dates
+    WHERE edition_date LIKE ${currentMonthKey + "-%"}
+  `;
+  const skippedSet = new Set(skippedRows.map((r) => r.edition_date));
+
+  const storedRows = await queryClient<
+    Array<{ edition_date: string; topics_json: CaTopicItem[] }>
+  >`
+    SELECT edition_date, topics_json
+    FROM current_affairs_editions
+    WHERE month_key = ${currentMonthKey} AND edition_date <= ${todayIso}
+  `;
+  const topicCountByDate = new Map<string, number>();
+  for (const r of storedRows) {
+    const validCount = Array.isArray(r.topics_json)
+      ? r.topics_json.filter((t) => !isLegacyStaticSupplementTopic(t)).length
+      : 0;
+    topicCountByDate.set(r.edition_date, validCount);
+  }
+
+  const missingDates: string[] = [];
+  for (const dateStr of candidateDates) {
+    if (skippedSet.has(dateStr)) continue;
+    const count = topicCountByDate.get(dateStr) || 0;
+    if (count < 12) {
+      missingDates.push(dateStr);
+    }
+  }
+
+  caAutoScheduler.missingRecentDates = missingDates;
+  if (caAutoScheduler.enabled) {
+    for (const dateStr of missingDates) {
+      triggerBackgroundAutoGroundForDate(dateStr, actorName);
+    }
+  }
+  return missingDates;
 }
 
 export async function ensureCurrentAffairsSchema(): Promise<void> {
@@ -2062,33 +2192,11 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
   // Clean any previously injected static supplement/redundant topics across all stored dates
   await ensureLegacySupplementsPurgedOnce();
 
-  // Trigger non-blocking Google Search Grounding for Today's Present Date (`todayIso`) if not yet grounded
-  if (caAutoScheduler.enabled && !deletedDatesSet.has(todayIso)) {
-    const adminModifiedRows = await queryClient<Array<{ edition_date: string }>>`
-      SELECT edition_date FROM current_affairs_admin_modified_dates
-      WHERE edition_date = ${todayIso}
-      LIMIT 1
-    `;
-    if (adminModifiedRows.length === 0) {
-      const todayRows = await queryClient<
-        Array<{ edition_date: string; topics_json: CaTopicItem[] }>
-      >`
-        SELECT edition_date, topics_json
-        FROM current_affairs_editions
-        WHERE edition_date = ${todayIso}
-        LIMIT 1
-      `;
-      const todayTopicsCount = Array.isArray(todayRows[0]?.topics_json)
-        ? todayRows[0].topics_json.length
-        : 0;
-      if (todayTopicsCount === 0) {
-        triggerBackgroundAutoGroundForDate(
-          todayIso,
-          "Daily Google Search Grounded Agent (Auto-Run)"
-        );
-      }
-    }
-  }
+  // Trigger non-blocking Google Search Grounding for Today (`todayIso`) AND recent missed days of current month (e.g. Nov 7, 8, 9, 10)
+  await findAndQueueRecentMissingCurrentMonthDates(
+    todayIso,
+    "Daily Google Search Grounded Agent (Auto Catch-Up)"
+  );
 }
 
 // ============================================================================
@@ -3587,11 +3695,11 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     editionDate,
     sourceUrl,
     focusTopics,
-    targetTopicCount = 12,
+    targetTopicCount = 14,
     forceRegenerate = false,
     actorName,
   } = params;
-  const desiredTotal = Math.max(1, Math.min(12, targetTopicCount || 12));
+  const desiredTotal = Math.max(12, Math.min(14, targetTopicCount || 14));
 
   // 1. Check if `editionDate` ALREADY has topics in PostgreSQL:
   const existingEditionRows = await queryClient<
@@ -3717,12 +3825,13 @@ export async function runAutonomousCurrentAffairsAgent(params: {
   let lastGeminiError = "";
 
   try {
+    const searchTargetCount = Math.max(18, missingCount + 5);
     const searchPrompt = `You are the Live Google Search Current Affairs Harvester for WBPSC Clerkship (100 Marks) & WBCS Prelims (200 Marks).
-Use Google Search right now to find ${missingCount + 3} real, verified, current news & GK items for WBPSC Clerkship and WBCS Prelims exam preparation (Target Edition: ${dayInt} ${monthNameEn} ${yStr}${isTodayEdition ? " — Today's Current Affairs" : ""}).
+Use Google Search right now to find ${searchTargetCount} real, verified, current news & GK items for WBPSC Clerkship and WBCS Prelims exam preparation (Target Edition: ${dayInt} ${monthNameEn} ${yStr}${isTodayEdition ? " — Today's Current Affairs" : ""}).
 
 Execute Google Search queries for:
 1. "give me today's current affairs for wbpsc clerkship exam"
-2. "today's top 10 current affairs GKToday AffairsCloud Jagran Josh PIB The Hindu"
+2. "today's top 15 current affairs GKToday AffairsCloud Jagran Josh PIB The Hindu"
 3. "West Bengal current affairs GKToday Adda247 PIB WBPSC Clerkship"
 4. "current affairs ${dayInt} ${monthNameEn} GKToday PIB The Hindu"
 ${focusTopics?.trim() ? `5. Focus query: "${focusTopics.trim()}"` : ""}
@@ -3732,7 +3841,7 @@ ${crawled.combinedSnippet ? `Additional Crawled Portal Snippets:\n${crawled.comb
 STRICT ANTI-DUPLICATION RULE — DO NOT REPEAT ANY OF THESE ${allForbiddenHeadlines.length} ALREADY-STORED HEADLINES:
 ${allForbiddenHeadlines.slice(0, 80).map((h, i) => `${i + 1}. ${h}`).join("\n")}
 
-From your live Google Search results, compile ${missingCount + 2} distinct, real, exam-relevant Current Affairs news items (covering West Bengal Special, Polity & Governance, Economy & Banking, Science & ISRO, Awards & Honours, Sports & Tournaments, Environment & GI Tags, Defence Exercises, Ranks/Indices, and National/International).
+From your live Google Search results, compile ${searchTargetCount} distinct, real, exam-relevant Current Affairs news items (covering West Bengal Special, Polity & Governance, Economy & Banking, Science & ISRO, Awards & Honours, Sports & Tournaments, Environment & GI Tags, Defence Exercises, Ranks/Indices, and National/International).
 For each item provide:
 - Headline & Category
 - Why in News (exact names, ministries, dates, venues, winners, rankings)
@@ -3811,8 +3920,11 @@ For each item provide:
       ? `Grounded Google Search Sources: ${groundedSourceTitles.slice(0, 8).join(" | ")}`
       : "Grounded Sources: Google Search · GKToday · PIB · The Hindu";
 
-  const batch1Target = Math.min(6, missingCount);
-  const batch2Target = Math.max(0, missingCount - batch1Target);
+  // Over-fetch 8 + 8 = 16 candidate topics across the 2 parallel batches so that even after
+  // lexical & vector deduplication drops 2–3 items, we reliably store 12 to 14 unique topics!
+  const desiredCandidatePool = Math.max(16, missingCount + 4);
+  const batch1Target = Math.min(8, Math.ceil(desiredCandidatePool / 2));
+  const batch2Target = Math.min(8, Math.max(0, desiredCandidatePool - batch1Target));
 
   const batchResponseSchema = {
     type: Type.OBJECT,
@@ -4127,7 +4239,89 @@ MANDATORY REQUIREMENTS:
     });
   }
 
-  // Merge preserved existing topics + newly Google-grounded & vector-verified unique topics
+  // Top-Up Pass: If after lexical & vector deduplication total topics is still < 12 (e.g. 9 or 10),
+  // run one fast supplemental extraction batch so every edition reliably has 12 to 14 topics!
+  if (existingTopics.length + newUniqueTopics.length < 12 && groundedResearchContext) {
+    const stillNeeded = Math.min(
+      6,
+      Math.max(4, desiredTotal - (existingTopics.length + newUniqueTopics.length) + 2)
+    );
+    const topUpParsed = await runExtractionBatch(
+      2,
+      stillNeeded,
+      `TOP-UP PASS: We currently have ${existingTopics.length + newUniqueTopics.length} topics and need ${stillNeeded} MORE completely distinct topics to reach 12–14 topics. Do NOT repeat any of these already-selected headlines: ${acceptedHeadlines.slice(-25).join(" | ")}. Cover any remaining news in Sports, Defence, Environment, Economy, Science, Polity, or West Bengal Special.`
+    );
+    const topUpRaw: CaTopicItem[] = (Array.isArray(topUpParsed.topics) ? topUpParsed.topics : []).map(
+      (t: any, idx: number) => ({
+        id: `ca-${editionDate}-topup-${idx + 1}`,
+        category: normalizeCategory(t.category),
+        headlineEn: stripArtificialDateReviewSuffix(
+          (t.headlineEn || `Exam Topic #${idx + 1}`).trim()
+        ),
+        headlineBn: (t.headlineBn || t.headlineEn || `পরীক্ষার বিষয় #${idx + 1}`).trim(),
+        sourceTag:
+          t.sourceTag || `Google Search Grounded · GKToday / PIB (${editionDate})`,
+        whyInNewsEn: t.whyInNewsEn || "",
+        whyInNewsBn: t.whyInNewsBn || t.whyInNewsEn || "",
+        examPointsEn: Array.isArray(t.examPointsEn) ? t.examPointsEn : [],
+        examPointsBn: Array.isArray(t.examPointsBn) ? t.examPointsBn : [],
+        staticGkLinkEn: t.staticGkLinkEn || "",
+        staticGkLinkBn: t.staticGkLinkBn || t.staticGkLinkEn || "",
+        examTrapEn: t.examTrapEn || "",
+        examTrapBn: t.examTrapBn || t.examTrapEn || "",
+      })
+    );
+
+    const topUpSurvivors: CaTopicItem[] = [];
+    for (const cand of topUpRaw) {
+      if (isLegacyStaticSupplementTopic(cand)) continue;
+      if (acceptedHeadlines.some((ex) => areHeadlinesDuplicate(ex, cand.headlineEn))) {
+        droppedDuplicatesCount++;
+        continue;
+      }
+      acceptedHeadlines.push(cand.headlineEn);
+      topUpSurvivors.push(cand);
+    }
+
+    if (topUpSurvivors.length > 0) {
+      const topUpVecs = await Promise.all(
+        topUpSurvivors.map((cand) =>
+          computeTextVectorEmbedding(
+            `${cand.category} | ${cand.headlineEn} | ${cand.whyInNewsEn} | ${cand.examPointsEn.join("; ")}`
+          )
+        )
+      );
+      for (let i = 0; i < topUpSurvivors.length; i++) {
+        if (newUniqueTopics.length >= missingCount) break;
+        const cand = topUpSurvivors[i];
+        const vec = topUpVecs[i];
+        if (
+          storedVectors.some(
+            (existingVec) => computeRawCosineSimilarity(vec.values, existingVec) > 0.86
+          )
+        ) {
+          droppedDuplicatesCount++;
+          continue;
+        }
+        storedVectors.push(vec.values);
+        const finalizedTopic: CaTopicItem = {
+          ...cand,
+          id: `ca-${editionDate}-${existingTopics.length + newUniqueTopics.length + 1}`,
+        };
+        newUniqueTopics.push(finalizedTopic);
+        newTopicEmbeddings.push({
+          topic: finalizedTopic,
+          embedding: vec.values,
+          model: vec.model,
+        });
+      }
+    }
+    if (Array.isArray(topUpParsed.mcqs) && topUpParsed.mcqs.length > 0) {
+      parsed.mcqs = [...(parsed.mcqs || []), ...topUpParsed.mcqs];
+    }
+  }
+
+  // Merge preserved existing topics + newly Google-grounded & vector-verified unique topics (12 to 14 topics)
   const finalTopics: CaTopicItem[] = [...existingTopics, ...newUniqueTopics]
     .slice(0, desiredTotal)
     .map((t, idx) => ({
@@ -4263,6 +4457,11 @@ MANDATORY REQUIREMENTS:
 
   // If no existing topics and 0 new topics could be grounded, do not insert an empty row
   if (finalTopics.length === 0) {
+    const shortErr = summarizeGeminiErrorReason(lastGeminiError);
+    caAutoScheduler.lastRunStatus = "failed";
+    caAutoScheduler.lastErrorReason = shortErr;
+    caAutoScheduler.lastErrorAt = new Date().toISOString();
+    caAutoScheduler.lastFailedDate = editionDate;
     return {
       editionId: existingEdition?.id || "none",
       editionDate,
@@ -4272,11 +4471,13 @@ MANDATORY REQUIREMENTS:
       alreadyComplete: false,
       vectorDocumentId: null,
       groundedSourcesCount: discoveredUrls.size,
-      errorDetail:
-        lastGeminiError ||
-        "Google Search Grounding returned 0 topics. Please verify GEMINI_API_KEY in .env.",
+      errorDetail: shortErr,
     };
   }
+
+  caAutoScheduler.lastRunStatus = "success";
+  caAutoScheduler.lastErrorReason = null;
+  caAutoScheduler.lastFailedDate = null;
 
   const finalTitleEn =
     (!forceRegenerate && existingEdition?.title_en) ||
@@ -4385,7 +4586,7 @@ const RunAgentBodySchema = z.object({
     .default(() => getTodayIso()),
   sourceUrl: z.string().max(1200).optional().nullable(),
   focusTopics: z.string().max(5000).optional().nullable(),
-  targetTopicCount: z.coerce.number().int().min(1).max(12).default(12),
+  targetTopicCount: z.coerce.number().int().min(1).max(15).default(14),
   forceRegenerate: z.boolean().optional().default(false),
 });
 
@@ -4399,8 +4600,8 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /current-affairs
    * - Purges any legacy static supplement topics once via `ensureLegacySupplementsPurgedOnce()`.
-   * - Automatically triggers the Daily Collector Agent in the background for `todayIso` (Present Date)
-   *   if `caAutoScheduler.enabled` is ON and `todayIso` does not yet have topics stored.
+   * - Automatically checks Today (`todayIso`) AND recent missed days of the current month (e.g. Nov 7, 8, 9, 10)
+   *   and queues them sequentially in the background if `caAutoScheduler.enabled` is ON.
    * - Returns all stored Current Affairs editions up to `todayIso` (including November 2026),
    *   month-wise categorized archive breakdown, and aggregate statistics.
    */
@@ -4408,37 +4609,10 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
     await ensureLegacySupplementsPurgedOnce();
     const todayIso = getTodayIso();
 
-    if (caAutoScheduler.enabled) {
-      const deletedTodayCheck = await queryClient<Array<{ edition_date: string }>>`
-        SELECT edition_date
-        FROM current_affairs_deleted_dates
-        WHERE edition_date = ${todayIso}
-        UNION
-        SELECT edition_date
-        FROM current_affairs_admin_modified_dates
-        WHERE edition_date = ${todayIso}
-        LIMIT 1
-      `;
-      if (deletedTodayCheck.length === 0) {
-        const todayCheck = await queryClient<
-          Array<{ edition_date: string; topics_json: CaTopicItem[] }>
-        >`
-          SELECT edition_date, topics_json
-          FROM current_affairs_editions
-          WHERE edition_date = ${todayIso}
-          LIMIT 1
-        `;
-        const todayValidTopicsCount = Array.isArray(todayCheck[0]?.topics_json)
-          ? todayCheck[0].topics_json.filter((t) => !isLegacyStaticSupplementTopic(t)).length
-          : 0;
-        if (todayValidTopicsCount === 0) {
-          triggerBackgroundAutoGroundForDate(
-            todayIso,
-            "Daily Google Search Grounded Agent (Present Date Auto-Run)"
-          );
-        }
-      }
-    }
+    await findAndQueueRecentMissingCurrentMonthDates(
+      todayIso,
+      "Daily Google Search Grounded Agent (Auto Catch-Up)"
+    );
 
     const rows = await queryClient<
       Array<{
@@ -4680,7 +4854,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       editionDate: parsed.data.editionDate,
       sourceUrl: parsed.data.sourceUrl ?? undefined,
       focusTopics: parsed.data.focusTopics ?? undefined,
-      targetTopicCount: parsed.data.targetTopicCount ?? 12,
+      targetTopicCount: parsed.data.targetTopicCount ?? 14,
       forceRegenerate: parsed.data.forceRegenerate ?? false,
       actorName: `Admin (${user.fullName || "WBPSC Admin"}) via Google Search Grounded Agent`,
     });
@@ -4690,6 +4864,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
         error:
           result.errorDetail ||
           "Google Search Grounding returned 0 topics. Check that GEMINI_API_KEY is configured in your root .env file.",
+        scheduler: caAutoScheduler,
       });
     }
 
@@ -4698,7 +4873,10 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       caAutoScheduler.totalAutoRunsCount += 1;
     }
 
-    return reply.status(200).send(result);
+    return reply.status(200).send({
+      ...result,
+      scheduler: caAutoScheduler,
+    });
   });
 
   /**
@@ -4749,7 +4927,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       editionDate: targetEditionDate,
       sourceUrl: `https://www.gktoday.in/current-affairs/date/${targetEditionDate}/`,
       focusTopics: `End-of-Month Categorized Capsule for ${meta.monthLabelEn}. Collect unique, non-duplicated exam-oriented events of ${meta.monthLabelEn} strictly classified across Sports & Tournaments, Awards & Honours, Science & Technology, Polity & Governance, Economy & Banking, West Bengal Special, Environment & GI Tags, Defence Exercises, and Ranks/Indices.`,
-      targetTopicCount: 12,
+      targetTopicCount: 14,
       actorName: `Monthly Classifier Agent (${user.fullName || "Admin"})`,
     });
 
@@ -4757,6 +4935,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       ...result,
       monthKey,
       monthLabelEn: meta.monthLabelEn,
+      scheduler: caAutoScheduler,
     });
   });
 
@@ -4775,12 +4954,10 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
         DELETE FROM current_affairs_deleted_dates
         WHERE edition_date = ${todayIso}
       `;
-      await runAutonomousCurrentAffairsAgent({
-        editionDate: todayIso,
-        targetTopicCount: 12,
-        actorName: "Daily Google Search Grounded Agent (Scheduler Toggle)",
-      });
-      caAutoScheduler.lastAutoCollectedDate = todayIso;
+      await findAndQueueRecentMissingCurrentMonthDates(
+        todayIso,
+        "Daily Google Search Grounded Agent (Scheduler Toggle)"
+      );
     }
     return { scheduler: caAutoScheduler };
   });
@@ -4789,7 +4966,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
    * POST /current-affairs/auto-backfill (Admin Only)
    * Skips any date that already has >= 12 topics, and for dates with < 12 topics,
    * runs the 2-Pass Google Search Grounding + Vector DB Deduplication pipeline
-   * for up to 3 dates per batch click so every backfilled date has real, non-duplicate CA!
+   * for up to 4 dates per batch click so every backfilled date has real, non-duplicate CA!
    */
   fastify.post("/auto-backfill", { preHandler: [requireAdmin] }, async (request, reply) => {
     const user = (await loadSessionUser(request))!;
@@ -4851,7 +5028,8 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
     const emptyDates: string[] = [];
     const existingAnyDatesSet = new Set(existingRows.map((r) => r.edition_date));
 
-    for (let d = startDay; d <= endDay; d++) {
+    // Iterate from newest day in range down to startDay so recent days like Nov 10, 9, 8, 7 are filled first!
+    for (let d = endDay; d >= startDay; d--) {
       const dd = String(d).padStart(2, "0");
       const dateStr = `${targetMonthKey}-${dd}`;
       if (dateStr > todayIso) continue;
@@ -4865,7 +5043,7 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
 
-    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 3);
+    const datesToSynthesize = [...partialDates, ...emptyDates].slice(0, 4);
     const backfilledDates: string[] = [];
     const actorLabel = `Google Search Grounded Batch Backfill (${user.fullName || user.role})`;
 
@@ -4874,16 +5052,20 @@ export const currentAffairsRoutes: FastifyPluginAsync = async (fastify) => {
         DELETE FROM current_affairs_deleted_dates
         WHERE edition_date = ${dateStr}
       `;
-      await runAutonomousCurrentAffairsAgent({
+      const res = await runAutonomousCurrentAffairsAgent({
         editionDate: dateStr,
-        targetTopicCount: 12,
+        targetTopicCount: 14,
         actorName: actorLabel,
       });
-      backfilledDates.push(dateStr);
+      if (res.topicsCount > 0) {
+        backfilledDates.push(dateStr);
+      }
     }
 
     caAutoScheduler.lastAutoRunAt = new Date().toISOString();
-    caAutoScheduler.lastAutoCollectedDate = todayIso;
+    if (backfilledDates.length > 0) {
+      caAutoScheduler.lastAutoCollectedDate = backfilledDates[0];
+    }
     caAutoScheduler.pastDaysAutoBackfilled = true;
     caAutoScheduler.totalAutoRunsCount += 1;
 
