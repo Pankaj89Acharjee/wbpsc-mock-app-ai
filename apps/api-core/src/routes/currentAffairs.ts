@@ -2305,6 +2305,31 @@ const LEGACY_STATIC_SUPPLEMENT_SNIPPETS = [
   "global hunger index ghi world happiness report rbi monetary policy committee section 45zb",
 ];
 
+/**
+ * Detects non-exam-oriented / irrelevant items that competitive exam aspirants NEVER get asked in
+ * WBPSC Clerkship / WBCS Prelims — such as job recruitment notifications (e.g. IDO recruitment,
+ * vacancies, online application dates, admit cards, results, cut-offs) or local school/festival holidays.
+ */
+const NON_EXAM_IRRELEVANT_PATTERNS: RegExp[] = [
+  /\b(recruitment|recruitments|vacancy|vacancies|job\s+application|apply\s+online|online\s+application)\b/i,
+  /\b(ido\s+recruitment|industrial\s+development\s+officer\s+recruitment|walk[\s-]?in\s+interview)\b/i,
+  /\b(admit\s+card|hall\s+ticket|answer\s+key|cut[\s-]?off\s+marks|merit\s+list|exam\s+schedule|exam\s+date\s+out|result\s+declared|notification\s+out)\b/i,
+  /\b(schools?\s+closed|school\s+holiday|schools?\s+shut|college\s+holiday|holiday\s+list\s+for\s+schools|bank\s+holiday\s+today)\b/i,
+  /\b(traffic\s+advisory|traffic\s+diversion|power\s+cut|water\s+supply\s+disruption|daily\s+horoscope|gold\s+rate\s+today|petrol\s+price\s+today)\b/i,
+];
+
+export function isNonExamRelevantCaTopic(
+  topic: Partial<CaTopicItem> | null | undefined
+): boolean {
+  if (!topic) return true;
+  const tid = String(topic.id || "");
+  if (tid.startsWith("ca-custom-")) return false;
+  const headline = String(topic.headlineEn || "").trim();
+  const whyInNews = String(topic.whyInNewsEn || "").trim();
+  const combined = `${headline} ${whyInNews}`;
+  return NON_EXAM_IRRELEVANT_PATTERNS.some((rx) => rx.test(combined));
+}
+
 export function isLegacyStaticSupplementTopic(
   topic: Partial<CaTopicItem> | null | undefined
 ): boolean {
@@ -2318,6 +2343,9 @@ export function isLegacyStaticSupplementTopic(
     /\(\s*\d{1,2}\s+[a-zA-Z]+\s+\d{4}\s+Review\s*\)/i.test(hEn) ||
     /Edition\s*#\d+/i.test(hEn)
   ) {
+    return true;
+  }
+  if (isNonExamRelevantCaTopic(topic)) {
     return true;
   }
   const norm = normalizeHeadlineFingerprint(hEn);
@@ -3825,28 +3853,44 @@ export async function runAutonomousCurrentAffairsAgent(params: {
   let lastGeminiError = "";
 
   try {
-    const searchTargetCount = Math.max(18, missingCount + 5);
-    const searchPrompt = `You are the Live Google Search Current Affairs Harvester for WBPSC Clerkship (100 Marks) & WBCS Prelims (200 Marks).
-Use Google Search right now to find ${searchTargetCount} real, verified, current news & GK items for WBPSC Clerkship and WBCS Prelims exam preparation (Target Edition: ${dayInt} ${monthNameEn} ${yStr}${isTodayEdition ? " — Today's Current Affairs" : ""}).
+    const searchTargetCount = Math.max(20, missingCount + 6);
+    const searchPrompt = `You are the Senior Competitive-Exam Current Affairs Chief Editor for WBCS (Executive) Prelims/Mains & WBPSC Clerkship / Miscellaneous Exams.
+Use Google Search right now to research ${searchTargetCount} strictly EXAM-ORIENTED, high-yield National, International, and West Bengal Current Affairs items for Target Edition: ${dayInt} ${monthNameEn} ${yStr}${isTodayEdition ? " (Today's Edition)" : ""}.
 
-Execute Google Search queries for:
-1. "give me today's current affairs for wbpsc clerkship exam"
-2. "today's top 15 current affairs GKToday AffairsCloud Jagran Josh PIB The Hindu"
-3. "West Bengal current affairs GKToday Adda247 PIB WBPSC Clerkship"
-4. "current affairs ${dayInt} ${monthNameEn} GKToday PIB The Hindu"
-${focusTopics?.trim() ? `5. Focus query: "${focusTopics.trim()}"` : ""}
+Execute targeted Google Search queries for authoritative GK & official portals (avoiding job/vacancy blogs):
+1. "GKToday daily current affairs ${dayInt} ${monthNameEn} ${yStr} -recruitment -vacancy -admit"
+2. "AffairsCloud PIB The Hindu current affairs ${monthNameEn} ${yStr} national international economy polity"
+3. "Press Information Bureau PIB India cabinet approvals schemes MoUs defence ISRO ${monthNameEn} ${yStr}"
+4. "West Bengal government official schemes GI tag infrastructure awards summit ${monthNameEn} ${yStr} -recruitment -vacancy -holiday -schools"
+5. "sports winners awards honours global indices rankings ${monthNameEn} ${yStr} GKToday AffairsCloud"
+${focusTopics?.trim() ? `6. Editorial Topic Focus: "${focusTopics.trim()} -recruitment -vacancy"` : ""}
 
 ${crawled.combinedSnippet ? `Additional Crawled Portal Snippets:\n${crawled.combinedSnippet.slice(0, 3500)}\n` : ""}
+
+STRICT EXAM-RELEVANCE FILTER — ABSOLUTELY FORBIDDEN TOPICS (NEVER INCLUDE THESE):
+- NEVER include job recruitment notifications, vacancies, online applications, exam dates, admit cards, answer keys, results, or cut-offs (e.g., NO "IDO recruitment", NO "PSC/SSC/Bank recruitment", NO "Clerkship notification").
+- NEVER include school/college holiday closures (e.g., NO "schools closed for puja/festival"), local traffic/weather alerts, routine local festivals without a new national/UNESCO/GI recognition, crime/accidents, or partisan political rally speeches.
+- ONLY select topics that appear as General Studies / Current Affairs questions in UPSC, WBCS Prelims/Mains, and WBPSC Clerkship:
+  • Union & State Government Schemes, Policies, Cabinet Approvals & Nodal Ministries
+  • Constitutional Amendments, Parliamentary Bills, Supreme Court / High Court Landmark Judgments & Appointments (CJI, CEC, CAG, Governors, Heads of RBI/SEBI/ISRO/DRDO)
+  • Economy, RBI Monetary Policy, GDP Forecasts, World Bank/IMF/ADB Loans, Banking & Trade Data
+  • Science & Technology, ISRO Space Missions, DRDO Missiles/Defence Systems, Biotechnology & AI Initiatives
+  • Bilateral & Multilateral Military Exercises (participating nations, edition number, exact venue)
+  • National & International Awards, Literary Prizes, Honours & Medalists
+  • Major Sports Championships & Tournaments (winner, runner-up, host city/country, mascots)
+  • Global Ranks, Reports & Indices (India's exact rank, top country, publishing organization)
+  • Environment, Biosphere/Tiger Reserves, Ramsar Wetlands, COP Summits & Geographical Indication (GI) Tags
+  • West Bengal State Official Schemes, Port/Metro/Industrial Corridors, State Awards & Cultural Heritage Recognitions
 
 STRICT ANTI-DUPLICATION RULE — DO NOT REPEAT ANY OF THESE ${allForbiddenHeadlines.length} ALREADY-STORED HEADLINES:
 ${allForbiddenHeadlines.slice(0, 80).map((h, i) => `${i + 1}. ${h}`).join("\n")}
 
-From your live Google Search results, compile ${searchTargetCount} distinct, real, exam-relevant Current Affairs news items (covering West Bengal Special, Polity & Governance, Economy & Banking, Science & ISRO, Awards & Honours, Sports & Tournaments, Environment & GI Tags, Defence Exercises, Ranks/Indices, and National/International).
-For each item provide:
-- Headline & Category
-- Why in News (exact names, ministries, dates, venues, winners, rankings)
-- 3 to 4 concrete Prelims/Clerkship exam facts & Static GK link
-- Source portal name (e.g. GKToday, PIB, The Hindu, AffairsCloud, WB Govt).`;
+For each of the ${searchTargetCount} verified exam-worthy items, compile deep, fact-dense research notes including:
+- Exact official event/scheme/appointment/treaty/report title & Category
+- Complete factual context: exact dates, ministries/organizations, key personalities, financial outlay, partner countries/states, edition number, and venue
+- 4 to 5 exam-ready factual data points (numbers, ranks, winners, founding years, headquarters, legal/constitutional provisions)
+- Linked Static GK (Constitutional Articles, Historical/Geographical background, HQ, Chairperson)
+- Authoritative source portal name (e.g., PIB, The Hindu, GKToday, AffairsCloud, RBI, ISRO).`;
 
     const { response: scoutResponse, modelUsed } = await generateContentWithFallback(
       {
@@ -3855,7 +3899,7 @@ For each item provide:
           tools: [{ googleSearch: {} }],
         },
       },
-      40000
+      45000
     );
 
     searchModelUsed = modelUsed;
@@ -4041,32 +4085,36 @@ For each item provide:
     try {
       const { response: synRes, modelUsed } = await generateContentWithFallback(
         {
-          contents: `You are Pass 2 (Batch ${batchIndex}): The WBPSC Clerkship & WBCS Prelims Structured Bilingual Extractor.
-Extract exactly ${countForBatch} distinct, high-yield Bilingual (English + Bengali / বাংলা) Current Affairs topics and 3 Bilingual MCQs for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}) directly from the Google Search Grounded Research below.
+          contents: `You are Pass 2 (Batch ${batchIndex}): The Senior WBCS Prelims/Mains & WBPSC Clerkship Current Affairs Author.
+Extract ${countForBatch} distinct, richly detailed, exam-grade Bilingual (English + Bengali / বাংলা) Current Affairs topics and 4 Bilingual PYQ-standard MCQs for Date: ${dayInt} ${monthNameEn} ${yStr} (${editionDate}) from the Google Search Grounded Research below.
 
-BATCH ${batchIndex} FOCUS INSTRUCTION:
+BATCH ${batchIndex} SUBJECT DISTRIBUTION:
 ${categoryFocusInstruction}
 
 GOOGLE SEARCH GROUNDED RESEARCH CONTEXT (${groundedSourcesHint}):
-${groundedResearchContext || `Extract ${countForBatch} verified exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr} (WBPSC Clerkship & WBCS Prelims).`}
+${groundedResearchContext || `Compile ${countForBatch} verified, high-yield exam-oriented Current Affairs topics for ${dayInt} ${monthNameEn} ${yStr} suitable for WBCS Prelims/Mains & WBPSC Clerkship.`}
 
-CRITICAL ANTI-DUPLICATION GUARDRAIL (ZERO REDUNDANCY ALLOWED):
-Do NOT repeat or rephrase any of these already-stored headlines:
+STRICT REJECTION RULES (ZERO IRRELEVANT ITEMS):
+1. REJECT any job recruitment / vacancy / application notice (e.g., IDO recruitment, PSC/SSC/Police vacancy, admit card, exam date, result, cut-off).
+2. REJECT any school/college holiday closure, routine festival holiday announcement, local weather/traffic bulletin, crime report, or political rally statement.
+3. Do NOT repeat or rephrase any of these already-stored headlines:
 ${allForbiddenHeadlines.slice(0, 75).map((h) => `- ${h}`).join("\n")}
 
-MANDATORY REQUIREMENTS:
-1. Extract ${countForBatch} COMPLETELY UNIQUE, REAL EXAM-ORIENTED TOPICS ('topics' array) grounded in the Google Search research above.
-2. Classify each topic into one of: ${CA_CATEGORIES.join(", ")}.
-3. Set 'sourceTag' to the real grounded portal/source (e.g. "Google Search Grounded · GKToday / PIB (${dayInt} ${monthNameEn} ${yStr})").
-4. Provide 3 crisp, exam-ready bullet points in 'examPointsEn' and accurate Bengali translations in 'examPointsBn', plus 'staticGkLinkEn'/'staticGkLinkBn' and 'examTrapEn'/'examTrapBn'.
-5. Generate 3 unique PYQ-grade bilingual MCQs in 'mcqs' based directly on these topics.`,
+MANDATORY EXAM-STANDARD DEPTH & QUALITY RULES:
+1. Extract ${countForBatch} COMPLETELY UNIQUE, HIGH-PROBABILITY EXAM TOPICS ('topics' array) classified into: ${CA_CATEGORIES.join(", ")}.
+2. 'whyInNewsEn' & 'whyInNewsBn': Write a rich 2-to-3 sentence exam summary stating WHAT happened, WHO inaugurated/published/won/signed it, WHEN & WHERE it took place, and its core objective or significance.
+3. 'examPointsEn' & 'examPointsBn': Provide **4 to 5 comprehensive, fact-packed bullet points** per topic (20–35 words per bullet). Include concrete exam data: nodal ministry/agency, budget outlay or investment figure, edition number, India's rank & top 3 countries, winners & runners-up, partner nations, target year, or statutory act/provision. Translate accurately into natural, formal Bengali (যুক্তাক্ষর-সঠিক বাংলা).
+4. 'staticGkLinkEn' & 'staticGkLinkBn': Write 2 crisp sentences connecting the news to Static GK (relevant Constitutional Article/Schedule, Organization HQ + Founding Year + current Head, River/National Park/Port geography, or Historical background).
+5. 'examTrapEn' & 'examTrapBn': Highlight the exact confuser option examiners set in MCQs (e.g., Nodal Ministry vs Implementing Agency, 1st vs current edition, bilateral partner confusion, or Constitutional Article number).
+6. 'sourceTag': Cite the authoritative source portal (e.g., "PIB / The Hindu (${dayInt} ${monthNameEn} ${yStr})" or "GKToday / AffairsCloud (${dayInt} ${monthNameEn} ${yStr})").
+7. Generate 4 high-standard bilingual MCQs in 'mcqs' with 4 close options and a detailed factual explanation.`,
           config: {
-            maxOutputTokens: 8192,
+            maxOutputTokens: 12288,
             responseMimeType: "application/json",
             responseSchema: batchResponseSchema,
           },
         },
-        45000
+        55000
       );
       synthesisModelUsed = modelUsed;
       return safeParseJsonObject(synRes.text || "{}");
@@ -4080,12 +4128,12 @@ MANDATORY REQUIREMENTS:
     runExtractionBatch(
       1,
       batch1Target,
-      "Extract the first half of the Google-Search-grounded news items (prioritizing West Bengal Special, Polity & Governance, Economy & Banking, Science & Technology, and National & International)."
+      "Extract the FIRST half of verified exam-worthy Current Affairs (covering Polity & Governance, Economy & Banking, Science & Technology, West Bengal Official Schemes/GI/Infrastructure, and National & International Summits/Treaties — strictly NO job recruitments or school holidays)."
     ),
     runExtractionBatch(
       2,
       batch2Target,
-      "Extract the SECOND half of the Google-Search-grounded news items (prioritizing Awards & Honours, Sports & Tournaments, Environment & GI Tags, Defence & Military Exercises, and Ranks, Reports & Indices — must NOT overlap with Batch 1's first 6 items!)."
+      "Extract the SECOND half of verified exam-worthy Current Affairs (covering Awards & Honours, Sports & Tournaments, Environment & GI Tags, Defence & Military Exercises, and Ranks, Reports & Indices — must NOT overlap with Batch 1 and strictly NO job recruitments or school holidays)."
     ),
   ]);
 
