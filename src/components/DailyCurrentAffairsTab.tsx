@@ -388,8 +388,14 @@ export default function DailyCurrentAffairsTab({
   const [cardAnimDirection, setCardAnimDirection] = useState<"next" | "prev">("next");
 
   // =========================================================================
-  // AGENT MANAGEMENT CONSOLE STATE
+  // AGENT MANAGEMENT CONSOLE & VECTOR STORE MODAL STATE
   // =========================================================================
+  const [activeAgentModal, setActiveAgentModal] = useState<
+    "daily" | "backfill" | "classifier" | "recovery" | "bilingual" | null
+  >(null);
+  const [activeVectorModal, setActiveVectorModal] = useState<
+    "upload" | "documents" | "search" | null
+  >(null);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [lastAgentErrorShort, setLastAgentErrorShort] = useState<string | null>(null);
   const [backfillBusy, setBackfillBusy] = useState<boolean>(false);
@@ -411,7 +417,7 @@ export default function DailyCurrentAffairsTab({
     "https://www.gktoday.in/current-affairs/"
   );
   const [agentFocusTopics, setAgentFocusTopics] = useState<string>(
-    "give me today's current affairs for wbpsc clerkship exam (Top 10-12 GKToday, AffairsCloud, PIB, The Hindu & West Bengal Special)"
+    "Exam-oriented National, International & West Bengal Current Affairs from PIB, The Hindu, GKToday & AffairsCloud (schemes, polity, economy, ISRO, defence, awards, sports, indices, GI tags — no job recruitment or holiday notices)"
   );
 
   // =========================================================================
@@ -693,21 +699,32 @@ export default function DailyCurrentAffairsTab({
   }, [modalDeckCards.length]);
 
   useEffect(() => {
-    if (!floatingModalOpen) return;
+    if (!floatingModalOpen && !activeAgentModal && !activeVectorModal) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (activeAgentModal) {
+          setActiveAgentModal(null);
+          return;
+        }
+        if (activeVectorModal) {
+          setActiveVectorModal(null);
+          return;
+        }
+        setFloatingModalOpen(false);
+        return;
+      }
+      if (!floatingModalOpen) return;
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         goPrevCard();
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         goNextCard();
-      } else if (e.key === "Escape") {
-        setFloatingModalOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [floatingModalOpen, goPrevCard, goNextCard]);
+  }, [floatingModalOpen, activeAgentModal, activeVectorModal, goPrevCard, goNextCard]);
 
   /**
    * Helper to open the Floating Animated Card Modal for a given month (and optional date).
@@ -1262,8 +1279,10 @@ export default function DailyCurrentAffairsTab({
   };
 
   /**
-   * Generates a CATEGORIZED Printable PDF / HTML Capsule where topics are grouped by
-   * Category (Sports, Awards, Science & Technology, West Bengal Special, Polity, Economy, etc.)
+   * Generates a Book-Style Paginated Printable PDF / HTML Capsule:
+   * - Dynamically uses the exact selected Month / Archive title (never hardcodes "Dec 2026").
+   * - Renders a vertical Book Index (Table of Contents) with dotted leaders and exact Page Numbers.
+   * - Paginates topics (2 rich bilingual topics per A4 sheet) and MCQs (5 per sheet) with running page numbers.
    */
   const handleDownloadCategorizedCapsulePdf = async (
     targetEditions: CaEditionDto[],
@@ -1295,113 +1314,307 @@ export default function DailyCurrentAffairsTab({
       ...Object.keys(byCategory).filter((c) => !ORDERED_CATEGORIES.includes(c)),
     ];
 
-    const categorySectionsHtml = sortedCategories
-      .map((cat, catIdx) => {
-        const items = byCategory[cat] || [];
-        const cardsHtml = items
+    // Step 1: Build paginated content sheets (2 rich bilingual topics per A4 page)
+    // and track exact relative page offsets for every Section and Topic!
+    const TOPICS_PER_PAGE = 2;
+    const MCQS_PER_PAGE = 5;
+
+    interface ContentSheet {
+      sectionTitle: string;
+      innerHtml: string;
+    }
+
+    interface TocLineItem {
+      kind: "section" | "topic" | "mcq";
+      code: string;
+      label: string;
+      subMeta?: string;
+      relativePageIdx: number;
+    }
+
+    const contentSheets: ContentSheet[] = [];
+    const tocLines: TocLineItem[] = [];
+    let globalTopicCounter = 0;
+
+    sortedCategories.forEach((cat, catIdx) => {
+      const items = byCategory[cat] || [];
+      const sectionStartRelIdx = contentSheets.length;
+
+      tocLines.push({
+        kind: "section",
+        code: `Section ${catIdx + 1}`,
+        label: `${cat}`,
+        subMeta: `${items.length} ${items.length === 1 ? "Topic" : "Topics"}`,
+        relativePageIdx: sectionStartRelIdx,
+      });
+
+      for (let i = 0; i < items.length; i += TOPICS_PER_PAGE) {
+        const pageSlice = items.slice(i, i + TOPICS_PER_PAGE);
+        const relPageIdx = contentSheets.length;
+
+        const cardsHtml = pageSlice
+          .map(({ topic: t, editionDate }, localIdx) => {
+            const numInCat = i + localIdx + 1;
+            globalTopicCounter += 1;
+
+            tocLines.push({
+              kind: "topic",
+              code: `${catIdx + 1}.${numInCat}`,
+              label: t.headlineEn,
+              subMeta: formatReadableDate(editionDate, "en").replace(/\s*\(.*\)$/, ""),
+              relativePageIdx: relPageIdx,
+            });
+
+            return `
+            <div class="topic-card">
+              <div class="topic-meta">${cat} · Date: ${formatReadableDate(editionDate, "en")} (${editionDate}) · Source: ${t.sourceTag}</div>
+              <h3>${catIdx + 1}.${numInCat} ${t.headlineEn}</h3>
+              <div class="bn-title">${t.headlineBn}</div>
+              <p class="why-news"><strong>Why in News:</strong> ${t.whyInNewsEn}<br/><span class="bn-text">${t.whyInNewsBn}</span></p>
+              <div class="columns">
+                <div class="col">
+                  <h4>Key Exam Pointers (English)</h4>
+                  <ul>${t.examPointsEn.map((p) => `<li>${p}</li>`).join("")}</ul>
+                </div>
+                <div class="col">
+                  <h4>পরীক্ষার মূল তথ্য (বাংলা)</h4>
+                  <ul>${t.examPointsBn.map((p) => `<li>${p}</li>`).join("")}</ul>
+                </div>
+              </div>
+              <div class="gk-box">
+                <strong>Static GK Syllabus Link:</strong> ${t.staticGkLinkEn}<br/>
+                <span class="bn-text"><strong>স্ট্যাটিক জিকে সংযোগ:</strong> ${t.staticGkLinkBn}</span>
+              </div>
+              <div class="trap-box">
+                <strong>Exam Hall Trap Warning:</strong> ${t.examTrapEn} | <span class="bn-text">${t.examTrapBn}</span>
+              </div>
+            </div>`;
+          })
+          .join("\n");
+
+        const bannerHtml =
+          i === 0
+            ? `<div class="category-banner">
+                 <h2>Section ${catIdx + 1}: ${cat} (${items.length} Exam Topics)</h2>
+               </div>`
+            : `<div class="category-cont-banner">Section ${catIdx + 1}: ${cat} (Continued)</div>`;
+
+        contentSheets.push({
+          sectionTitle: `Section ${catIdx + 1}: ${cat}`,
+          innerHtml: `${bannerHtml}\n${cardsHtml}`,
+        });
+      }
+    });
+
+    if (allMcqs.length > 0) {
+      const mcqStartRelIdx = contentSheets.length;
+      tocLines.push({
+        kind: "mcq",
+        code: "Appendix",
+        label: `PYQ-Pattern Practice MCQs (${allMcqs.length} Questions with Answer Key)`,
+        relativePageIdx: mcqStartRelIdx,
+      });
+
+      for (let i = 0; i < allMcqs.length; i += MCQS_PER_PAGE) {
+        const mcqSlice = allMcqs.slice(i, i + MCQS_PER_PAGE);
+        const mcqsHtml = mcqSlice
           .map(
-            ({ topic: t, editionDate }, idx) => `
-          <div class="topic-card">
-            <div class="topic-meta">${cat} · Date: ${formatReadableDate(editionDate, "en")} (${editionDate}) · Source: ${t.sourceTag}</div>
-            <h3>${idx + 1}. ${t.headlineEn}</h3>
-            <div class="bn-title">${t.headlineBn}</div>
-            <p class="why-news"><strong>Why in News:</strong> ${t.whyInNewsEn}<br/><span class="bn-text">${t.whyInNewsBn}</span></p>
-            <div class="columns">
-              <div class="col">
-                <h4>Key Exam Pointers (English)</h4>
-                <ul>${t.examPointsEn.map((p) => `<li>${p}</li>`).join("")}</ul>
-              </div>
-              <div class="col">
-                <h4>পরীক্ষার মূল তথ্য (বাংলা)</h4>
-                <ul>${t.examPointsBn.map((p) => `<li>${p}</li>`).join("")}</ul>
-              </div>
-            </div>
-            <div class="gk-box">
-              <strong>Static GK Syllabus Link:</strong> ${t.staticGkLinkEn}<br/>
-              <span class="bn-text"><strong>স্ট্যাটিক জিকে সংযোগ:</strong> ${t.staticGkLinkBn}</span>
-            </div>
-            <div class="trap-box">
-              <strong>Exam Hall Trap Warning:</strong> ${t.examTrapEn} | <span class="bn-text">${t.examTrapBn}</span>
-            </div>
-          </div>`
+            ({ mcq: m, editionDate }, localIdx) => `
+            <div class="mcq-card">
+              <p><strong>Q${i + localIdx + 1} [${m.category} · ${formatReadableDate(editionDate, "en")}]:</strong> ${m.stem.en}<br/><span class="bn-text">${m.stem.bn}</span></p>
+              <p class="options">
+                (A) ${m.options.A.en} / ${m.options.A.bn} &nbsp;&nbsp;
+                (B) ${m.options.B.en} / ${m.options.B.bn}<br/>
+                (C) ${m.options.C.en} / ${m.options.C.bn} &nbsp;&nbsp;
+                (D) ${m.options.D.en} / ${m.options.D.bn}
+              </p>
+              <p class="ans"><strong>Correct Answer: (${m.correctOption})</strong> — ${m.explanation.en}<br/><span class="bn-text">${m.explanation.bn}</span></p>
+            </div>`
           )
           .join("\n");
 
+        const mcqHeaderHtml =
+          i === 0
+            ? `<div class="category-banner"><h2>Practice Appendix: PYQ-Pattern MCQs (${allMcqs.length} Questions)</h2></div>`
+            : `<div class="category-cont-banner">Practice Appendix: PYQ-Pattern MCQs (Continued)</div>`;
+
+        contentSheets.push({
+          sectionTitle: "Practice MCQs",
+          innerHtml: `${mcqHeaderHtml}\n${mcqsHtml}`,
+        });
+      }
+    }
+
+    // Step 2: Paginate the Vertical Book Index pages so every page number matches 1-to-1!
+    const FIRST_TOC_CAPACITY = 24;
+    const NEXT_TOC_CAPACITY = 34;
+    const tocChunks: TocLineItem[][] = [];
+    if (tocLines.length <= FIRST_TOC_CAPACITY) {
+      tocChunks.push(tocLines);
+    } else {
+      tocChunks.push(tocLines.slice(0, FIRST_TOC_CAPACITY));
+      for (let k = FIRST_TOC_CAPACITY; k < tocLines.length; k += NEXT_TOC_CAPACITY) {
+        tocChunks.push(tocLines.slice(k, k + NEXT_TOC_CAPACITY));
+      }
+    }
+
+    const indexPagesCount = Math.max(1, tocChunks.length);
+    const totalBookPages = indexPagesCount + contentSheets.length;
+
+    const renderTocLineHtml = (item: TocLineItem): string => {
+      const targetPageNum = indexPagesCount + 1 + item.relativePageIdx;
+      if (item.kind === "section" || item.kind === "mcq") {
         return `
-        <section class="category-section">
-          <div class="category-banner">
-            <h2>Section ${catIdx + 1}: ${cat} (${items.length} Exam Topics)</h2>
+          <a href="#book-page-${targetPageNum}" class="toc-row toc-section-row">
+            <span class="toc-left">
+              <span class="toc-chapter-badge">${item.code}</span>
+              <span class="toc-section-title">${item.label}</span>
+              ${item.subMeta ? `<span class="toc-count">(${item.subMeta})</span>` : ""}
+            </span>
+            <span class="toc-dots"></span>
+            <span class="toc-page-num">Page ${targetPageNum}</span>
+          </a>`;
+      }
+      return `
+        <a href="#book-page-${targetPageNum}" class="toc-row toc-topic-row">
+          <span class="toc-left">
+            <span class="toc-topic-code">${item.code}</span>
+            <span class="toc-topic-title">${item.label}</span>
+            ${item.subMeta ? `<span class="toc-date-pill">${item.subMeta}</span>` : ""}
+          </span>
+          <span class="toc-dots"></span>
+          <span class="toc-page-num">${targetPageNum}</span>
+        </a>`;
+    };
+
+    const indexSheetsHtml = tocChunks
+      .map((chunk, chunkIdx) => {
+        const pageNum = chunkIdx + 1;
+        const headerBlock =
+          chunkIdx === 0
+            ? `
+            <div class="doc-header">
+              <div>
+                <div class="doc-kicker">WBPSC Prelims, Mains &amp; Clerkship Exam Edition</div>
+                <h1>${bookletTitle}</h1>
+                <div class="doc-subtitle">${globalTopicCounter} Exam-Oriented Topics · ${sortedCategories.length} Subject Sections · ${allMcqs.length} Practice MCQs · Grounded on PIB, The Hindu &amp; GKToday</div>
+              </div>
+              <div class="bilingual-pill">Bilingual (EN + বাংলা)</div>
+            </div>
+            <div class="toc-heading-bar">
+              <h2>INDEX / TABLE OF CONTENTS</h2>
+              <span>Page No.</span>
+            </div>`
+            : `
+            <div class="page-running-header">
+              <span>${bookletTitle}</span>
+              <span>INDEX (Continued)</span>
+            </div>
+            <div class="toc-heading-bar">
+              <h2>INDEX / TABLE OF CONTENTS (Continued)</h2>
+              <span>Page No.</span>
+            </div>`;
+
+        return `
+        <section id="book-page-${pageNum}" class="book-page">
+          <div class="book-page-body">
+            ${headerBlock}
+            <div class="toc-vertical-list">
+              ${chunk.map(renderTocLineHtml).join("\n")}
+            </div>
           </div>
-          ${cardsHtml}
+          <footer class="book-page-footer">
+            <span>${bookletTitle}</span>
+            <strong>Page ${pageNum} of ${totalBookPages}</strong>
+          </footer>
         </section>`;
       })
-      .join("<hr class='page-break'/>");
+      .join("\n");
 
-    const mcqsHtml = allMcqs
-      .map(
-        ({ mcq: m, editionDate }, idx) => `
-      <div class="mcq-card">
-        <p><strong>Q${idx + 1} [${m.category} · ${formatReadableDate(editionDate, "en")}]:</strong> ${m.stem.en}<br/><span class="bn-text">${m.stem.bn}</span></p>
-        <p class="options">
-          (A) ${m.options.A.en} / ${m.options.A.bn} &nbsp;&nbsp;
-          (B) ${m.options.B.en} / ${m.options.B.bn}<br/>
-          (C) ${m.options.C.en} / ${m.options.C.bn} &nbsp;&nbsp;
-          (D) ${m.options.D.en} / ${m.options.D.bn}
-        </p>
-        <p class="ans"><strong>Correct Answer: (${m.correctOption})</strong> — ${m.explanation.en}<br/><span class="bn-text">${m.explanation.bn}</span></p>
-      </div>`
-      )
+    const contentSheetsHtml = contentSheets
+      .map((sheet, idx) => {
+        const pageNum = indexPagesCount + 1 + idx;
+        return `
+        <section id="book-page-${pageNum}" class="book-page">
+          <div class="book-page-body">
+            <div class="page-running-header">
+              <span>${bookletTitle}</span>
+              <span>${sheet.sectionTitle}</span>
+            </div>
+            ${sheet.innerHtml}
+          </div>
+          <footer class="book-page-footer">
+            <span>WBPSC Current Affairs Capsule · Bilingual Edition</span>
+            <strong>Page ${pageNum} of ${totalBookPages}</strong>
+          </footer>
+        </section>`;
+      })
       .join("\n");
 
     const fullHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>${bookletTitle} — WBPSC Categorized Current Affairs Capsule</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+Bengali:wght@400;600;700&display=swap" rel="stylesheet">
+  <title>${bookletTitle}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Noto+Sans+Bengali:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family: 'Inter', 'Noto Sans Bengali', sans-serif; color: #0f172a; max-width: 980px; margin: 24px auto; padding: 0 20px; line-height: 1.55; }
-    .doc-header { border-bottom: 3px solid #0f172a; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
-    .doc-header h1 { margin: 0; font-size: 22px; }
-    .toc-box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 12.5px; }
-    .category-banner { background: #0f172a; color: #f8fafc; border-left: 5px solid #10b981; padding: 10px 16px; border-radius: 6px; margin: 18px 0 14px; }
-    .category-banner h2 { margin: 0; font-size: 16px; text-transform: uppercase; letter-spacing: 0.04em; }
-    .bn-title { font-family: 'Noto Sans Bengali', sans-serif; color: #334155; font-size: 14px; font-weight: 600; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', 'Noto Sans Bengali', sans-serif; color: #0f172a; background: #f1f5f9; margin: 0; padding: 20px 12px; line-height: 1.5; }
+    .book-page { background: #ffffff; max-width: 920px; min-height: 1120px; margin: 0 auto 24px; padding: 32px 36px 24px; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06); display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; }
+    .book-page:last-child { page-break-after: auto; }
+    .book-page-body { flex: 1; }
+    .doc-header { border-bottom: 3px solid #0f172a; padding-bottom: 14px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+    .doc-kicker { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0284c7; margin-bottom: 4px; }
+    .doc-header h1 { margin: 0; font-size: 22px; font-weight: 800; color: #0f172a; line-height: 1.25; }
+    .doc-subtitle { font-size: 12px; color: #475569; margin-top: 5px; }
+    .bilingual-pill { font-size: 11.5px; font-weight: 700; color: #065f46; background: #d1fae5; border: 1px solid #6ee7b7; padding: 5px 10px; border-radius: 6px; white-space: nowrap; }
+    .page-running-header { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 600; color: #64748b; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 12px; }
+    .toc-heading-bar { display: flex; justify-content: space-between; align-items: center; background: #0f172a; color: #f8fafc; padding: 9px 14px; border-radius: 6px; margin-bottom: 10px; }
+    .toc-heading-bar h2 { margin: 0; font-size: 13.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .toc-heading-bar span { font-size: 11.5px; font-weight: 700; color: #34d399; text-transform: uppercase; }
+    .toc-vertical-list { display: flex; flex-direction: column; gap: 2px; }
+    .toc-row { display: flex; align-items: baseline; text-decoration: none; color: inherit; padding: 4px 4px; border-radius: 4px; }
+    .toc-row:hover { background: #f8fafc; }
+    .toc-section-row { margin-top: 8px; padding-top: 6px; font-weight: 700; color: #0f172a; background: #f8fafc; padding-left: 8px; padding-right: 8px; border-left: 3px solid #10b981; }
+    .toc-topic-row { padding-left: 22px; padding-right: 8px; font-size: 12px; color: #334155; }
+    .toc-left { display: inline-flex; align-items: baseline; gap: 8px; max-width: 82%; }
+    .toc-chapter-badge { font-size: 11px; font-weight: 800; text-transform: uppercase; color: #047857; white-space: nowrap; }
+    .toc-section-title { font-size: 13px; font-weight: 700; color: #0f172a; }
+    .toc-count { font-size: 11px; font-weight: 600; color: #64748b; }
+    .toc-topic-code { font-family: monospace; font-size: 11.5px; font-weight: 700; color: #0284c7; min-width: 30px; }
+    .toc-topic-title { font-weight: 500; color: #1e293b; }
+    .toc-date-pill { font-size: 10.5px; color: #64748b; white-space: nowrap; }
+    .toc-dots { flex: 1; border-bottom: 1px dotted #94a3b8; margin: 0 10px; min-width: 24px; }
+    .toc-page-num { font-family: monospace; font-size: 12px; font-weight: 700; color: #0f172a; white-space: nowrap; }
+    .category-banner { background: #0f172a; color: #f8fafc; border-left: 5px solid #10b981; padding: 9px 14px; border-radius: 6px; margin: 4px 0 12px; }
+    .category-banner h2 { margin: 0; font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .category-cont-banner { font-size: 12px; font-weight: 700; text-transform: uppercase; color: #0f172a; background: #f1f5f9; border-left: 4px solid #0284c7; padding: 6px 12px; border-radius: 4px; margin-bottom: 10px; }
+    .bn-title { font-family: 'Noto Sans Bengali', sans-serif; color: #334155; font-size: 13.5px; font-weight: 600; }
     .bn-text { font-family: 'Noto Sans Bengali', sans-serif; color: #334155; }
-    .topic-card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; page-break-inside: avoid; }
-    .topic-meta { font-size: 11px; font-weight: 700; color: #0369a1; text-transform: uppercase; }
-    .topic-card h3 { margin: 4px 0 2px; font-size: 15.5px; color: #0f172a; }
-    .why-news { font-size: 13px; margin: 8px 0; color: #1e293b; }
-    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
-    .col h4 { margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase; color: #475569; }
-    .col ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+    .topic-card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; page-break-inside: avoid; }
+    .topic-meta { font-size: 10.5px; font-weight: 700; color: #0369a1; text-transform: uppercase; }
+    .topic-card h3 { margin: 4px 0 2px; font-size: 15px; color: #0f172a; }
+    .why-news { font-size: 12.5px; margin: 6px 0; color: #1e293b; }
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }
+    .col h4 { margin: 0 0 5px; font-size: 11px; text-transform: uppercase; color: #475569; }
+    .col ul { margin: 0; padding-left: 16px; font-size: 12px; }
     .col li { margin-bottom: 4px; }
-    .gk-box { margin-top: 10px; background: #f0f9ff; border-left: 3px solid #0284c7; padding: 8px 12px; font-size: 12.5px; }
-    .trap-box { margin-top: 8px; background: #fffbeb; border-left: 3px solid #d97706; padding: 7px 12px; font-size: 12px; color: #92400e; }
-    .mcq-header { margin-top: 28px; border-bottom: 2px solid #0f172a; padding-bottom: 6px; font-size: 17px; }
-    .mcq-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; font-size: 12.5px; page-break-inside: avoid; }
-    .options { color: #334155; margin: 6px 0; }
-    .ans { color: #065f46; background: #ecfdf5; padding: 6px 10px; border-radius: 4px; margin: 4px 0 0; }
-    .page-break { margin: 28px 0; border: none; border-top: 2px dashed #94a3b8; page-break-after: always; }
+    .gk-box { margin-top: 8px; background: #f0f9ff; border-left: 3px solid #0284c7; padding: 7px 10px; font-size: 12px; }
+    .trap-box { margin-top: 6px; background: #fffbeb; border-left: 3px solid #d97706; padding: 6px 10px; font-size: 11.5px; color: #92400e; }
+    .mcq-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 9px 12px; margin-bottom: 9px; font-size: 12px; page-break-inside: avoid; }
+    .mcq-card p { margin: 4px 0; }
+    .options { color: #334155; }
+    .ans { color: #065f46; background: #ecfdf5; padding: 5px 9px; border-radius: 4px; }
+    .book-page-footer { border-top: 1px solid #cbd5e1; padding-top: 8px; margin-top: 14px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #475569; }
+    @media print {
+      body { background: #ffffff; padding: 0; }
+      .book-page { box-shadow: none; border: none; margin: 0; max-width: 100%; min-height: 0; padding: 4mm 2mm; }
+    }
   </style>
 </head>
 <body>
-  <div class="doc-header">
-    <div>
-      <h1>WBPSC Clerkship Dec 2026 — Categorized Current Affairs Capsule</h1>
-      <div style="font-size:12px;color:#475569;">${bookletTitle} · Classified by Category (Sports, Awards, Science & Tech, Polity, Economy, WB Special) · Grounded on GKToday, PYQArena (The Hindu) & PIB</div>
-    </div>
-    <div style="font-size:12px;font-weight:700;color:#059669;">Bilingual (EN + বাংলা)</div>
-  </div>
-  <div class="toc-box">
-    <strong>Categorized Index (Prepared by Classifier Agent):</strong>
-    ${sortedCategories
-      .map((c, idx) => `${idx + 1}. ${c} (${byCategory[c].length})`)
-      .join(" &nbsp;·&nbsp; ")}
-  </div>
-  ${categorySectionsHtml}
-  <h2 class="mcq-header">PYQ-Pattern Practice MCQs (${allMcqs.length} Questions)</h2>
-  ${mcqsHtml}
+  ${indexSheetsHtml}
+  ${contentSheetsHtml}
 </body>
 </html>`;
 
@@ -1416,7 +1629,7 @@ export default function DailyCurrentAffairsTab({
     URL.revokeObjectURL(url);
     onNotify?.(
       "success",
-      `Downloaded Categorized Capsule "${filenameSlug}.html" (Open & press Ctrl+P to save as PDF).`
+      `Downloaded "${bookletTitle}" with Book Index & Page Numbers (Open & press Ctrl+P to save as PDF).`
     );
   };
 
@@ -1745,878 +1958,1089 @@ export default function DailyCurrentAffairsTab({
       </div>
 
       {/* ====================================================================
-          SECTION 3: CLEAN, PLAIN-ENGLISH AGENT MANAGEMENT CONSOLE (ADMIN ONLY)
-          Aspirants ONLY consume generated Current Affairs and never see Agent controls.
+          SECTION 3: CURRENT AFFAIRS MANAGEMENT CONSOLE (ADMIN ONLY)
+          Enlarged Responsive Agent Cards — Clicking any card opens its Management Modal.
       ==================================================================== */}
       {isAdmin && (
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
-          <div className="space-y-1">
-            <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-wider">
-              <Sparkles className="w-4 h-4" />
-              Current Affairs Management Console
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-wider">
+                <Sparkles className="w-4 h-4" />
+                Current Affairs Management Console
+              </div>
+              <h2 className="text-base sm:text-lg font-bold text-white">
+                Manage Your Assistant Agents (Click Any Card to Open Controls)
+              </h2>
+              <p className="text-xs text-slate-400">
+                Select any agent card below to configure, run, or check status in a clean popup modal.
+              </p>
             </div>
-            <h2 className="text-base font-bold text-white">
-              Manage Your Assistant Agents (4 Manual + 1 Automatic)
-            </h2>
-            <p className="text-xs text-slate-400">
-              <strong className="text-white">5 Agents</strong> for Current Affairs: <strong className="text-emerald-300">4 Manual Orchestrator Agents</strong> (managed below) and <strong className="text-amber-300">1 Autonomous Sub-Agent</strong>
-            </p>
-          </div>
-        </div>
 
-        {/* 5-Agent Inventory Summary Strip */}
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 grid grid-cols-1 md:grid-cols-5 gap-2.5 text-xs">
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-emerald-500/30">
-            <div className="font-bold text-emerald-300">Agent 1: Daily Collector</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Auto-runs daily for Today, i.e., ({todayIso}) · Has Pause &amp; Manual Refresh button below.
-            </div>
+            {(scheduler?.lastErrorReason || lastAgentErrorShort) && (
+              <button
+                type="button"
+                onClick={() => setActiveAgentModal("daily")}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/50 text-xs font-semibold text-rose-200 cursor-pointer"
+              >
+                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>Agent Alert — Click to View &amp; Retry</span>
+              </button>
+            )}
           </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-sky-500/30">
-            <div className="font-bold text-sky-300">Agent 2: Batch Backfiller</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Fills continuous 10-day batches or all 30/31 days of any month with zero gaps.
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-amber-500/30">
-            <div className="font-bold text-amber-300">Agent 3: Month Classifier</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Groups topics into 10 WBPSC categories &amp; compiles Monthly PDF Capsules.
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-purple-500/30">
-            <div className="font-bold text-purple-300">Agent 4: Date Recovery</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Manual fallback if an automatic run ever fails on a specific past date.
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-700">
-            <div className="font-bold text-slate-200">Agent 5: Bilingual &amp; MCQ Generator</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              <span className="text-emerald-400 font-semibold">100% Automatic Internal Pipeline</span> — adds Static GK, Traps &amp; বাংলা অনুবাদ.
-            </div>
-          </div>
-        </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* CARD 1: Daily Automatic Collection Scheduler */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Clock className="w-4 h-4" />
-                  1. Daily Collector Agent (12–14 Topics/Day)
-                </span>
-                <span
-                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                    scheduler?.enabled
-                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                      : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                  }`}
+          {/* Enlarged Responsive 5-Card Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            {/* Agent Card 1: Daily Collector */}
+            {(() => {
+              const todayCount = editionsByDate.get(todayIso)?.topics.length || 0;
+              const hasAlert = Boolean(scheduler?.lastErrorReason || lastAgentErrorShort);
+              return (
+                <button
+                  type="button"
+                  onClick={() => setActiveAgentModal("daily")}
+                  className="text-left rounded-xl p-5 bg-slate-950/95 border border-emerald-500/35 hover:border-emerald-400 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[185px] shadow-sm"
                 >
-                  {scheduler?.enabled ? "AUTO-RUN: ON (Everyday)" : "AUTO-RUN: PAUSED"}
-                </span>
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="p-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                        <Clock className="w-4 h-4" />
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
+                          hasAlert
+                            ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                            : scheduler?.enabled
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                              : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                        }`}
+                      >
+                        {hasAlert
+                          ? "Needs Retry"
+                          : scheduler?.enabled
+                            ? "Auto: ON"
+                            : "Paused"}
+                      </span>
+                    </div>
+                    <div className="text-sm sm:text-base font-bold text-white group-hover:text-emerald-300 transition-colors">
+                      Agent 1: Daily Collector
+                    </div>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Auto-collects 12–14 exam-grade topics daily for Today ({todayIso}) and recent missed days.
+                    </p>
+                  </div>
+
+                  <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                    <span className="font-mono text-[11px] text-slate-300">
+                      Today: {todayCount} Topics
+                    </span>
+                    <span className="font-bold text-emerald-400 group-hover:translate-x-0.5 transition-transform">
+                      Manage →
+                    </span>
+                  </div>
+                </button>
+              );
+            })()}
+
+            {/* Agent Card 2: Batch Backfiller */}
+            <button
+              type="button"
+              onClick={() => setActiveAgentModal("backfill")}
+              className="text-left rounded-xl p-5 bg-slate-950/95 border border-sky-500/35 hover:border-sky-400 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[185px] shadow-sm"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="p-2 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                    <CalendarIcon className="w-4 h-4" />
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                    10-Day / Month
+                  </span>
+                </div>
+                <div className="text-sm sm:text-base font-bold text-white group-hover:text-sky-300 transition-colors">
+                  Agent 2: Batch Backfiller
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Populates uncollected dates in 10-day batches or across a full month with zero duplicates.
+                </p>
               </div>
 
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does:</strong> Runs{" "}
-                <strong>automatically every day</strong> and catches up missed recent days of the current month. Grounded on{" "}
-                <span className="text-emerald-300">Google Search</span>,{" "}
-                <span className="text-emerald-300">GKToday</span>,{" "}
-                <span className="text-emerald-300">PIB</span>, and{" "}
-                <span className="text-emerald-300">The Hindu</span>, it generates{" "}
-                <strong>12 to 14 unique PSCWB exam topics</strong> (via 2 parallel batches of 8 + top-up pass) for{" "}
-                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>.
-              </p>
+              <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                <span className="font-mono text-[11px] text-slate-300">
+                  {formatReadableMonth(backfillMonthKey, "en")}
+                </span>
+                <span className="font-bold text-sky-400 group-hover:translate-x-0.5 transition-transform">
+                  Manage →
+                </span>
+              </div>
+            </button>
 
-              {/* Short Model Failure / Diagnostic Banner for Admin */}
-              {(scheduler?.lastErrorReason || lastAgentErrorShort) && (
-                <div className="rounded-lg border border-rose-500/50 bg-rose-950/40 px-3 py-2 text-xs text-rose-200 flex flex-wrap items-center justify-between gap-2">
-                  <div className="space-y-0.5">
-                    <div className="font-bold text-rose-300 flex items-center gap-1.5">
-                      <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                      Model / Agent Failure Reason
-                      {scheduler?.lastFailedDate ? ` (${scheduler.lastFailedDate})` : ""}:
-                    </div>
-                    <div className="text-[11px] text-rose-100 font-mono">
-                      {lastAgentErrorShort || scheduler?.lastErrorReason}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={agentBusy}
-                    onClick={() =>
-                      void handleRunAgentForDate(
-                        scheduler?.lastFailedDate || todayIso,
-                        false
-                      )
-                    }
-                    className="px-2.5 py-1 rounded bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
-                  >
-                    Retry Now
-                  </button>
+            {/* Agent Card 3: Month Classifier */}
+            <button
+              type="button"
+              onClick={() => setActiveAgentModal("classifier")}
+              className="text-left rounded-xl p-5 bg-slate-950/95 border border-amber-500/35 hover:border-amber-400 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[185px] shadow-sm"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="p-2 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    <Layers className="w-4 h-4" />
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    10 Categories
+                  </span>
                 </div>
+                <div className="text-sm sm:text-base font-bold text-white group-hover:text-amber-300 transition-colors">
+                  Agent 3: Month Classifier
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Organizes monthly events into 10 WBPSC exam categories and builds Monthly PDF Capsules.
+                </p>
+              </div>
+
+              <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                <span className="font-mono text-[11px] text-slate-300">
+                  Book-Indexed PDF
+                </span>
+                <span className="font-bold text-amber-400 group-hover:translate-x-0.5 transition-transform">
+                  Manage →
+                </span>
+              </div>
+            </button>
+
+            {/* Agent Card 4: Date Recovery */}
+            <button
+              type="button"
+              onClick={() => setActiveAgentModal("recovery")}
+              className="text-left rounded-xl p-5 bg-slate-950/95 border border-purple-500/35 hover:border-purple-400 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[185px] shadow-sm"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="p-2 rounded-lg bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                    <HelpCircle className="w-4 h-4" />
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                    Single Date
+                  </span>
+                </div>
+                <div className="text-sm sm:text-base font-bold text-white group-hover:text-purple-300 transition-colors">
+                  Agent 4: Date Recovery
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Pick any past date to manually ground or force-refresh 12–14 exam-oriented topics.
+                </p>
+              </div>
+
+              <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                <span className="font-mono text-[11px] text-slate-300">
+                  {agentEditionDate}
+                </span>
+                <span className="font-bold text-purple-400 group-hover:translate-x-0.5 transition-transform">
+                  Manage →
+                </span>
+              </div>
+            </button>
+
+            {/* Agent Card 5: Bilingual & MCQ Generator */}
+            <button
+              type="button"
+              onClick={() => setActiveAgentModal("bilingual")}
+              className="text-left rounded-xl p-5 bg-slate-950/95 border border-slate-700 hover:border-emerald-400/60 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[185px] shadow-sm"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="p-2 rounded-lg bg-slate-800 text-emerald-300 border border-slate-700">
+                    <Bot className="w-4 h-4" />
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    Always Active
+                  </span>
+                </div>
+                <div className="text-sm sm:text-base font-bold text-white group-hover:text-emerald-300 transition-colors">
+                  Agent 5: Bilingual &amp; MCQ
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Internal sub-agent adding 4–5 rich exam pointers, Static GK links, Traps &amp; বাংলা অনুবাদ.
+                </p>
+              </div>
+
+              <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                <span className="font-mono text-[11px] text-slate-300">
+                  EN + বাংলা Pipeline
+                </span>
+                <span className="font-bold text-slate-300 group-hover:text-white transition-colors">
+                  Details →
+                </span>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+          AGENT MANAGEMENT MODAL (OPENS ONLY WHEN AN AGENT CARD IS SELECTED)
+      ==================================================================== */}
+      {isAdmin && activeAgentModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-3 sm:p-5"
+          onClick={() => setActiveAgentModal(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-800 bg-slate-950">
+              <div className="flex items-center gap-2.5">
+                {activeAgentModal === "daily" && (
+                  <>
+                    <Clock className="w-5 h-5 text-emerald-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Agent 1: Daily Collector (12–14 Topics/Day)
+                    </h3>
+                  </>
+                )}
+                {activeAgentModal === "backfill" && (
+                  <>
+                    <CalendarIcon className="w-5 h-5 text-sky-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Agent 2: Month-Wise Batch Backfiller
+                    </h3>
+                  </>
+                )}
+                {activeAgentModal === "classifier" && (
+                  <>
+                    <Layers className="w-5 h-5 text-amber-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Agent 3: Monthly Category Classifier &amp; Capsule
+                    </h3>
+                  </>
+                )}
+                {activeAgentModal === "recovery" && (
+                  <>
+                    <HelpCircle className="w-5 h-5 text-purple-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Agent 4: Single-Date Manual Recovery
+                    </h3>
+                  </>
+                )}
+                {activeAgentModal === "bilingual" && (
+                  <>
+                    <Bot className="w-5 h-5 text-emerald-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Agent 5: Bilingual &amp; MCQ Pipeline
+                    </h3>
+                  </>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setActiveAgentModal(null)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                title="Close Modal (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-4">
+              {activeAgentModal === "daily" && (
+                <>
+                  <div className="flex items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-xl p-3.5">
+                    <span className="text-xs font-semibold text-slate-300">
+                      Daily Scheduler Status:
+                    </span>
+                    <span
+                      className={`px-2.5 py-1 rounded-md text-xs font-bold ${
+                        scheduler?.enabled
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                          : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                      }`}
+                    >
+                      {scheduler?.enabled ? "AUTO-RUN: ON (Everyday)" : "AUTO-RUN: PAUSED"}
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+                    Runs automatically every day for{" "}
+                    <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>{" "}
+                    and catches up missed recent days of the current month. Grounded on{" "}
+                    <span className="text-emerald-300">PIB, The Hindu, GKToday &amp; AffairsCloud</span>, strictly filtering out job recruitments and holiday notices.
+                  </p>
+
+                  {(scheduler?.lastErrorReason || lastAgentErrorShort) && (
+                    <div className="rounded-xl border border-rose-500/50 bg-rose-950/40 p-3.5 text-xs text-rose-200 space-y-2">
+                      <div className="font-bold text-rose-300 flex items-center gap-1.5">
+                        <ShieldAlert className="w-4 h-4 shrink-0" />
+                        Model / Agent Failure Reason
+                        {scheduler?.lastFailedDate ? ` (${scheduler.lastFailedDate})` : ""}:
+                      </div>
+                      <div className="text-[11px] text-rose-100 font-mono break-words">
+                        {lastAgentErrorShort || scheduler?.lastErrorReason}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={agentBusy}
+                        onClick={() =>
+                          void handleRunAgentForDate(
+                            scheduler?.lastFailedDate || todayIso,
+                            false
+                          )
+                        }
+                        className="px-3 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold text-xs cursor-pointer"
+                      >
+                        Retry Failed Date Now
+                      </button>
+                    </div>
+                  )}
+
+                  {scheduler?.missingRecentDates &&
+                    scheduler.missingRecentDates.length > 0 && (
+                      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <span className="font-bold text-amber-300">
+                            Pending Recent Days ({scheduler.missingRecentDates.length}):{" "}
+                          </span>
+                          <span className="font-mono text-[11px]">
+                            {scheduler.missingRecentDates.join(", ")}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={backfillBusy}
+                          onClick={() =>
+                            void handleAutoBackfillPastDays(
+                              todayIso.slice(0, 7),
+                              "days-1-10"
+                            )
+                          }
+                          className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-xs cursor-pointer"
+                        >
+                          {backfillBusy ? "Backfilling..." : "Fill Missing Days"}
+                        </button>
+                      </div>
+                    )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      disabled={toggleSchedulerBusy}
+                      onClick={() => void handleToggleAutoScheduler()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                    >
+                      <Power className="w-3.5 h-3.5 text-emerald-400" />
+                      {scheduler?.enabled ? "Pause Daily Auto-Run" : "Turn ON Daily Auto-Run"}
+                    </button>
+
+                    {(() => {
+                      const todayCount = editionsByDate.get(todayIso)?.topics.length || 0;
+                      const isTodayComplete = todayCount >= 12;
+                      const todayRemaining = Math.max(0, 14 - todayCount);
+                      return (
+                        <button
+                          type="button"
+                          disabled={agentBusy || isTodayComplete}
+                          onClick={() => void handleRunAgentForDate(todayIso)}
+                          className={`inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg ${
+                            isTodayComplete
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
+                              : "bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 cursor-pointer"
+                          }`}
+                        >
+                          {agentBusy ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              Collecting 12–14 Topics...
+                            </>
+                          ) : isTodayComplete ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              Today&apos;s {todayCount} Topics Complete
+                            </>
+                          ) : todayCount > 0 ? (
+                            <>
+                              <Play className="w-3.5 h-3.5" />
+                              Generate Remaining {todayRemaining} Topics
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-3.5 h-3.5" />
+                              Collect Today&apos;s 12–14 Topics
+                            </>
+                          )}
+                        </button>
+                      );
+                    })()}
+                  </div>
+                </>
               )}
 
-              {/* Missing Recent Days in Current Month Indicator (e.g. Nov 7, 8, 9, 10) */}
-              {scheduler?.missingRecentDates &&
-                scheduler.missingRecentDates.length > 0 && (
-                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <span className="font-bold text-amber-300">
-                        Pending Recent Days ({scheduler.missingRecentDates.length}):{" "}
-                      </span>
-                      <span className="font-mono text-[11px]">
-                        {scheduler.missingRecentDates.join(", ")}
-                      </span>
+              {activeAgentModal === "backfill" && (
+                <>
+                  <p className="text-xs text-slate-300 leading-relaxed bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+                    Select any month and batch window below to populate uncollected dates (up to 4 dates per run) with Google-Search-grounded, non-duplicate WBPSC Current Affairs.
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-semibold text-slate-400">
+                        Select Month
+                      </label>
+                      <select
+                        value={backfillMonthKey}
+                        onChange={(e) => setBackfillMonthKey(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-white cursor-pointer"
+                      >
+                        {availableMonthKeys.map((mk) => (
+                          <option key={mk} value={mk}>
+                            {formatReadableMonth(mk, lang)} ({mk})
+                          </option>
+                        ))}
+                      </select>
                     </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-semibold text-slate-400">
+                        Select Batch Window
+                      </label>
+                      <select
+                        value={backfillBatchRange}
+                        onChange={(e) =>
+                          setBackfillBatchRange(
+                            e.target.value as
+                              | "days-1-10"
+                              | "days-11-20"
+                              | "days-21-end"
+                              | "full-month"
+                          )
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-semibold text-sky-300 cursor-pointer"
+                      >
+                        <option value="full-month">Full Month (All 30/31 Days)</option>
+                        <option value="days-1-10">Batch 1: Days 01 – 10</option>
+                        <option value="days-11-20">Batch 2: Days 11 – 20</option>
+                        <option value="days-21-end">Batch 3: Days 21 – End of Month</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end pt-3 border-t border-slate-800">
                     <button
                       type="button"
                       disabled={backfillBusy}
                       onClick={() =>
-                        void handleAutoBackfillPastDays(
-                          todayIso.slice(0, 7),
-                          "days-1-10"
-                        )
+                        void handleAutoBackfillPastDays(backfillMonthKey, backfillBatchRange)
                       }
-                      className="px-2.5 py-1 rounded bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-sky-400 hover:bg-sky-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
                     >
-                      {backfillBusy ? "Backfilling..." : "Fill Missing Days Now"}
-                    </button>
-                  </div>
-                )}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <button
-                type="button"
-                disabled={toggleSchedulerBusy}
-                onClick={() => void handleToggleAutoScheduler()}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-              >
-                <Power className="w-3.5 h-3.5 text-emerald-400" />
-                {scheduler?.enabled ? "Pause Daily Auto-Run" : "Turn ON Daily Auto-Run"}
-              </button>
-
-              {(() => {
-                const todayCount = editionsByDate.get(todayIso)?.topics.length || 0;
-                const isTodayComplete = todayCount >= 12;
-                const todayRemaining = Math.max(0, 14 - todayCount);
-                return (
-                  <button
-                    type="button"
-                    disabled={agentBusy || isTodayComplete}
-                    onClick={() => void handleRunAgentForDate(todayIso)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
-                      isTodayComplete
-                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
-                        : "bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 cursor-pointer"
-                    }`}
-                  >
-                    {agentBusy ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        Collecting 12–14 Topics...
-                      </>
-                    ) : isTodayComplete ? (
-                      <>
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Today&apos;s {todayCount} Topics Complete
-                      </>
-                    ) : todayCount > 0 ? (
-                      <>
-                        <Play className="w-3.5 h-3.5" />
-                        Generate Remaining {todayRemaining} Topics ({todayCount} Stored)
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-3.5 h-3.5" />
-                        Collect Today&apos;s 12–14 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
-                      </>
-                    )}
-                  </button>
-                );
-              })()}
-            </div>
-          </div>
-
-          {/* CARD 2: Month-Wise Batch Historical Backfill Agent */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <CalendarIcon className="w-4 h-4" />
-                  2. Month-Wise Backfiller Agent
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
-                  Continously Updates Previous Days
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">How it works:</strong> Instead of shallow top-page scraping or repeating topics across dates, our crawler follows nested <code className="text-sky-300">&lt;a href&gt;</code> sub-pages on GKToday &amp; PYQArena alongside Google Search Grounding for that exact date, and passes all previously stored headlines into a strict <strong>3-Layer Anti-Duplication Filter</strong> so no two dates ever share the same Current Affairs topic!
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  value={backfillMonthKey}
-                  onChange={(e) => setBackfillMonthKey(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white cursor-pointer"
-                >
-                  {availableMonthKeys.map((mk) => (
-                    <option key={mk} value={mk}>
-                      {formatReadableMonth(mk, lang)} ({mk})
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  value={backfillBatchRange}
-                  onChange={(e) =>
-                    setBackfillBatchRange(
-                      e.target.value as
-                        | "days-1-10"
-                        | "days-11-20"
-                        | "days-21-end"
-                        | "full-month"
-                    )
-                  }
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-sky-300 cursor-pointer"
-                >
-                  <option value="full-month">Full Month (All 30/31 Days)</option>
-                  <option value="days-1-10">Batch 1: Days 01 – 10</option>
-                  <option value="days-11-20">Batch 2: Days 11 – 20</option>
-                  <option value="days-21-end">Batch 3: Days 21 – End of Month</option>
-                </select>
-              </div>
-
-              <button
-                type="button"
-                disabled={backfillBusy}
-                onClick={() => void handleAutoBackfillPastDays(backfillMonthKey, backfillBatchRange)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-sky-400 hover:bg-sky-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-              >
-                {backfillBusy ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Running Batch Backfill...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5" />
-                    Run Batch Backfill
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* CARD 3: End-of-Month Category Classifier & Monthly PDF Agent */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Layers className="w-4 h-4" />
-                  3. Monthly Category Classifier &amp; Capsule Agent
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                  10 WBPSC Categories
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does in simple words:</strong> Selects any past/current month, synthesizes high-probability PSCWB exam events (with extra weight on <em>West Bengal Special, Polity, Economy, Science, GI Tags, Sports &amp; Awards</em>), and organizes them into 10 subject buckets for the Monthly PDF Capsule.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <select
-                value={classifierSelectedMonth}
-                onChange={(e) => setClassifierSelectedMonth(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-white cursor-pointer"
-              >
-                {availableMonthKeys.map((mk) => (
-                  <option key={mk} value={mk}>
-                    {formatReadableMonth(mk, lang)} ({mk})
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                disabled={classifierBusyMonth !== null}
-                onClick={() => void handleRunMonthlyClassifierAgent(classifierSelectedMonth)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-              >
-                {classifierBusyMonth === classifierSelectedMonth ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Classifying {formatReadableMonth(classifierSelectedMonth, "en")}...
-                  </>
-                ) : (
-                  <>
-                    <Bot className="w-3.5 h-3.5" />
-                    Build 12-Topic Monthly Capsule
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* CARD 4: Specific Past Date Manual Recovery Agent (With Future-Date Lock) */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <HelpCircle className="w-4 h-4" />
-                  4. Single-Date Manual Recovery Agent (Fallback)
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                  Manual Retry · Future Locked
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">When to use this manual option:</strong> If an automatic collection ever fails for a specific date or you want to re-generate a particular date with fresh PSCWB topics (for example, <em>27 October 2026</em> or <em>15 September 2026</em>), pick that date here or inside the Calendar Modal and click Collect.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <input
-                type="date"
-                max={todayIso}
-                value={agentEditionDate}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setAgentEditionDate(val > todayIso ? todayIso : val);
-                }}
-                className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
-              />
-
-              {(() => {
-                const pickedCount = editionsByDate.get(agentEditionDate)?.topics.length || 0;
-                const isPickedComplete = pickedCount >= 12;
-                const pickedRemaining = Math.max(0, 14 - pickedCount);
-                return (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={agentBusy || isPickedComplete}
-                      onClick={() => void handleRunAgentForDate(agentEditionDate, false)}
-                      className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
-                        isPickedComplete
-                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
-                          : "bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 cursor-pointer"
-                      }`}
-                    >
-                      {agentBusy ? (
+                      {backfillBusy ? (
                         <>
                           <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          Grounding 12–14 Topics...
+                          Running Batch Backfill...
                         </>
-                      ) : isPickedComplete ? (
+                      ) : (
                         <>
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          {pickedCount} Topics Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                          <Sparkles className="w-3.5 h-3.5" />
+                          Run Batch Backfill
                         </>
-                      ) : pickedCount > 0 ? (
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {activeAgentModal === "classifier" && (
+                <>
+                  <p className="text-xs text-slate-300 leading-relaxed bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+                    Select any past or current month to synthesize high-yield WBPSC exam events across all 10 categories (Polity, Economy, Science, West Bengal Special, GI Tags, Sports, Awards, Defence &amp; Indices).
+                  </p>
+
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-semibold text-slate-400">
+                      Target Month
+                    </label>
+                    <select
+                      value={classifierSelectedMonth}
+                      onChange={(e) => setClassifierSelectedMonth(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-white cursor-pointer"
+                    >
+                      {availableMonthKeys.map((mk) => (
+                        <option key={mk} value={mk}>
+                          {formatReadableMonth(mk, lang)} ({mk})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex justify-end pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      disabled={classifierBusyMonth !== null}
+                      onClick={() => void handleRunMonthlyClassifierAgent(classifierSelectedMonth)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+                    >
+                      {classifierBusyMonth === classifierSelectedMonth ? (
                         <>
-                          <Bot className="w-3.5 h-3.5" />
-                          Ground Remaining {pickedRemaining} Topics ({pickedCount} Stored)
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Classifying {formatReadableMonth(classifierSelectedMonth, "en")}...
                         </>
                       ) : (
                         <>
                           <Bot className="w-3.5 h-3.5" />
-                          Ground 12–14 Topics via Google Search ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                          Build Monthly Categorized Capsule
                         </>
                       )}
                     </button>
-
-                    {pickedCount > 0 && (
-                      <button
-                        type="button"
-                        disabled={agentBusy}
-                        onClick={() => void handleRunAgentForDate(agentEditionDate, true)}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/50 text-sky-200 disabled:opacity-50 cursor-pointer"
-                        title="Discard non-custom cards on this date and re-ground 12–14 topics live from Google Search"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${agentBusy ? "animate-spin" : ""}`} />
-                        Force Re-Ground (12–14 Topics)
-                      </button>
-                    )}
                   </div>
-                );
-              })()}
+                </>
+              )}
+
+              {activeAgentModal === "recovery" && (
+                <>
+                  <p className="text-xs text-slate-300 leading-relaxed bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+                    Pick any past or present date below to collect missing Current Affairs topics or force re-ground that date with fresh, rich WBPSC exam-standard notes.
+                  </p>
+
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-semibold text-slate-400">
+                      Select Edition Date (Future Dates Locked)
+                    </label>
+                    <input
+                      type="date"
+                      max={todayIso}
+                      value={agentEditionDate}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setAgentEditionDate(val > todayIso ? todayIso : val);
+                      }}
+                      className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono"
+                    />
+                  </div>
+
+                  {(() => {
+                    const pickedCount = editionsByDate.get(agentEditionDate)?.topics.length || 0;
+                    const isPickedComplete = pickedCount >= 12;
+                    const pickedRemaining = Math.max(0, 14 - pickedCount);
+                    return (
+                      <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-slate-800">
+                        {pickedCount > 0 && (
+                          <button
+                            type="button"
+                            disabled={agentBusy}
+                            onClick={() => void handleRunAgentForDate(agentEditionDate, true)}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/50 text-sky-200 disabled:opacity-50 cursor-pointer"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${agentBusy ? "animate-spin" : ""}`} />
+                            Force Re-Ground (12–14 Topics)
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          disabled={agentBusy || isPickedComplete}
+                          onClick={() => void handleRunAgentForDate(agentEditionDate, false)}
+                          className={`inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg ${
+                            isPickedComplete
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
+                              : "bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 cursor-pointer"
+                          }`}
+                        >
+                          {agentBusy ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              Grounding 12–14 Topics...
+                            </>
+                          ) : isPickedComplete ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              {pickedCount} Topics Stored
+                            </>
+                          ) : pickedCount > 0 ? (
+                            <>
+                              <Bot className="w-3.5 h-3.5" />
+                              Ground Remaining {pickedRemaining} Topics
+                            </>
+                          ) : (
+                            <>
+                              <Bot className="w-3.5 h-3.5" />
+                              Ground 12–14 Topics ({agentEditionDate})
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+
+              {activeAgentModal === "bilingual" && (
+                <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
+                  <div className="bg-slate-950 border border-emerald-500/30 rounded-xl p-4 space-y-2">
+                    <div className="font-bold text-emerald-300">
+                      100% Automatic Internal Enrichment Pipeline
+                    </div>
+                    <p>
+                      Whenever Agents 1–4 collect Current Affairs, Agent 5 automatically enriches every topic with:
+                    </p>
+                    <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                      <li>4–5 detailed English &amp; Bengali (বাংলা) exam bullet pointers</li>
+                      <li>Constitutional, Geographical &amp; Institutional Static GK hooks</li>
+                      <li>Exam-hall confuser / trap alerts</li>
+                      <li>PYQ-standard Bilingual MCQs + Vector DB semantic deduplication</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
-      </div>
       )}
 
       {/* ====================================================================
-          SECTION 3B: MULTI-FORMAT CURRENT AFFAIRS UPLOAD & VECTOR DB KNOWLEDGE STORE (ADMIN ONLY)
-          - Supports PDF (.pdf), Word (.docx/.doc/.txt), and Image (.png/.jpg/.webp)
-          - Scope: Single Day | Multiple Days (Date Range) | Multiple Months | Yearly Digest
-          - Unlimited uploads for the same day/month/year from different resources!
-          - Phase-2 Ready for WBPSC Clerkship (100 Marks) & WBCS Prelims (200 Marks) Test Series
+          SECTION 3B: CURRENT AFFAIRS VECTOR DB KNOWLEDGE STORE (ADMIN ONLY)
+          Clean, Easy-to-Understand 3-Card Layout — Opens Dedicated Modals on Click.
       ==================================================================== */}
       {isAdmin && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
-            <div className="space-y-1 max-w-3xl">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div className="space-y-1">
               <div className="inline-flex items-center gap-1.5 text-xs font-bold text-sky-400 uppercase tracking-wider">
                 <Database className="w-4 h-4" />
-                Multi-Source Current Affairs Vector DB Knowledge Store (Admin Only)
+                Multi-Source Current Affairs Vector DB Knowledge Store
               </div>
-              <h2 className="text-base font-bold text-white">
-                Upload PDF / Word / Image Current Affairs (Single Day, Multi-Day, Multi-Month, or Yearly)
+              <h2 className="text-base sm:text-lg font-bold text-white">
+                Upload, Browse &amp; Search Current Affairs Files
               </h2>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Upload <strong className="text-white">as many Current Affairs files as you want</strong> for the{" "}
-                <strong className="text-emerald-300">same day, same month, multiple months, or full year</strong> from different resources (e.g.,{" "}
-                <em>GKToday PDF, Achievers Bengali Magazine, VisionIAS / PIB Word Doc, Newspaper Clipping Image</em>). Every file is chunked and indexed with{" "}
-                <code className="text-sky-300">gemini-embedding-2-preview</code> vectors.
+              <p className="text-xs text-slate-400">
+                Store PDF, Word, or Image CA files for any day, month, or year and search them instantly for WBPSC test creation.
               </p>
             </div>
 
-            {/* Phase-2 Exam Blueprint Integration Badge */}
-            <div className="bg-slate-950 border border-amber-500/30 rounded-xl px-3.5 py-2.5 max-w-sm">
-              <div className="text-[11px] font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" />
-                Phase-2 Test Series Pipeline Ready
-              </div>
-              <p className="text-[11px] text-slate-300 mt-0.5 leading-snug">
-                Vector chunks stored here are tagged for generating{" "}
-                <strong className="text-white">WBPSC Clerkship (100 Marks)</strong> &amp;{" "}
-                <strong className="text-white">WBCS Prelims (200 Marks)</strong> CA questions and full-length mock test series.
-              </p>
-            </div>
-          </div>
-
-          {/* Vector DB Live Metrics Strip */}
-          {vectorStats && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <div className="text-[11px] text-slate-400">Uploaded CA Resources</div>
-                <div className="text-lg font-bold font-mono text-white mt-0.5">
+            {vectorStats && (
+              <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-white font-bold">
                   {vectorStats.totalDocumentsCount} Files
-                </div>
-                <div className="text-[10px] text-emerald-400">
-                  {vectorStats.uniquePublishersCount} Distinct Publishers / Sources
-                </div>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <div className="text-[11px] text-slate-400">Vector-Indexed Chunks</div>
-                <div className="text-lg font-bold font-mono text-sky-300 mt-0.5">
-                  {vectorStats.totalChunksIndexed} Chunks
-                </div>
-                <div className="text-[10px] text-slate-400">
-                  gemini-embedding-2-preview (128d)
-                </div>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <div className="text-[11px] text-slate-400">Formats Stored</div>
-                <div className="text-xs font-mono font-bold text-amber-300 mt-1 space-x-2">
-                  <span>PDF: {vectorStats.byFormat?.PDF || 0}</span>
-                  <span>·</span>
-                  <span>WORD: {vectorStats.byFormat?.WORD || 0}</span>
-                  <span>·</span>
-                  <span>IMAGE: {vectorStats.byFormat?.IMAGE || 0}</span>
-                </div>
-                <div className="text-[10px] text-slate-400 mt-0.5">
-                  Multimodal OCR + DOCX XML Parser
-                </div>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <div className="text-[11px] text-slate-400">Coverage Scopes</div>
-                <div className="text-[11px] font-mono text-purple-300 mt-1">
-                  Day: {vectorStats.byScope?.single_day || 0} · Multi-Day:{" "}
-                  {vectorStats.byScope?.date_range || 0} · Month:{" "}
-                  {vectorStats.byScope?.multi_month || 0} · Yearly:{" "}
-                  {vectorStats.byScope?.yearly || 0}
-                </div>
-                <div className="text-[10px] text-slate-400 mt-0.5">
-                  Unlimited uploads per day/month/year
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Upload Form + Vector Store Explorer Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            {/* LEFT 6 COLS: Multi-Format Upload & Scope Configuration */}
-            <div className="lg:col-span-6 bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3.5">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                  <Upload className="w-4 h-4" />
-                  1. Ingest New PDF / Word / Image into Vector DB
-                </h3>
-                <span className="text-[11px] text-slate-400 font-mono">
-                  Multi-File &amp; Multi-Source Enabled
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-sky-300 font-bold">
+                  {vectorStats.totalChunksIndexed} Vector Chunks
                 </span>
               </div>
+            )}
+          </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                    Document Title (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={uploadTitle}
-                    onChange={(e) => setUploadTitle(e.target.value)}
-                    placeholder="e.g., Achievers Oct 2026 Capsule"
-                    className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
-                  />
+          {/* Enlarged Responsive 3-Card Grid for Vector Store Actions */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Vector Card 1: Upload CA Files */}
+            <button
+              type="button"
+              onClick={() => setActiveVectorModal("upload")}
+              className="text-left rounded-xl p-5 bg-slate-950/95 border border-emerald-500/35 hover:border-emerald-400 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[175px] shadow-sm"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="p-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    <Upload className="w-4 h-4" />
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    PDF · Word · Image
+                  </span>
                 </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                    Resource / Publisher Name
-                  </label>
-                  <input
-                    type="text"
-                    value={uploadPublisher}
-                    onChange={(e) => setUploadPublisher(e.target.value)}
-                    placeholder="e.g., GKToday, Achievers, VisionIAS, PIB"
-                    className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
-                  />
+                <div className="text-sm sm:text-base font-bold text-white group-hover:text-emerald-300 transition-colors">
+                  1. Upload CA Files
                 </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Upload single-day, multi-day, monthly, or yearly Current Affairs files from any publisher.
+                </p>
               </div>
 
-              {/* Scope Type Selector */}
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">
-                  Select Time Coverage Scope of Uploaded File(s)
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {(
-                    [
-                      { id: "single_day", label: "Single Day" },
-                      { id: "date_range", label: "Multiple Days" },
-                      { id: "multi_month", label: "Month(s)" },
-                      { id: "yearly", label: "Yearly / Annual" },
-                    ] as const
-                  ).map((sc) => (
-                    <button
-                      key={sc.id}
-                      type="button"
-                      onClick={() => setUploadScopeType(sc.id)}
-                      className={`py-1.5 px-2.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
-                        uploadScopeType === sc.id
-                          ? "bg-sky-500 text-slate-950 border-sky-400"
-                          : "bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700"
-                      }`}
-                    >
-                      {sc.label}
-                    </button>
-                  ))}
+              <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                <span className="text-[11px] text-slate-400">Multi-file supported</span>
+                <span className="font-bold text-emerald-400 group-hover:translate-x-0.5 transition-transform">
+                  Open Upload →
+                </span>
+              </div>
+            </button>
+
+            {/* Vector Card 2: Stored Documents */}
+            <button
+              type="button"
+              onClick={() => setActiveVectorModal("documents")}
+              className="text-left rounded-xl p-5 bg-slate-950/95 border border-amber-500/35 hover:border-amber-400 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[175px] shadow-sm"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="p-2 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    <FileText className="w-4 h-4" />
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    {vectorStats?.totalDocumentsCount ?? vectorDocs.length} Stored
+                  </span>
                 </div>
+                <div className="text-sm sm:text-base font-bold text-white group-hover:text-amber-300 transition-colors">
+                  2. Stored CA Library
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  View all indexed PDFs, Word docs, and images by scope and publisher, or delete old files.
+                </p>
               </div>
 
-              {/* Dynamic Scope Inputs based on `uploadScopeType` */}
-              {uploadScopeType === "single_day" && (
-                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 flex items-center justify-between gap-3">
-                  <span className="text-xs text-slate-300 font-medium">
-                    Select Date for Single-Day CA File:
+              <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                <span className="text-[11px] text-slate-400">
+                  {vectorStats?.uniquePublishersCount || 0} Publishers
+                </span>
+                <span className="font-bold text-amber-400 group-hover:translate-x-0.5 transition-transform">
+                  View Library →
+                </span>
+              </div>
+            </button>
+
+            {/* Vector Card 3: Semantic Vector Search */}
+            <button
+              type="button"
+              onClick={() => setActiveVectorModal("search")}
+              className="text-left rounded-xl p-5 bg-slate-950/95 border border-sky-500/35 hover:border-sky-400 hover:bg-slate-950 transition-all cursor-pointer group flex flex-col justify-between min-h-[175px] shadow-sm"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="p-2 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                    <Search className="w-4 h-4" />
                   </span>
-                  <input
-                    type="date"
-                    max={todayIso}
-                    value={uploadSingleDate}
-                    onChange={(e) => setUploadSingleDate(e.target.value)}
-                    className="px-3 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono"
-                  />
-                </div>
-              )}
-
-              {uploadScopeType === "date_range" && (
-                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">
-                      From Date
-                    </label>
-                    <input
-                      type="date"
-                      max={todayIso}
-                      value={uploadStartDate}
-                      onChange={(e) => setUploadStartDate(e.target.value)}
-                      className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">
-                      To Date
-                    </label>
-                    <input
-                      type="date"
-                      max={todayIso}
-                      value={uploadEndDate}
-                      onChange={(e) => setUploadEndDate(e.target.value)}
-                      className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {uploadScopeType === "multi_month" && (
-                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-2">
-                  <div className="flex items-center justify-between text-[11px] text-slate-300">
-                    <span>Click to select one or multiple months covered by this PDF/Doc/Image:</span>
-                    <span className="font-mono text-sky-300">
-                      {uploadSelectedMonths.length} selected
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 max-h-[90px] overflow-y-auto">
-                    {availableMonthKeys.map((mk) => {
-                      const active = uploadSelectedMonths.includes(mk);
-                      return (
-                        <button
-                          key={mk}
-                          type="button"
-                          onClick={() =>
-                            setUploadSelectedMonths((prev) =>
-                              prev.includes(mk)
-                                ? prev.length > 1
-                                  ? prev.filter((x) => x !== mk)
-                                  : prev
-                                : [...prev, mk]
-                            )
-                          }
-                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
-                            active
-                              ? "bg-emerald-500/25 border-emerald-500/60 text-emerald-200"
-                              : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
-                          }`}
-                        >
-                          {formatReadableMonth(mk, "en")}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {uploadScopeType === "yearly" && (
-                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 flex items-center justify-between gap-3">
-                  <span className="text-xs text-slate-300 font-medium">
-                    Select Annual / Yearly Window:
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                    {vectorStats?.totalChunksIndexed || 0} Chunks
                   </span>
-                  <select
-                    value={uploadTargetYear}
-                    onChange={(e) => setUploadTargetYear(e.target.value)}
-                    className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-bold text-white cursor-pointer"
-                  >
-                    <option value="2025-2026">Nov 2025 – Nov 2026 (Clerkship 1-Year)</option>
-                    <option value="2026">Full Year 2026 Annual Compendium</option>
-                    <option value="2025">Full Year 2025 Annual Compendium</option>
-                  </select>
                 </div>
-              )}
+                <div className="text-sm sm:text-base font-bold text-white group-hover:text-sky-300 transition-colors">
+                  3. Semantic Topic Search
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Search across all stored CA chunks by topic or keyword for Clerkship &amp; WBCS test series.
+                </p>
+              </div>
 
-              {/* File Picker Input (PDF, Word .docx/.doc/.txt, Image .png/.jpg/.webp) */}
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-semibold text-slate-300">
-                  Choose File(s) — PDF (<code>.pdf</code>), Word (<code>.docx</code>, <code>.doc</code>, <code>.txt</code>), or Image (<code>.png</code>, <code>.jpg</code>, <code>.webp</code>)
-                </label>
-                <input
-                  type="file"
-                  multiple
-                  accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
-                  onChange={(e) => {
-                    const files = e.target.files ? Array.from(e.target.files) : [];
-                    setSelectedUploadFiles(files);
-                  }}
-                  className="block w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-sky-500 file:text-slate-950 hover:file:bg-sky-400 cursor-pointer bg-slate-900 border border-slate-700 rounded-lg p-1.5"
-                />
-                {selectedUploadFiles.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {selectedUploadFiles.map((f, i) => (
-                      <span
-                        key={`${f.name}-${i}`}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-[11px] text-sky-200 font-mono"
-                      >
-                        <FileText className="w-3 h-3" />
-                        {f.name} ({Math.max(1, Math.round(f.size / 1024))} KB)
-                      </span>
-                    ))}
-                  </div>
+              <div className="pt-3 mt-3 border-t border-slate-800/90 flex items-center justify-between text-xs">
+                <span className="text-[11px] text-slate-400">Cosine Similarity</span>
+                <span className="font-bold text-sky-400 group-hover:translate-x-0.5 transition-transform">
+                  Search Store →
+                </span>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+          VECTOR DB KNOWLEDGE STORE MODAL (UPLOAD / LIBRARY / SEMANTIC SEARCH)
+      ==================================================================== */}
+      {isAdmin && activeVectorModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-3 sm:p-5"
+          onClick={() => setActiveVectorModal(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-800 bg-slate-950">
+              <div className="flex items-center gap-2.5">
+                {activeVectorModal === "upload" && (
+                  <>
+                    <Upload className="w-5 h-5 text-emerald-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Upload Current Affairs into Vector DB
+                    </h3>
+                  </>
+                )}
+                {activeVectorModal === "documents" && (
+                  <>
+                    <FileText className="w-5 h-5 text-amber-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Stored CA Library ({vectorDocs.length} Files)
+                    </h3>
+                  </>
+                )}
+                {activeVectorModal === "search" && (
+                  <>
+                    <Search className="w-5 h-5 text-sky-400" />
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Semantic Vector Search ({vectorStats?.totalChunksIndexed || 0} Chunks)
+                    </h3>
+                  </>
                 )}
               </div>
 
-              {/* Optional Text / Key Highlights Paste Box */}
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                  Optional Raw Text / Key Highlights to Include in Vector Chunks
-                </label>
-                <textarea
-                  rows={2}
-                  value={uploadTextHint}
-                  onChange={(e) => setUploadTextHint(e.target.value)}
-                  placeholder="Optional: Paste additional Current Affairs notes, bullet points, or leave blank to extract directly from the uploaded PDF/Word/Image file..."
-                  className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
-                />
-              </div>
-
-              {/* Target Exam Blueprint Tags (Phase 2 Readiness) */}
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                  <span className="text-slate-400 font-semibold">Exam Store Tags:</span>
-                  {[
-                    "WBPSC Clerkship (100 Marks)",
-                    "WBCS Prelims (200 Marks)",
-                    "WBPSC Miscellaneous",
-                  ].map((tag) => {
-                    const active = uploadExamTags.includes(tag);
-                    return (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() =>
-                          setUploadExamTags((prev) =>
-                            prev.includes(tag)
-                              ? prev.length > 1
-                                ? prev.filter((t) => t !== tag)
-                                : prev
-                              : [...prev, tag]
-                          )
-                        }
-                        className={`px-2 py-0.5 rounded border cursor-pointer ${
-                          active
-                            ? "bg-amber-500/20 border-amber-500/50 text-amber-200 font-semibold"
-                            : "bg-slate-900 border-slate-800 text-slate-400"
-                        }`}
-                      >
-                        {tag}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  disabled={vectorUploadBusy}
-                  onClick={() => void handleUploadDocumentsToVectorStore()}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer shadow-sm"
-                >
-                  {vectorUploadBusy ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      Chunking &amp; Embedding into Vector DB...
-                    </>
-                  ) : (
-                    <>
-                      <Upload className="w-3.5 h-3.5" />
-                      Upload &amp; Index into Vector DB
-                    </>
-                  )}
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setActiveVectorModal(null)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                title="Close Modal (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
 
-            {/* RIGHT 6 COLS: Uploaded Vector Documents List + Semantic Vector Search */}
-            <div className="lg:col-span-6 bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3.5">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
-                    <Search className="w-4 h-4" />
-                    2. Vector DB Repository &amp; Semantic Cosine Search
-                  </h3>
-                  <span className="text-[11px] text-slate-400 font-mono">
-                    {vectorDocs.length} Multi-Source Docs Stored
-                  </span>
-                </div>
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-4">
+              {activeVectorModal === "upload" && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Document Title (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={uploadTitle}
+                        onChange={(e) => setUploadTitle(e.target.value)}
+                        placeholder="e.g., Achievers Nov 2026 Capsule"
+                        className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white"
+                      />
+                    </div>
 
-                {/* Semantic Search Bar */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="text"
-                    value={vectorSearchQuery}
-                    onChange={(e) => setVectorSearchQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void handleSearchVectorStore();
-                    }}
-                    placeholder="Semantic vector search (e.g., Kanyashree, ISRO Gaganyaan, 16th Finance Commission)..."
-                    className="flex-1 min-w-[180px] px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white"
-                  />
-                  <select
-                    value={vectorSearchScopeFilter}
-                    onChange={(e) => setVectorSearchScopeFilter(e.target.value)}
-                    className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 cursor-pointer"
-                  >
-                    <option value="all">All Scopes</option>
-                    <option value="single_day">Single Day</option>
-                    <option value="date_range">Multiple Days</option>
-                    <option value="multi_month">Month(s)</option>
-                    <option value="yearly">Yearly</option>
-                  </select>
-                  <button
-                    type="button"
-                    disabled={vectorSearchBusy}
-                    onClick={() => void handleSearchVectorStore()}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-sky-400 hover:bg-sky-300 text-slate-950 rounded-lg cursor-pointer"
-                  >
-                    <Search className="w-3.5 h-3.5" />
-                    {vectorSearchBusy ? "Searching..." : "Search Vectors"}
-                  </button>
-                  {vectorSearchResults !== null && (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Publisher / Source Name
+                      </label>
+                      <input
+                        type="text"
+                        value={uploadPublisher}
+                        onChange={(e) => setUploadPublisher(e.target.value)}
+                        placeholder="e.g., GKToday, Achievers, PIB"
+                        className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">
+                      Time Coverage Scope
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {(
+                        [
+                          { id: "single_day", label: "Single Day" },
+                          { id: "date_range", label: "Multiple Days" },
+                          { id: "multi_month", label: "Month(s)" },
+                          { id: "yearly", label: "Yearly" },
+                        ] as const
+                      ).map((sc) => (
+                        <button
+                          key={sc.id}
+                          type="button"
+                          onClick={() => setUploadScopeType(sc.id)}
+                          className={`py-2 px-2.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                            uploadScopeType === sc.id
+                              ? "bg-sky-500 text-slate-950 border-sky-400"
+                              : "bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700"
+                          }`}
+                        >
+                          {sc.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {uploadScopeType === "single_day" && (
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-center justify-between gap-3">
+                      <span className="text-xs text-slate-300">Select Date:</span>
+                      <input
+                        type="date"
+                        max={todayIso}
+                        value={uploadSingleDate}
+                        onChange={(e) => setUploadSingleDate(e.target.value)}
+                        className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+                      />
+                    </div>
+                  )}
+
+                  {uploadScopeType === "date_range" && (
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-1">From Date</label>
+                        <input
+                          type="date"
+                          max={todayIso}
+                          value={uploadStartDate}
+                          onChange={(e) => setUploadStartDate(e.target.value)}
+                          className="w-full px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-1">To Date</label>
+                        <input
+                          type="date"
+                          max={todayIso}
+                          value={uploadEndDate}
+                          onChange={(e) => setUploadEndDate(e.target.value)}
+                          className="w-full px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {uploadScopeType === "multi_month" && (
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between text-[11px] text-slate-300">
+                        <span>Select Month(s):</span>
+                        <span className="font-mono text-sky-300">
+                          {uploadSelectedMonths.length} selected
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 max-h-[96px] overflow-y-auto">
+                        {availableMonthKeys.map((mk) => {
+                          const active = uploadSelectedMonths.includes(mk);
+                          return (
+                            <button
+                              key={mk}
+                              type="button"
+                              onClick={() =>
+                                setUploadSelectedMonths((prev) =>
+                                  prev.includes(mk)
+                                    ? prev.length > 1
+                                      ? prev.filter((x) => x !== mk)
+                                      : prev
+                                    : [...prev, mk]
+                                )
+                              }
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
+                                active
+                                  ? "bg-emerald-500/25 border-emerald-500/60 text-emerald-200"
+                                  : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+                              }`}
+                            >
+                              {formatReadableMonth(mk, "en")}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {uploadScopeType === "yearly" && (
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-center justify-between gap-3">
+                      <span className="text-xs text-slate-300">Select Yearly Window:</span>
+                      <select
+                        value={uploadTargetYear}
+                        onChange={(e) => setUploadTargetYear(e.target.value)}
+                        className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-bold text-white cursor-pointer"
+                      >
+                        <option value="2025-2026">Nov 2025 – Nov 2026 (1-Year)</option>
+                        <option value="2026">Full Year 2026</option>
+                        <option value="2025">Full Year 2025</option>
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-semibold text-slate-300">
+                      Select PDF, Word (.docx/.doc/.txt), or Image (.png/.jpg/.webp)
+                    </label>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
+                      onChange={(e) => {
+                        const files = e.target.files ? Array.from(e.target.files) : [];
+                        setSelectedUploadFiles(files);
+                      }}
+                      className="block w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-sky-500 file:text-slate-950 hover:file:bg-sky-400 cursor-pointer bg-slate-950 border border-slate-700 rounded-lg p-1.5"
+                    />
+                    {selectedUploadFiles.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {selectedUploadFiles.map((f, i) => (
+                          <span
+                            key={`${f.name}-${i}`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/15 border border-sky-500/40 text-[11px] text-sky-200 font-mono"
+                          >
+                            <FileText className="w-3 h-3" />
+                            {f.name} ({Math.max(1, Math.round(f.size / 1024))} KB)
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Optional Notes / Key Highlights
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={uploadTextHint}
+                      onChange={(e) => setUploadTextHint(e.target.value)}
+                      placeholder="Optional text notes to embed alongside the uploaded file..."
+                      className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      {[
+                        "WBPSC Clerkship (100 Marks)",
+                        "WBCS Prelims (200 Marks)",
+                        "WBPSC Miscellaneous",
+                      ].map((tag) => {
+                        const active = uploadExamTags.includes(tag);
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() =>
+                              setUploadExamTags((prev) =>
+                                prev.includes(tag)
+                                  ? prev.length > 1
+                                    ? prev.filter((t) => t !== tag)
+                                    : prev
+                                  : [...prev, tag]
+                              )
+                            }
+                            className={`px-2 py-1 rounded border cursor-pointer ${
+                              active
+                                ? "bg-amber-500/20 border-amber-500/50 text-amber-200 font-semibold"
+                                : "bg-slate-950 border-slate-800 text-slate-400"
+                            }`}
+                          >
+                            {tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+
                     <button
                       type="button"
-                      onClick={() => {
-                        setVectorSearchResults(null);
-                        setVectorSearchQuery("");
-                      }}
-                      className="px-2.5 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
+                      disabled={vectorUploadBusy}
+                      onClick={() => void handleUploadDocumentsToVectorStore()}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer shadow-sm"
                     >
-                      Clear
+                      {vectorUploadBusy ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Indexing into Vector DB...
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-3.5 h-3.5" />
+                          Upload &amp; Index
+                        </>
+                      )}
                     </button>
-                  )}
-                </div>
-
-                {/* Semantic Search Results (when active) */}
-                {vectorSearchResults !== null ? (
-                  <div className="space-y-2 max-h-[270px] overflow-y-auto pr-1">
-                    <div className="text-[11px] font-semibold text-sky-300">
-                      Top Vector Matches ({vectorSearchResults.length} Chunks):
-                    </div>
-                    {vectorSearchResults.map((ch) => (
-                      <div
-                        key={ch.id}
-                        className="bg-slate-900 border border-sky-500/30 rounded-lg p-3 space-y-1"
-                      >
-                        <div className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="font-bold text-emerald-300">
-                            {ch.category} · {ch.sourcePublisher}
-                          </span>
-                          <span className="font-mono text-sky-300">
-                            Similarity: {Math.round((ch.similarityScore || 0.88) * 100)}%
-                          </span>
-                        </div>
-                        <div className="text-xs font-bold text-white">
-                          {lang === "bn" && ch.headlineBn ? ch.headlineBn : ch.headlineEn}
-                        </div>
-                        <p className="text-[11px] text-slate-300 leading-relaxed">
-                          {lang === "bn" && ch.contentBn ? ch.contentBn : ch.contentEn}
-                        </p>
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          Scope: {ch.scopeLabel}
-                        </div>
-                      </div>
-                    ))}
                   </div>
-                ) : (
-                  /* Stored Multi-Source Documents List */
-                  <div className="space-y-2 max-h-[270px] overflow-y-auto pr-1">
-                    {vectorDocs.map((doc) => (
+                </>
+              )}
+
+              {activeVectorModal === "documents" && (
+                <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1">
+                  {vectorDocs.length === 0 ? (
+                    <div className="text-center py-10 text-xs text-slate-400">
+                      No documents uploaded yet. Click &ldquo;1. Upload CA Files&rdquo; to add PDF, Word, or Image files.
+                    </div>
+                  ) : (
+                    vectorDocs.map((doc) => (
                       <div
                         key={doc.id}
-                        className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex items-start justify-between gap-3"
+                        className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 flex items-start justify-between gap-3"
                       >
                         <div className="space-y-1 flex-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
@@ -2641,7 +3065,7 @@ export default function DailyCurrentAffairsTab({
                               {doc.scopeLabel}
                             </span>
                             <span className="px-2 py-0.5 rounded bg-slate-800 text-sky-300">
-                              {doc.chunksCount} Vector Chunks
+                              {doc.chunksCount} Chunks
                             </span>
                           </div>
 
@@ -2649,43 +3073,110 @@ export default function DailyCurrentAffairsTab({
                             {doc.title}
                           </div>
                           <div className="text-[11px] text-slate-400">
-                            Source: <strong className="text-slate-200">{doc.sourcePublisher}</strong> · File:{" "}
+                            Source: <strong className="text-slate-200">{doc.sourcePublisher}</strong> ·{" "}
                             <span className="font-mono">{doc.fileName}</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1 pt-0.5">
-                            {doc.examTags.map((t) => (
-                              <span
-                                key={t}
-                                className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300"
-                              >
-                                {t}
-                              </span>
-                            ))}
                           </div>
                         </div>
 
                         <button
                           type="button"
                           onClick={() => void handleDeleteVectorDocument(doc.id, doc.title)}
-                          title="Delete this document and its vector chunks from Vector DB"
-                          className="p-1.5 rounded-lg bg-slate-950 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-slate-800 cursor-pointer shrink-0"
+                          title="Delete this document from Vector DB"
+                          className="p-2 rounded-lg bg-slate-900 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-slate-800 cursor-pointer shrink-0"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                    ))
+                  )}
+                </div>
+              )}
 
-              <div className="text-[11px] text-slate-400 border-t border-slate-800 pt-2 flex items-center justify-between">
-                <span>
-                  Embedding Model: <code className="text-sky-300">gemini-embedding-2-preview</code>
-                </span>
-                <span>
-                  Total Indexed Chunks: <strong className="text-white">{vectorChunksPreview.length}</strong>
-                </span>
-              </div>
+              {activeVectorModal === "search" && (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      value={vectorSearchQuery}
+                      onChange={(e) => setVectorSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void handleSearchVectorStore();
+                      }}
+                      placeholder="Search by meaning (e.g., ISRO space mission, RBI repo rate, GI tag)..."
+                      className="flex-1 min-w-[180px] px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white"
+                    />
+                    <select
+                      value={vectorSearchScopeFilter}
+                      onChange={(e) => setVectorSearchScopeFilter(e.target.value)}
+                      className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-slate-200 cursor-pointer"
+                    >
+                      <option value="all">All Scopes</option>
+                      <option value="single_day">Single Day</option>
+                      <option value="date_range">Multiple Days</option>
+                      <option value="multi_month">Month(s)</option>
+                      <option value="yearly">Yearly</option>
+                    </select>
+                    <button
+                      type="button"
+                      disabled={vectorSearchBusy}
+                      onClick={() => void handleSearchVectorStore()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-sky-400 hover:bg-sky-300 text-slate-950 rounded-lg cursor-pointer"
+                    >
+                      <Search className="w-3.5 h-3.5" />
+                      {vectorSearchBusy ? "Searching..." : "Search"}
+                    </button>
+                  </div>
+
+                  {vectorSearchResults !== null ? (
+                    <div className="space-y-2.5 max-h-[52vh] overflow-y-auto pr-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-sky-300">
+                          Top Matches ({vectorSearchResults.length} Chunks)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setVectorSearchResults(null);
+                            setVectorSearchQuery("");
+                          }}
+                          className="text-slate-400 hover:text-white cursor-pointer"
+                        >
+                          Clear Results
+                        </button>
+                      </div>
+                      {vectorSearchResults.map((ch) => (
+                        <div
+                          key={ch.id}
+                          className="bg-slate-950 border border-sky-500/30 rounded-xl p-3.5 space-y-1"
+                        >
+                          <div className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="font-bold text-emerald-300">
+                              {ch.category} · {ch.sourcePublisher}
+                            </span>
+                            <span className="font-mono text-sky-300">
+                              Match: {Math.round((ch.similarityScore || 0.88) * 100)}%
+                            </span>
+                          </div>
+                          <div className="text-xs font-bold text-white">
+                            {lang === "bn" && ch.headlineBn ? ch.headlineBn : ch.headlineEn}
+                          </div>
+                          <p className="text-[11px] text-slate-300 leading-relaxed">
+                            {lang === "bn" && ch.contentBn ? ch.contentBn : ch.contentEn}
+                          </p>
+                          <div className="text-[10px] text-slate-400 font-mono">
+                            Scope: {ch.scopeLabel}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-xs text-slate-400 bg-slate-950 border border-slate-800 rounded-xl">
+                      Enter any topic or exam keyword above to run semantic cosine search across{" "}
+                      <strong className="text-white">{vectorChunksPreview.length || vectorStats?.totalChunksIndexed || 0}</strong> indexed chunks.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
