@@ -1396,8 +1396,8 @@ export default function DailyCurrentAffairsTab({
   <div class="toc-box">
     <strong>Categorized Index (Prepared by Classifier Agent):</strong>
     ${sortedCategories
-      .map((c, idx) => `${idx + 1}. ${c} (${byCategory[c].length})`)
-      .join(" &nbsp;·&nbsp; ")}
+        .map((c, idx) => `${idx + 1}. ${c} (${byCategory[c].length})`)
+        .join(" &nbsp;·&nbsp; ")}
   </div>
   ${categorySectionsHtml}
   <h2 class="mcq-header">PYQ-Pattern Practice MCQs (${allMcqs.length} Questions)</h2>
@@ -1520,7 +1520,7 @@ export default function DailyCurrentAffairsTab({
               className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-md"
             >
               <Maximize2 className="w-4 h-4" />
-              Open Today&apos;s Floating Card Deck ({todayIso})
+              View Today&apos;s ({todayIso}) Current Affairs
             </button>
 
             {/* Button 2: Download Full 1-Year Categorized Clerkship Mega-Capsule PDF */}
@@ -1706,9 +1706,8 @@ export default function DailyCurrentAffairsTab({
 
                     <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
                       <div
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          isFullMonthStored ? "bg-emerald-400" : "bg-sky-400"
-                        }`}
+                        className={`h-full rounded-full transition-all duration-300 ${isFullMonthStored ? "bg-emerald-400" : "bg-sky-400"
+                          }`}
                         style={{ width: `${Math.max(10, coveragePct)}%` }}
                       />
                     </div>
@@ -1749,222 +1748,292 @@ export default function DailyCurrentAffairsTab({
           Aspirants ONLY consume generated Current Affairs and never see Agent controls.
       ==================================================================== */}
       {isAdmin && (
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
-          <div className="space-y-1">
-            <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-wider">
-              <Sparkles className="w-4 h-4" />
-              Current Affairs Management Console
-            </div>
-            <h2 className="text-base font-bold text-white">
-              Manage Your Assistant Agents (4 Manual + 1 Automatic)
-            </h2>
-            <p className="text-xs text-slate-400">
-              <strong className="text-white">5 Agents</strong> for Current Affairs: <strong className="text-emerald-300">4 Manual Orchestrator Agents</strong> (managed below) and <strong className="text-amber-300">1 Autonomous Sub-Agent</strong>
-            </p>
-          </div>
-        </div>
-
-        {/* 5-Agent Inventory Summary Strip */}
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 grid grid-cols-1 md:grid-cols-5 gap-2.5 text-xs">
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-emerald-500/30">
-            <div className="font-bold text-emerald-300">Agent 1: Daily Collector</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Auto-runs daily for Today, i.e., ({todayIso}) · Has Pause &amp; Manual Refresh button below.
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-sky-500/30">
-            <div className="font-bold text-sky-300">Agent 2: Batch Backfiller</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Fills continuous 10-day batches or all 30/31 days of any month with zero gaps.
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-amber-500/30">
-            <div className="font-bold text-amber-300">Agent 3: Month Classifier</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Groups topics into 10 WBPSC categories &amp; compiles Monthly PDF Capsules.
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-purple-500/30">
-            <div className="font-bold text-purple-300">Agent 4: Date Recovery</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Manual fallback if an automatic run ever fails on a specific past date.
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-700">
-            <div className="font-bold text-slate-200">Agent 5: Bilingual &amp; MCQ Generator</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              <span className="text-emerald-400 font-semibold">100% Automatic Internal Pipeline</span> — adds Static GK, Traps &amp; বাংলা অনুবাদ.
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* CARD 1: Daily Automatic Collection Scheduler */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Clock className="w-4 h-4" />
-                  1. Daily Collector Agent (12–14 Topics/Day)
-                </span>
-                <span
-                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                    scheduler?.enabled
-                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                      : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                  }`}
-                >
-                  {scheduler?.enabled ? "AUTO-RUN: ON (Everyday)" : "AUTO-RUN: PAUSED"}
-                </span>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3.5">
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-wider">
+                <Sparkles className="w-4 h-4" />
+                Current Affairs Management Console
               </div>
-
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does:</strong> Runs{" "}
-                <strong>automatically every day</strong> and catches up missed recent days of the current month. Grounded on{" "}
-                <span className="text-emerald-300">Google Search</span>,{" "}
-                <span className="text-emerald-300">GKToday</span>,{" "}
-                <span className="text-emerald-300">PIB</span>, and{" "}
-                <span className="text-emerald-300">The Hindu</span>, it generates{" "}
-                <strong>12 to 14 unique PSCWB exam topics</strong> (via 2 parallel batches of 8 + top-up pass) for{" "}
-                <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>.
+              <h2 className="text-base font-bold text-white">
+                Manage Your Assistant Agents (4 Manual + 1 Automatic)
+              </h2>
+              <p className="text-xs text-slate-400">
+                <strong className="text-white">5 Agents</strong> for Current Affairs: <strong className="text-emerald-300">4 Manual Orchestrator Agents</strong> (managed below) and <strong className="text-amber-300">1 Autonomous Sub-Agent</strong>
               </p>
+            </div>
+          </div>
 
-              {/* Short Model Failure / Diagnostic Banner for Admin */}
-              {(scheduler?.lastErrorReason || lastAgentErrorShort) && (
-                <div className="rounded-lg border border-rose-500/50 bg-rose-950/40 px-3 py-2 text-xs text-rose-200 flex flex-wrap items-center justify-between gap-2">
-                  <div className="space-y-0.5">
-                    <div className="font-bold text-rose-300 flex items-center gap-1.5">
-                      <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                      Model / Agent Failure Reason
-                      {scheduler?.lastFailedDate ? ` (${scheduler.lastFailedDate})` : ""}:
-                    </div>
-                    <div className="text-[11px] text-rose-100 font-mono">
-                      {lastAgentErrorShort || scheduler?.lastErrorReason}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={agentBusy}
-                    onClick={() =>
-                      void handleRunAgentForDate(
-                        scheduler?.lastFailedDate || todayIso,
-                        false
-                      )
-                    }
-                    className="px-2.5 py-1 rounded bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+          {/* 5-Agent Inventory Summary Strip */}
+          <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 grid grid-cols-1 md:grid-cols-5 gap-2.5 text-xs">
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-emerald-500/30">
+              <div className="font-bold text-emerald-300">Agent 1: Daily Collector</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Auto-runs daily for Today, i.e., ({todayIso}) · Has Pause &amp; Manual Refresh button below.
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-sky-500/30">
+              <div className="font-bold text-sky-300">Agent 2: Batch Backfiller</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Fills continuous 10-day batches or all 30/31 days of any month with zero gaps.
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-amber-500/30">
+              <div className="font-bold text-amber-300">Agent 3: Month Classifier</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Groups topics into 10 WBPSC categories &amp; compiles Monthly PDF Capsules.
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-purple-500/30">
+              <div className="font-bold text-purple-300">Agent 4: Date Recovery</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Manual fallback if an automatic run ever fails on a specific past date.
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-700">
+              <div className="font-bold text-slate-200">Agent 5: Bilingual &amp; MCQ Generator</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                <span className="text-emerald-400 font-semibold">100% Automatic Internal Pipeline</span> — adds Static GK, Traps &amp; বাংলা অনুবাদ.
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* CARD 1: Daily Automatic Collection Scheduler */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Clock className="w-4 h-4" />
+                    1. Daily Collector Agent (12–14 Topics/Day)
+                  </span>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${scheduler?.enabled
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                        : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                      }`}
                   >
-                    Retry Now
-                  </button>
+                    {scheduler?.enabled ? "AUTO-RUN: ON (Everyday)" : "AUTO-RUN: PAUSED"}
+                  </span>
                 </div>
-              )}
 
-              {/* Missing Recent Days in Current Month Indicator (e.g. Nov 7, 8, 9, 10) */}
-              {scheduler?.missingRecentDates &&
-                scheduler.missingRecentDates.length > 0 && (
-                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <span className="font-bold text-amber-300">
-                        Pending Recent Days ({scheduler.missingRecentDates.length}):{" "}
-                      </span>
-                      <span className="font-mono text-[11px]">
-                        {scheduler.missingRecentDates.join(", ")}
-                      </span>
+                <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                  <strong className="text-white">What this does:</strong> Runs{" "}
+                  <strong>automatically every day</strong> and catches up missed recent days of the current month. Grounded on{" "}
+                  <span className="text-emerald-300">Google Search</span>,{" "}
+                  <span className="text-emerald-300">GKToday</span>,{" "}
+                  <span className="text-emerald-300">PIB</span>, and{" "}
+                  <span className="text-emerald-300">The Hindu</span>, it generates{" "}
+                  <strong>12 to 14 unique PSCWB exam topics</strong> (via 2 parallel batches of 8 + top-up pass) for{" "}
+                  <strong className="text-white">{formatReadableDate(todayIso, "en")}</strong>.
+                </p>
+
+                {/* Short Model Failure / Diagnostic Banner for Admin */}
+                {(scheduler?.lastErrorReason || lastAgentErrorShort) && (
+                  <div className="rounded-lg border border-rose-500/50 bg-rose-950/40 px-3 py-2 text-xs text-rose-200 flex flex-wrap items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <div className="font-bold text-rose-300 flex items-center gap-1.5">
+                        <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                        Model / Agent Failure Reason
+                        {scheduler?.lastFailedDate ? ` (${scheduler.lastFailedDate})` : ""}:
+                      </div>
+                      <div className="text-[11px] text-rose-100 font-mono">
+                        {lastAgentErrorShort || scheduler?.lastErrorReason}
+                      </div>
                     </div>
                     <button
                       type="button"
-                      disabled={backfillBusy}
+                      disabled={agentBusy}
                       onClick={() =>
-                        void handleAutoBackfillPastDays(
-                          todayIso.slice(0, 7),
-                          "days-1-10"
+                        void handleRunAgentForDate(
+                          scheduler?.lastFailedDate || todayIso,
+                          false
                         )
                       }
-                      className="px-2.5 py-1 rounded bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+                      className="px-2.5 py-1 rounded bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
                     >
-                      {backfillBusy ? "Backfilling..." : "Fill Missing Days Now"}
+                      Retry Now
                     </button>
                   </div>
                 )}
-            </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <button
-                type="button"
-                disabled={toggleSchedulerBusy}
-                onClick={() => void handleToggleAutoScheduler()}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
-              >
-                <Power className="w-3.5 h-3.5 text-emerald-400" />
-                {scheduler?.enabled ? "Pause Daily Auto-Run" : "Turn ON Daily Auto-Run"}
-              </button>
-
-              {(() => {
-                const todayCount = editionsByDate.get(todayIso)?.topics.length || 0;
-                const isTodayComplete = todayCount >= 12;
-                const todayRemaining = Math.max(0, 14 - todayCount);
-                return (
-                  <button
-                    type="button"
-                    disabled={agentBusy || isTodayComplete}
-                    onClick={() => void handleRunAgentForDate(todayIso)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
-                      isTodayComplete
-                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
-                        : "bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 cursor-pointer"
-                    }`}
-                  >
-                    {agentBusy ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        Collecting 12–14 Topics...
-                      </>
-                    ) : isTodayComplete ? (
-                      <>
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Today&apos;s {todayCount} Topics Complete
-                      </>
-                    ) : todayCount > 0 ? (
-                      <>
-                        <Play className="w-3.5 h-3.5" />
-                        Generate Remaining {todayRemaining} Topics ({todayCount} Stored)
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-3.5 h-3.5" />
-                        Collect Today&apos;s 12–14 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
-                      </>
-                    )}
-                  </button>
-                );
-              })()}
-            </div>
-          </div>
-
-          {/* CARD 2: Month-Wise Batch Historical Backfill Agent */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <CalendarIcon className="w-4 h-4" />
-                  2. Month-Wise Backfiller Agent
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
-                  Continously Updates Previous Days
-                </span>
+                {/* Missing Recent Days in Current Month Indicator (e.g. Nov 7, 8, 9, 10) */}
+                {scheduler?.missingRecentDates &&
+                  scheduler.missingRecentDates.length > 0 && (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="font-bold text-amber-300">
+                          Pending Recent Days ({scheduler.missingRecentDates.length}):{" "}
+                        </span>
+                        <span className="font-mono text-[11px]">
+                          {scheduler.missingRecentDates.join(", ")}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={backfillBusy}
+                        onClick={() =>
+                          void handleAutoBackfillPastDays(
+                            todayIso.slice(0, 7),
+                            "days-1-10"
+                          )
+                        }
+                        className="px-2.5 py-1 rounded bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
+                      >
+                        {backfillBusy ? "Backfilling..." : "Fill Missing Days Now"}
+                      </button>
+                    </div>
+                  )}
               </div>
 
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">How it works:</strong> Instead of shallow top-page scraping or repeating topics across dates, our crawler follows nested <code className="text-sky-300">&lt;a href&gt;</code> sub-pages on GKToday &amp; PYQArena alongside Google Search Grounding for that exact date, and passes all previously stored headlines into a strict <strong>3-Layer Anti-Duplication Filter</strong> so no two dates ever share the same Current Affairs topic!
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  disabled={toggleSchedulerBusy}
+                  onClick={() => void handleToggleAutoScheduler()}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg cursor-pointer"
+                >
+                  <Power className="w-3.5 h-3.5 text-emerald-400" />
+                  {scheduler?.enabled ? "Pause Daily Auto-Run" : "Turn ON Daily Auto-Run"}
+                </button>
+
+                {(() => {
+                  const todayCount = editionsByDate.get(todayIso)?.topics.length || 0;
+                  const isTodayComplete = todayCount >= 12;
+                  const todayRemaining = Math.max(0, 14 - todayCount);
+                  return (
+                    <button
+                      type="button"
+                      disabled={agentBusy || isTodayComplete}
+                      onClick={() => void handleRunAgentForDate(todayIso)}
+                      className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${isTodayComplete
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
+                          : "bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 cursor-pointer"
+                        }`}
+                    >
+                      {agentBusy ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Collecting 12–14 Topics...
+                        </>
+                      ) : isTodayComplete ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Today&apos;s {todayCount} Topics Complete
+                        </>
+                      ) : todayCount > 0 ? (
+                        <>
+                          <Play className="w-3.5 h-3.5" />
+                          Generate Remaining {todayRemaining} Topics ({todayCount} Stored)
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3.5 h-3.5" />
+                          Collect Today&apos;s 12–14 Topics ({formatReadableDate(todayIso, "en").replace(/\s*\(.*\)$/, "")})
+                        </>
+                      )}
+                    </button>
+                  );
+                })()}
+              </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <div className="flex flex-wrap items-center gap-2">
+            {/* CARD 2: Month-Wise Batch Historical Backfill Agent */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <CalendarIcon className="w-4 h-4" />
+                    2. Month-Wise Backfiller Agent
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                    Continously Updates Previous Days
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                  <strong className="text-white">How it works:</strong> Instead of shallow top-page scraping or repeating topics across dates, our crawler follows nested <code className="text-sky-300">&lt;a href&gt;</code> sub-pages on GKToday &amp; PYQArena alongside Google Search Grounding for that exact date, and passes all previously stored headlines into a strict <strong>3-Layer Anti-Duplication Filter</strong> so no two dates ever share the same Current Affairs topic!
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={backfillMonthKey}
+                    onChange={(e) => setBackfillMonthKey(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white cursor-pointer"
+                  >
+                    {availableMonthKeys.map((mk) => (
+                      <option key={mk} value={mk}>
+                        {formatReadableMonth(mk, lang)} ({mk})
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={backfillBatchRange}
+                    onChange={(e) =>
+                      setBackfillBatchRange(
+                        e.target.value as
+                        | "days-1-10"
+                        | "days-11-20"
+                        | "days-21-end"
+                        | "full-month"
+                      )
+                    }
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-sky-300 cursor-pointer"
+                  >
+                    <option value="full-month">Full Month (All 30/31 Days)</option>
+                    <option value="days-1-10">Batch 1: Days 01 – 10</option>
+                    <option value="days-11-20">Batch 2: Days 11 – 20</option>
+                    <option value="days-21-end">Batch 3: Days 21 – End of Month</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={backfillBusy}
+                  onClick={() => void handleAutoBackfillPastDays(backfillMonthKey, backfillBatchRange)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-sky-400 hover:bg-sky-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
+                >
+                  {backfillBusy ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Running Batch Backfill...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Run Batch Backfill
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* CARD 3: End-of-Month Category Classifier & Monthly PDF Agent */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Layers className="w-4 h-4" />
+                    3. Monthly Category Classifier &amp; Capsule Agent
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                    10 WBPSC Categories
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                  <strong className="text-white">What this does in simple words:</strong> Selects any past/current month, synthesizes high-probability PSCWB exam events (with extra weight on <em>West Bengal Special, Polity, Economy, Science, GI Tags, Sports &amp; Awards</em>), and organizes them into 10 subject buckets for the Monthly PDF Capsule.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
                 <select
-                  value={backfillMonthKey}
-                  onChange={(e) => setBackfillMonthKey(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white cursor-pointer"
+                  value={classifierSelectedMonth}
+                  onChange={(e) => setClassifierSelectedMonth(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-white cursor-pointer"
                 >
                   {availableMonthKeys.map((mk) => (
                     <option key={mk} value={mk}>
@@ -1973,187 +2042,114 @@ export default function DailyCurrentAffairsTab({
                   ))}
                 </select>
 
-                <select
-                  value={backfillBatchRange}
-                  onChange={(e) =>
-                    setBackfillBatchRange(
-                      e.target.value as
-                        | "days-1-10"
-                        | "days-11-20"
-                        | "days-21-end"
-                        | "full-month"
-                    )
-                  }
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-sky-300 cursor-pointer"
+                <button
+                  type="button"
+                  disabled={classifierBusyMonth !== null}
+                  onClick={() => void handleRunMonthlyClassifierAgent(classifierSelectedMonth)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
                 >
-                  <option value="full-month">Full Month (All 30/31 Days)</option>
-                  <option value="days-1-10">Batch 1: Days 01 – 10</option>
-                  <option value="days-11-20">Batch 2: Days 11 – 20</option>
-                  <option value="days-21-end">Batch 3: Days 21 – End of Month</option>
-                </select>
+                  {classifierBusyMonth === classifierSelectedMonth ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Classifying {formatReadableMonth(classifierSelectedMonth, "en")}...
+                    </>
+                  ) : (
+                    <>
+                      <Bot className="w-3.5 h-3.5" />
+                      Build 12-Topic Monthly Capsule
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* CARD 4: Specific Past Date Manual Recovery Agent (With Future-Date Lock) */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <HelpCircle className="w-4 h-4" />
+                    4. Single-Date Manual Recovery Agent (Fallback)
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                    Manual Retry · Future Locked
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
+                  <strong className="text-white">When to use this manual option:</strong> If an automatic collection ever fails for a specific date or you want to re-generate a particular date with fresh PSCWB topics (for example, <em>27 October 2026</em> or <em>15 September 2026</em>), pick that date here or inside the Calendar Modal and click Collect.
+                </p>
               </div>
 
-              <button
-                type="button"
-                disabled={backfillBusy}
-                onClick={() => void handleAutoBackfillPastDays(backfillMonthKey, backfillBatchRange)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-sky-400 hover:bg-sky-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-              >
-                {backfillBusy ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Running Batch Backfill...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5" />
-                    Run Batch Backfill
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                <input
+                  type="date"
+                  max={todayIso}
+                  value={agentEditionDate}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setAgentEditionDate(val > todayIso ? todayIso : val);
+                  }}
+                  className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+                />
 
-          {/* CARD 3: End-of-Month Category Classifier & Monthly PDF Agent */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Layers className="w-4 h-4" />
-                  3. Monthly Category Classifier &amp; Capsule Agent
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                  10 WBPSC Categories
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">What this does in simple words:</strong> Selects any past/current month, synthesizes high-probability PSCWB exam events (with extra weight on <em>West Bengal Special, Polity, Economy, Science, GI Tags, Sports &amp; Awards</em>), and organizes them into 10 subject buckets for the Monthly PDF Capsule.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <select
-                value={classifierSelectedMonth}
-                onChange={(e) => setClassifierSelectedMonth(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-bold text-white cursor-pointer"
-              >
-                {availableMonthKeys.map((mk) => (
-                  <option key={mk} value={mk}>
-                    {formatReadableMonth(mk, lang)} ({mk})
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                disabled={classifierBusyMonth !== null}
-                onClick={() => void handleRunMonthlyClassifierAgent(classifierSelectedMonth)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 rounded-lg cursor-pointer"
-              >
-                {classifierBusyMonth === classifierSelectedMonth ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Classifying {formatReadableMonth(classifierSelectedMonth, "en")}...
-                  </>
-                ) : (
-                  <>
-                    <Bot className="w-3.5 h-3.5" />
-                    Build 12-Topic Monthly Capsule
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* CARD 4: Specific Past Date Manual Recovery Agent (With Future-Date Lock) */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <HelpCircle className="w-4 h-4" />
-                  4. Single-Date Manual Recovery Agent (Fallback)
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                  Manual Retry · Future Locked
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/90 border border-slate-800/80 rounded-lg p-3">
-                <strong className="text-white">When to use this manual option:</strong> If an automatic collection ever fails for a specific date or you want to re-generate a particular date with fresh PSCWB topics (for example, <em>27 October 2026</em> or <em>15 September 2026</em>), pick that date here or inside the Calendar Modal and click Collect.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-              <input
-                type="date"
-                max={todayIso}
-                value={agentEditionDate}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setAgentEditionDate(val > todayIso ? todayIso : val);
-                }}
-                className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
-              />
-
-              {(() => {
-                const pickedCount = editionsByDate.get(agentEditionDate)?.topics.length || 0;
-                const isPickedComplete = pickedCount >= 12;
-                const pickedRemaining = Math.max(0, 14 - pickedCount);
-                return (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={agentBusy || isPickedComplete}
-                      onClick={() => void handleRunAgentForDate(agentEditionDate, false)}
-                      className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${
-                        isPickedComplete
-                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
-                          : "bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 cursor-pointer"
-                      }`}
-                    >
-                      {agentBusy ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          Grounding 12–14 Topics...
-                        </>
-                      ) : isPickedComplete ? (
-                        <>
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          {pickedCount} Topics Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
-                        </>
-                      ) : pickedCount > 0 ? (
-                        <>
-                          <Bot className="w-3.5 h-3.5" />
-                          Ground Remaining {pickedRemaining} Topics ({pickedCount} Stored)
-                        </>
-                      ) : (
-                        <>
-                          <Bot className="w-3.5 h-3.5" />
-                          Ground 12–14 Topics via Google Search ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
-                        </>
-                      )}
-                    </button>
-
-                    {pickedCount > 0 && (
+                {(() => {
+                  const pickedCount = editionsByDate.get(agentEditionDate)?.topics.length || 0;
+                  const isPickedComplete = pickedCount >= 12;
+                  const pickedRemaining = Math.max(0, 14 - pickedCount);
+                  return (
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        disabled={agentBusy}
-                        onClick={() => void handleRunAgentForDate(agentEditionDate, true)}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/50 text-sky-200 disabled:opacity-50 cursor-pointer"
-                        title="Discard non-custom cards on this date and re-ground 12–14 topics live from Google Search"
+                        disabled={agentBusy || isPickedComplete}
+                        onClick={() => void handleRunAgentForDate(agentEditionDate, false)}
+                        className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg ${isPickedComplete
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-not-allowed"
+                            : "bg-purple-400 hover:bg-purple-300 disabled:opacity-50 text-slate-950 cursor-pointer"
+                          }`}
                       >
-                        <RefreshCw className={`w-3.5 h-3.5 ${agentBusy ? "animate-spin" : ""}`} />
-                        Force Re-Ground (12–14 Topics)
+                        {agentBusy ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            Grounding 12–14 Topics...
+                          </>
+                        ) : isPickedComplete ? (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            {pickedCount} Topics Stored ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                          </>
+                        ) : pickedCount > 0 ? (
+                          <>
+                            <Bot className="w-3.5 h-3.5" />
+                            Ground Remaining {pickedRemaining} Topics ({pickedCount} Stored)
+                          </>
+                        ) : (
+                          <>
+                            <Bot className="w-3.5 h-3.5" />
+                            Ground 12–14 Topics via Google Search ({formatReadableDate(agentEditionDate, "en").replace(/\s*\(.*\)$/, "")})
+                          </>
+                        )}
                       </button>
-                    )}
-                  </div>
-                );
-              })()}
+
+                      {pickedCount > 0 && (
+                        <button
+                          type="button"
+                          disabled={agentBusy}
+                          onClick={() => void handleRunAgentForDate(agentEditionDate, true)}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/50 text-sky-200 disabled:opacity-50 cursor-pointer"
+                          title="Discard non-custom cards on this date and re-ground 12–14 topics live from Google Search"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${agentBusy ? "animate-spin" : ""}`} />
+                          Force Re-Ground (12–14 Topics)
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
           </div>
         </div>
-      </div>
       )}
 
       {/* ====================================================================
@@ -2308,11 +2304,10 @@ export default function DailyCurrentAffairsTab({
                       key={sc.id}
                       type="button"
                       onClick={() => setUploadScopeType(sc.id)}
-                      className={`py-1.5 px-2.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
-                        uploadScopeType === sc.id
+                      className={`py-1.5 px-2.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${uploadScopeType === sc.id
                           ? "bg-sky-500 text-slate-950 border-sky-400"
                           : "bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700"
-                      }`}
+                        }`}
                     >
                       {sc.label}
                     </button>
@@ -2389,11 +2384,10 @@ export default function DailyCurrentAffairsTab({
                                 : [...prev, mk]
                             )
                           }
-                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
-                            active
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${active
                               ? "bg-emerald-500/25 border-emerald-500/60 text-emerald-200"
                               : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
-                          }`}
+                            }`}
                         >
                           {formatReadableMonth(mk, "en")}
                         </button>
@@ -2487,11 +2481,10 @@ export default function DailyCurrentAffairsTab({
                               : [...prev, tag]
                           )
                         }
-                        className={`px-2 py-0.5 rounded border cursor-pointer ${
-                          active
+                        className={`px-2 py-0.5 rounded border cursor-pointer ${active
                             ? "bg-amber-500/20 border-amber-500/50 text-amber-200 font-semibold"
                             : "bg-slate-900 border-slate-800 text-slate-400"
-                        }`}
+                          }`}
                       >
                         {tag}
                       </button>
@@ -2621,13 +2614,12 @@ export default function DailyCurrentAffairsTab({
                         <div className="space-y-1 flex-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
                             <span
-                              className={`px-2 py-0.5 rounded font-bold ${
-                                doc.fileFormat === "PDF"
+                              className={`px-2 py-0.5 rounded font-bold ${doc.fileFormat === "PDF"
                                   ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
                                   : doc.fileFormat === "WORD"
                                     ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
                                     : "bg-purple-500/20 text-purple-300 border border-purple-500/40"
-                              }`}
+                                }`}
                             >
                               {doc.fileFormat === "IMAGE" ? (
                                 <span className="inline-flex items-center gap-1">
@@ -2823,11 +2815,10 @@ export default function DailyCurrentAffairsTab({
 
                 {quizSubmitted && (
                   <div
-                    className={`p-2.5 rounded-lg border text-xs leading-relaxed ${
-                      isCorrect
+                    className={`p-2.5 rounded-lg border text-xs leading-relaxed ${isCorrect
                         ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-200"
                         : "bg-slate-900 border-slate-800 text-slate-300"
-                    }`}
+                      }`}
                   >
                     <strong className="text-emerald-300">
                       Answer ({mcq.correctOption}):{" "}
@@ -2934,11 +2925,10 @@ export default function DailyCurrentAffairsTab({
                 <button
                   type="button"
                   onClick={() => setShowModalCalendar((prev) => !prev)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold cursor-pointer border transition-colors ${
-                    showModalCalendar
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold cursor-pointer border transition-colors ${showModalCalendar
                       ? "bg-amber-400 text-slate-950 border-amber-300 lg:bg-slate-800 lg:text-slate-200 lg:border-slate-700"
                       : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
-                  }`}
+                    }`}
                 >
                   <CalendarIcon className="w-3.5 h-3.5 text-emerald-400 lg:text-emerald-400" />
                   <span>{showModalCalendar ? "Close Calendar" : "Calendar"}</span>
@@ -3036,11 +3026,10 @@ export default function DailyCurrentAffairsTab({
                           setShowModalCalendar(false);
                         }
                       }}
-                      className={`w-full py-2 px-3 rounded-lg text-xs font-bold border transition-all flex items-center justify-between cursor-pointer ${
-                        modalDateFilter === "all"
+                      className={`w-full py-2 px-3 rounded-lg text-xs font-bold border transition-all flex items-center justify-between cursor-pointer ${modalDateFilter === "all"
                           ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm"
                           : "bg-slate-900 text-slate-200 border-slate-800 hover:border-slate-700"
-                      }`}
+                        }`}
                     >
                       <span>All Stored Dates in {formatReadableMonth(modalMonthKey, "en")}</span>
                       <span className="font-mono text-[11px]">
@@ -3089,15 +3078,14 @@ export default function DailyCurrentAffairsTab({
                                       ? `${formatReadableDate(cell.dateStr, "en")}: Click to collect topics for this date`
                                       : `${formatReadableDate(cell.dateStr, "en")}: No Current Affairs published for this date`
                               }
-                              className={`h-7 rounded-md text-[11px] font-mono transition-all flex flex-col items-center justify-center relative ${
-                                isFutureDate
+                              className={`h-7 rounded-md text-[11px] font-mono transition-all flex flex-col items-center justify-center relative ${isFutureDate
                                   ? "opacity-25 cursor-not-allowed bg-slate-950 text-slate-600"
                                   : isSelectedSingleDate
                                     ? "bg-amber-400 text-slate-950 font-bold shadow-sm cursor-pointer"
                                     : matchingEdition
                                       ? "bg-emerald-500/25 border border-emerald-500/60 text-emerald-200 font-bold hover:bg-emerald-500/40 cursor-pointer"
                                       : "bg-slate-950/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200 cursor-pointer"
-                              }`}
+                                }`}
                             >
                               <span>{cell.dayNumber}</span>
                               {matchingEdition && !isSelectedSingleDate && (
@@ -3149,11 +3137,10 @@ export default function DailyCurrentAffairsTab({
                       {storedEditionsInModalMonth.map((ed) => (
                         <div
                           key={ed.id}
-                          className={`w-full px-3 py-2 rounded-lg border text-xs transition-all flex items-center justify-between gap-2 ${
-                            modalDateFilter === ed.editionDate
+                          className={`w-full px-3 py-2 rounded-lg border text-xs transition-all flex items-center justify-between gap-2 ${modalDateFilter === ed.editionDate
                               ? "bg-amber-400/20 border-amber-400/60 text-amber-200 font-bold"
                               : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
-                          }`}
+                            }`}
                         >
                           <button
                             type="button"
@@ -3222,11 +3209,10 @@ export default function DailyCurrentAffairsTab({
 
               {/* RIGHT AREA INSIDE MODAL: Animated Flashcard Content + Page-Wise Delete + Date Upload */}
               <div
-                className={`${
-                  showModalCalendar
+                className={`${showModalCalendar
                     ? "hidden lg:flex lg:col-span-8"
                     : "flex lg:col-span-12"
-                } flex-1 min-h-0 flex-col overflow-hidden`}
+                  } flex-1 min-h-0 flex-col overflow-hidden`}
               >
                 {/* INLINE ADMIN UPLOAD CA + QUESTION PANEL FOR THIS PARTICULAR DATE */}
                 {isAdmin && showModalDateUpload && (() => {
@@ -3483,14 +3469,13 @@ export default function DailyCurrentAffairsTab({
                             <Trash2 className="w-3 h-3" />
                             {pageDeleteBusy
                               ? "Deleting..."
-                              : `Delete Selected Page(s) (${
-                                  selectedPagesToDelete.length > 0
-                                    ? selectedPagesToDelete
-                                        .sort((a, b) => a - b)
-                                        .map((p) => `#${p}`)
-                                        .join(", ")
-                                    : "0"
-                                })`}
+                              : `Delete Selected Page(s) (${selectedPagesToDelete.length > 0
+                                ? selectedPagesToDelete
+                                  .sort((a, b) => a - b)
+                                  .map((p) => `#${p}`)
+                                  .join(", ")
+                                : "0"
+                              })`}
                           </button>
                           <button
                             type="button"
@@ -3521,11 +3506,10 @@ export default function DailyCurrentAffairsTab({
                                 )
                               }
                               title={`Page ${pNum}: ${t.headlineEn}`}
-                              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                                isChecked
+                              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${isChecked
                                   ? "bg-rose-500 text-slate-950 border-rose-300"
                                   : "bg-slate-900 text-slate-200 border-slate-700 hover:border-rose-400"
-                              }`}
+                                }`}
                             >
                               <span>Page {pNum}</span>
                               <span className="text-[10px] font-sans font-normal opacity-85 max-w-[120px] truncate">
@@ -3771,11 +3755,10 @@ export default function DailyCurrentAffairsTab({
                             key={`${c.topic.id}-${idx}`}
                             type="button"
                             onClick={() => setFloatingCardIdx(idx)}
-                            className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer shrink-0 ${
-                              idx === floatingCardIdx
+                            className={`w-6 h-6 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer shrink-0 ${idx === floatingCardIdx
                                 ? "bg-emerald-500 text-slate-950 scale-105"
                                 : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
-                            }`}
+                              }`}
                             title={`Page ${c.pageNumberInDate} (${formatReadableDate(c.editionDate, "en")}): ${c.topic.headlineEn}`}
                           >
                             {idx + 1}
