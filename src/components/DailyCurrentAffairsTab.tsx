@@ -1156,6 +1156,16 @@ export default function DailyCurrentAffairsTab({
             chunksCount: number;
             fileFormat: string;
             scopeLabel: string;
+            embeddingModel?: string;
+            embeddingDims?: number;
+            chunksPreview?: Array<{
+              chunkIndex: number;
+              category: string;
+              headlineEn: string;
+              chars: number;
+              factsCount: number;
+              dims: number;
+            }>;
           }>("/current-affairs/vector-store/upload", {
             method: "POST",
             body: {
@@ -1175,6 +1185,11 @@ export default function DailyCurrentAffairsTab({
               extractedTextHint: uploadTextHint,
             },
           });
+          console.groupCollapsed(
+            `[VectorDB:STORE] ${res.title} (${res.chunksCount} chunks · ${res.embeddingModel || "gemini-embedding-2"} · ${res.embeddingDims || 128}d)`
+          );
+          if (res.chunksPreview?.length) console.table(res.chunksPreview);
+          console.groupEnd();
           uploadedDocsCount += 1;
           totalChunksCreated += res.chunksCount;
         }
@@ -1185,6 +1200,16 @@ export default function DailyCurrentAffairsTab({
           chunksCount: number;
           fileFormat: string;
           scopeLabel: string;
+          embeddingModel?: string;
+          embeddingDims?: number;
+          chunksPreview?: Array<{
+            chunkIndex: number;
+            category: string;
+            headlineEn: string;
+            chars: number;
+            factsCount: number;
+            dims: number;
+          }>;
         }>("/current-affairs/vector-store/upload", {
           method: "POST",
           body: {
@@ -1203,6 +1228,11 @@ export default function DailyCurrentAffairsTab({
             extractedTextHint: uploadTextHint,
           },
         });
+        console.groupCollapsed(
+          `[VectorDB:STORE] ${res.title} (${res.chunksCount} chunks · ${res.embeddingModel || "gemini-embedding-2"} · ${res.embeddingDims || 128}d)`
+        );
+        if (res.chunksPreview?.length) console.table(res.chunksPreview);
+        console.groupEnd();
         uploadedDocsCount = 1;
         totalChunksCreated = res.chunksCount;
       }
@@ -1213,7 +1243,7 @@ export default function DailyCurrentAffairsTab({
       await loadVectorStore();
       onNotify?.(
         "success",
-        `Indexed ${uploadedDocsCount} resource(s) (${totalChunksCreated} bilingual vector chunks) into Vector DB via gemini-embedding-2-preview!`
+        `Indexed ${uploadedDocsCount} resource(s) (${totalChunksCreated} bilingual vector chunks) into Vector DB!`
       );
     } catch (err) {
       onError(err, "Failed to upload & index Current Affairs document into Vector DB.");
@@ -1228,7 +1258,13 @@ export default function DailyCurrentAffairsTab({
     try {
       const res = await api<{
         query: string;
-        results: CaVectorChunkDto[];
+        embeddingModel?: string;
+        scannedChunksCount?: number;
+        results: Array<
+          CaVectorChunkDto & {
+            debugScores?: { rawCosine: number; kwBoost: number; finalScore: number };
+          }
+        >;
       }>("/current-affairs/vector-store/search", {
         method: "POST",
         body: {
@@ -1238,7 +1274,23 @@ export default function DailyCurrentAffairsTab({
           topK: 10,
         },
       });
-      setVectorSearchResults(res.results || []);
+      const rows = res.results || [];
+      console.groupCollapsed(
+        `[VectorDB:SEARCH] "${res.query}" | model=${res.embeddingModel || "gemini-embedding-2"} | scanned=${res.scannedChunksCount ?? rows.length} | topK=${rows.length}`
+      );
+      console.table(
+        rows.map((r, idx) => ({
+          rank: idx + 1,
+          category: r.category,
+          headline: r.headlineEn.slice(0, 60),
+          rawCosine: r.debugScores?.rawCosine ?? r.similarityScore,
+          kwBoost: r.debugScores?.kwBoost ?? 0,
+          finalScore: r.similarityScore,
+          scope: r.scopeLabel,
+        }))
+      );
+      console.groupEnd();
+      setVectorSearchResults(rows);
     } catch (err) {
       onError(err, "Vector DB semantic search failed.");
     } finally {
