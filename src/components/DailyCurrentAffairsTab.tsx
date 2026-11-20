@@ -1697,12 +1697,11 @@ export default function DailyCurrentAffairsTab({
                   WBPSC Exam-Ready Current Affairs Capsule
                 </span>
               )}
-              <span className="text-slate-400 font-mono">
-                Present Date (Today):{" "}
+              <span className="text-slate-400 font-mono">                
                 <strong className="text-white">{formatReadableDate(todayIso, lang)}</strong>
                 {todayEdition ? (
                   <span className="ml-2 text-emerald-400 font-semibold">
-                    ({todayEdition.topics.length}/12 Topics Stored)
+                    ({todayEdition.topics.length} Topics Stored Today)
                   </span>
                 ) : null}
               </span>
@@ -1710,14 +1709,9 @@ export default function DailyCurrentAffairsTab({
 
             <h1 className="text-xl font-bold text-white">
               {lang === "bn"
-                ? "কারেন্ট অ্যাফেয়ার্স আর্কাইভ (নভেম্বর ২০২৫ – নভেম্বর ২০২৬)"
-                : "Daily & Previous 1-Year Current Affairs Archive (Nov 2025 – Nov 2026)"}
-            </h1>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              {lang === "bn"
-                ? "যেকোনো মাসের কার্ডে ক্লিক করলে সেই মাসের সম্পূর্ণ কারেন্ট অ্যাফেয়ার্স ফ্লোটিং অ্যানিমেটেড কার্ড মোডালে খুলে যাবে। মোডালের ভেতরে থাকা ক্যালেন্ডার থেকে আপনি নির্দিষ্ট যেকোনো তারিখের কারেন্ট অ্যাফেয়ার্সও দেখতে পারবেন।"
-                : "Click any Month Card below to open that entire month's Current Affairs inside the Floating Animated Card Deck Modal. Inside the modal, use the built-in Calendar to view all dates of that month or pick any specific date."}
-            </p>
+                ? "কারেন্ট অ্যাফেয়ার্স (December ২০২৫ – December ২০২৬)"
+                : "Daily & Last 1-Year Current Affairs (Dec 2025 – Dec 2026)"}
+            </h1>      
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
@@ -1733,7 +1727,7 @@ export default function DailyCurrentAffairsTab({
               className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-md"
             >
               <Maximize2 className="w-4 h-4" />
-              Open Today&apos;s Floating Card Deck ({todayIso})
+              View Today&apos;s ({todayIso}) Current Affairs 
             </button>
 
             {/* Button 2: Download Full 1-Year Categorized Clerkship Mega-Capsule PDF */}
@@ -1749,7 +1743,7 @@ export default function DailyCurrentAffairsTab({
               className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl transition-colors cursor-pointer shadow-sm"
             >
               <FileDown className="w-4 h-4" />
-              Download Categorized PDF ({monthsArchive.length} Months)
+              Download Last 1-Year PDF ({monthsArchive.length} Months)
             </button>
           </div>
         </div>
@@ -1759,11 +1753,11 @@ export default function DailyCurrentAffairsTab({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 pt-1">
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Current &amp; Past 1-Year Archive (No Future Dates)</span>
+                <span>Total Months Available</span>
                 <CalendarIcon className="w-4 h-4 text-emerald-400" />
               </div>
               <div className="text-xl font-bold font-mono text-white">
-                {monthsArchive.length} Months Ready
+                {monthsArchive.length} Months
               </div>
               <div className="text-[11px] text-slate-400">
                 <span className="text-emerald-400 font-semibold">
@@ -1776,29 +1770,27 @@ export default function DailyCurrentAffairsTab({
 
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Classified Exam Topics</span>
+                <span>Exam Topics</span>
                 <Layers className="w-4 h-4 text-sky-400" />
               </div>
               <div className="text-xl font-bold font-mono text-sky-300">
-                {stats.totalTopicsCount} Exam Topics
+                {stats.totalTopicsCount} 
               </div>
               <div className="text-[11px] text-slate-400">
-                <span>{stats.totalExamPointersCount} Bullet Pointers</span>
-                <span aria-hidden="true"> · </span>
-                <span className="text-sky-400">10 WBPSC Categories</span>
+                <span className="text-sky-400">{stats.totalExamPointersCount} Bullet Pointers</span>                             
               </div>
             </div>
 
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>{isAdmin ? "Daily Auto-Collector Status" : "PYQ-Pattern Practice MCQs"}</span>
+                <span>{isAdmin ? "Current Affairs Collection" : "CA Practice MCQs"}</span>
                 <Clock className="w-4 h-4 text-amber-400" />
               </div>
               <div className="text-xl font-bold font-mono text-amber-300">
-                {isAdmin ? "12 Topics / Day" : `${stats.totalMcqsCount} Practice MCQs`}
+                {isAdmin ? "15 Topics / Day" : `${stats.totalMcqsCount} Practice MCQs`}
               </div>
               <div className="text-[11px] text-slate-400">
-                <span>Latest Edition: </span>
+                <span>Latest Collection on: </span>
                 <span className="text-emerald-300 font-semibold">
                   {formatReadableDate(stats.latestDate || todayIso, "en")}
                 </span>
@@ -1807,14 +1799,14 @@ export default function DailyCurrentAffairsTab({
 
             <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Grounded Sources &amp; Downloads</span>
+                <span>Sources &amp; Downloads</span>
                 <Download className="w-4 h-4 text-purple-400" />
               </div>
               <div className="text-xl font-bold font-mono text-white">
                 {stats.totalDownloadsCount} PDF Downloads
               </div>
               <div className="text-[11px] text-purple-300">
-                GKToday · PYQArena (The Hindu) · PIB
+                International · National · West Bengal
               </div>
             </div>
           </div>
@@ -1832,13 +1824,9 @@ export default function DailyCurrentAffairsTab({
             <h2 className="text-base font-bold text-white flex items-center gap-2">
               <CalendarIcon className="w-4 h-4 text-emerald-400" />
               {lang === "bn"
-                ? `মাসিক কারেন্ট অ্যাফেয়ার্স ক্যাপসুল (${monthsArchive.length} মাস: নভেম্বর ২০২৫ – নভেম্বর ২০২৬)`
-                : `Current & Previous 1-Year Current Affairs by Month (${monthsArchive.length} Months: Nov 2025 – Nov 2026)`}
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              <strong>Click on any Month Card below</strong> to open that whole month&apos;s Current Affairs in the{" "}
-              <span className="text-amber-300 font-semibold">Floating Animated Card Modal</span>. Inside the modal, you can view the entire month or pick any individual date on the calendar.
-            </p>
+                ? `মাসিক কারেন্ট অ্যাফেয়ার্স (${monthsArchive.length} মাস: নভেম্বর ২০২৫ – নভেম্বর ২০২৬)`
+                : `Monthly Current Affairs (${monthsArchive.length} Months: Nov 2025 – Nov 2026)`}
+            </h2>            
           </div>
         </div>
 
@@ -1970,10 +1958,10 @@ export default function DailyCurrentAffairsTab({
                 Current Affairs Management Console
               </div>
               <h2 className="text-base sm:text-lg font-bold text-white">
-                Manage Your Assistant Agents (Click Any Card to Open Controls)
+                Manage Agents
               </h2>
               <p className="text-xs text-slate-400">
-                Select any agent card below to configure, run, or check status in a clean popup modal.
+                Select any card below to manage agents.
               </p>
             </div>
 
