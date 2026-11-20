@@ -3849,16 +3849,16 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     ...crawled.crawledUrls,
   ]);
 
-  let searchModelUsed = "gemini-2.5-flash";
+  let searchModelUsed = "gemini-3.8-flash";
   let lastGeminiError = "";
 
   try {
     const searchTargetCount = Math.max(20, missingCount + 6);
-    const searchPrompt = `You are the Senior Competitive-Exam Current Affairs Chief Editor for WBCS (Executive) Prelims/Mains & WBPSC Clerkship / Miscellaneous Exams.
-Use Google Search right now to research ${searchTargetCount} strictly EXAM-ORIENTED, high-yield National, International, and West Bengal Current Affairs items for Target Edition: ${dayInt} ${monthNameEn} ${yStr}${isTodayEdition ? " (Today's Edition)" : ""}.
+    const searchPrompt = `You are the Senior Competitive-Exam Current Affairs Chief Editor for WBCS (Executive) Prelims/Mains, WBPSC Clerkship / Miscellaneous Exams, Industrial Development Officer Exams, Fire Operator Exams in WBPSC, West Bengal.
+Use Google Search right now to research ${searchTargetCount} strictly EXAM-ORIENTED, high-yield National, International, and West Bengal Current Affairs items for Target Edition: ${dayInt} ${monthNameEn} ${yStr}${isTodayEdition ? " (Today's Edition)" : ""} that covers also state level schemes, projects, and also covering topics like sports, awards, discovery, science, and friction, GI tags, inventions, discoveries, book publishing.
 
 Execute targeted Google Search queries for authoritative GK & official portals (avoiding job/vacancy blogs):
-1. "GKToday daily current affairs ${dayInt} ${monthNameEn} ${yStr} -recruitment -vacancy -admit"
+1. "GKToday daily current affairs ${dayInt} ${monthNameEn} ${yStr} - recruitment -vacancy -holiday -schools"
 2. "AffairsCloud PIB The Hindu current affairs ${monthNameEn} ${yStr} national international economy polity"
 3. "Press Information Bureau PIB India cabinet approvals schemes MoUs defence ISRO ${monthNameEn} ${yStr}"
 4. "West Bengal government official schemes GI tag infrastructure awards summit ${monthNameEn} ${yStr} -recruitment -vacancy -holiday -schools"
@@ -3870,7 +3870,7 @@ ${crawled.combinedSnippet ? `Additional Crawled Portal Snippets:\n${crawled.comb
 STRICT EXAM-RELEVANCE FILTER — ABSOLUTELY FORBIDDEN TOPICS (NEVER INCLUDE THESE):
 - NEVER include job recruitment notifications, vacancies, online applications, exam dates, admit cards, answer keys, results, or cut-offs (e.g., NO "IDO recruitment", NO "PSC/SSC/Bank recruitment", NO "Clerkship notification").
 - NEVER include school/college holiday closures (e.g., NO "schools closed for puja/festival"), local traffic/weather alerts, routine local festivals without a new national/UNESCO/GI recognition, crime/accidents, or partisan political rally speeches.
-- ONLY select topics that appear as General Studies / Current Affairs questions in UPSC, WBCS Prelims/Mains, and WBPSC Clerkship:
+- ONLY select topics that appear as General Studies / Current Affairs questions in UPSC, WBCS Prelims/Mains, WBPSC Clerkship, Industrial Development Officer Exams, and Fire Operator Exams in WBPSC, West Bengal:
   • Union & State Government Schemes, Policies, Cabinet Approvals & Nodal Ministries
   • Constitutional Amendments, Parliamentary Bills, Supreme Court / High Court Landmark Judgments & Appointments (CJI, CEC, CAG, Governors, Heads of RBI/SEBI/ISRO/DRDO)
   • Economy, RBI Monetary Policy, GDP Forecasts, World Bank/IMF/ADB Loans, Banking & Trade Data
