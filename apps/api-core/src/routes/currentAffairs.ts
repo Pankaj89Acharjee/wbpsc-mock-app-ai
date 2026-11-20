@@ -91,25 +91,62 @@ function getGenAIClient(): GoogleGenAI {
   });
 }
 
-const GEMINI_FLASH_MODELS = Array.from(
-  new Set([
-    process.env.GEMINI_PRIMARY_MODEL || "gemini-2.5-flash",
-    "gemini-2.5-flash",
-    "gemini-3-flash-preview",
-  ])
-);
+export type ModelTier = "fast" | "balanced" | "deep";
+
+/**
+ * Task-based Gemini model router:
+ * - "fast": lightweight classification, chunking, formatting (Flash Lite -> Hydrogen -> 2.5 Flash)
+ * - "balanced": Google Search grounding, bilingual extraction & summaries (Hydrogen -> 2.5 Flash)
+ * - "deep": complex reasoning / deep document understanding (optional GEMINI_DEEP_MODEL -> Hydrogen -> 2.5 Flash)
+ */
+const GEMINI_MODEL_TIERS: Record<ModelTier, string[]> = {
+  fast: Array.from(
+    new Set([
+      process.env.GEMINI_FAST_MODEL || "gemini-3.1-flash-lite",
+      "gemini-4-hydrogen",
+      "gemini-2.5-flash",
+    ])
+  ),
+  balanced: Array.from(
+    new Set([
+      process.env.GEMINI_PRIMARY_MODEL || "gemini-4-hydrogen",
+      "gemini-2.5-flash",
+    ])
+  ),
+  deep: Array.from(
+    new Set([
+      ...(process.env.GEMINI_DEEP_MODEL ? [process.env.GEMINI_DEEP_MODEL] : []),
+      process.env.GEMINI_PRIMARY_MODEL || "gemini-4-hydrogen",
+      "gemini-2.5-flash",
+    ])
+  ),
+};
+
+const DEBUG_VECTOR_DB = process.env.DEBUG_VECTOR_DB !== "false";
+
+function logVectorDebug(stage: "CHUNK" | "DEDUP" | "STORE" | "SEARCH", summary: string, rows?: unknown): void {
+  if (!DEBUG_VECTOR_DB) return;
+  console.log(`\n[VectorDB:${stage}] ${summary}`);
+  if (Array.isArray(rows) && rows.length > 0) {
+    console.table(rows);
+  } else if (rows && typeof rows === "object") {
+    console.log(rows);
+  }
+}
 
 async function generateContentWithFallback(
   params: {
     contents: any;
     config?: any;
   },
-  timeoutMs: number = 42000
+  timeoutMs: number = 42000,
+  tier: ModelTier = "balanced"
 ): Promise<{ response: any; modelUsed: string }> {
   const ai = getGenAIClient();
+  const candidates = GEMINI_MODEL_TIERS[tier] || GEMINI_MODEL_TIERS.balanced;
   let lastError: unknown = null;
 
-  for (const modelName of GEMINI_FLASH_MODELS) {
+  for (const modelName of candidates) {
     try {
       const callPromise = ai.models.generateContent({
         model: modelName,
@@ -125,7 +162,7 @@ async function generateContentWithFallback(
       lastError = err;
     }
   }
-  throw lastError || new Error("All Gemini Flash models failed.");
+  throw lastError || new Error(`All Gemini models failed for tier "${tier}".`);
 }
 
 function safeParseJsonObject(rawText: string): Record<string, any> {
@@ -1621,309 +1658,6 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
 
   const todayIso = getTodayIso();
 
-  // Additional PSCWB-Specific High-Yield Topic Pool (WBCS, Clerkship, Miscellaneous, Food SI)
-  const pscwbSpecialPool: CaTopicItem[] = [
-    {
-      id: "pscwb-pool-1",
-      category: "West Bengal Special",
-      headlineEn: "Deocha Pachami Dewanganj-Harinsinga Coal Block (Birbhum) — India's Largest & World's 2nd Largest Coal Block",
-      headlineBn: "দেউচা পাঁচামি কয়লা খনি প্রকল্প (বীরভূম) — ভারতের বৃহত্তম এবং বিশ্বের দ্বিতীয় বৃহত্তম কয়লা খনি",
-      sourceTag: "WBIDCL · WBPSC Gazette Special",
-      whyInNewsEn: "West Bengal Industrial Development Corporation (WBIDCL) accelerated basalt mining and land rehabilitation at the Deocha Pachami coal block in Mohammad Bazar block of Birbhum district.",
-      whyInNewsBn: "বীরভূম জেলার মহম্মদবাজার ব্লকে অবস্থিত ভারতের বৃহত্তম কয়লা খনি 'দেউচা পাঁচামি' প্রকল্পে ব্যাসল্ট উত্তোলন ও পুনর্বাসন প্রক্রিয়া জোরদার হয়েছে।",
-      examPointsEn: [
-        "Located in Mohammad Bazar CD Block of Birbhum district (West Bengal); holds estimated reserves of ~2,102 million tonnes of coal and ~1,400 million cubic metres of black basalt.",
-        "Ranked as India's LARGEST and the world's SECOND-LARGEST coal block, allocated to West Bengal Power Development Corporation Limited (WBPDCL).",
-        "Raniganj Coalfield (Paschim Bardhaman) was the birthplace of coal mining in India (started in 1774 by Sumner and Heatly under Warren Hastings).",
-        "Damodar River Valley ('Ruhr of India') holds over 90% of West Bengal's Gondwana bituminous coal reserves.",
-      ],
-      examPointsBn: [
-        "বীরভূম জেলার মহম্মদবাজার ব্লকে অবস্থিত দেউচা পাঁচামি প্রকল্পে আনুমানিক ২,১০২ মিলিয়ন টন কয়লা এবং ১,৪০০ মিলিয়ন ঘনমিটার ব্যাসল্ট পাথরের ভাণ্ডার রয়েছে।",
-        "এটি ভারতের বৃহত্তম এবং বিশ্বের দ্বিতীয় বৃহত্তম কয়লা ব্লক (দায়িত্বে রয়েছে WBPDCL)।",
-        "পশ্চিম বর্ধমানের রাণীগঞ্জ কয়লাখনি অঞ্চলে ১৭৭৪ সালে ভারতের প্রথম কয়লা উত্তোলন শুরু হয়।",
-        "দামোদর উপত্যকাকে ('ভারতের রূঢ়') কেন্দ্র করে পশ্চিমবঙ্গের গন্ডোয়ানা যুগের বিটুমিনাস কয়লা সঞ্চিত রয়েছে।",
-      ],
-      staticGkLinkEn: "Anthracite is the highest-grade coal (85–95% carbon, found in Kalakot of J&K), whereas Gondwana coal in Raniganj & Jharia is Bituminous.",
-      staticGkLinkBn: "অ্যানথ্রাসাইট সর্বোৎকৃষ্ট কয়লা (৮৫–৯৫% কার্বন), আর রাণীগঞ্জ ও ঝরিয়ার কয়লা মূলত বিটুমিনাস শ্রেণির।",
-      examTrapEn: "Trap: Oldest coalfield in India = Raniganj (West Bengal); Largest coalfield by production = Jharia/Talcher; Largest single coal block = Deocha Pachami (Birbhum, WB).",
-      examTrapBn: "সতর্কতা: ভারতের প্রাচীনতম কয়লাখনি = রাণীগঞ্জ; বৃহত্তম একক কয়লা ব্লক = দেউচা পাঁচামি (বীরভূম)।",
-    },
-    {
-      id: "pscwb-pool-2",
-      category: "Environment & GI Tags",
-      headlineEn: "West Bengal GI Tags Master Revision: Tangail, Garad & Korial Sarees, Kalonunia Rice & Sundarban Honey",
-      headlineBn: "পশ্চিমবঙ্গের নতুন জিআই (GI) ট্যাগসমূহ: টাঙ্গাইল, গরদ ও কোরিয়াল শাড়ি, কালোনুনিয়া চাল এবং সুন্দরবনের মৌলি মধু",
-      sourceTag: "DPIIT GI Registry · PSCWB Special",
-      whyInNewsEn: "Five signature products of West Bengal — Tangail Saree, Garad Saree, Korial Saree, Kalonunia Rice ('Prince of Rice' of North Bengal), and Sundarban Honey ('Mouli' honey) — received official Geographical Indication (GI) tags.",
-      whyInNewsBn: "পশ্চিমবঙ্গের টাঙ্গাইল, গরদ ও কোরিয়াল শাড়ি, উত্তরবঙ্গের কালোনুনিয়া চাল এবং সুন্দরবনের প্রাকৃতিক মধু (মৌলি) নতুন জিআই (GI) স্বীকৃতি লাভ করেছে।",
-      examPointsEn: [
-        "Tangail Saree (Nadia & Purba Bardhaman — Phulia/Dhatrigram), Garad & Korial Sarees (Murshidabad & Birbhum silk weaving tradition) received GI registration for West Bengal.",
-        "Kalonunia Rice ('Prince of Rice'): Indigenous aromatic non-Basmati black-husked rice cultivated in Jalpaiguri, Cooch Behar, Alipurduar, and Darjeeling districts.",
-        "Sundarban Honey: Collected by traditional 'Moulis' from wild Apis dorsata (Rock Bee) hives in mangrove forests and processed by WBSFDA.",
-        "Darjeeling Tea was the FIRST product in India to receive a GI tag in 2004–05; other iconic WB GI tags include Banglar Rasogolla (2017), Gobindobhog & Tulaipanji Rice, Fazli/Himsagar/Lakshmanbhog Mangoes, Purulia Chau Mask, and Bankura Panchmura Terracotta.",
-      ],
-      examPointsBn: [
-        "নদিয়া ও পূর্ব বর্ধমানের (ফুলিয়া) টাঙ্গাইল শাড়ি এবং মুর্শিদাবাদ ও বীরভূমের গরদ ও কোরিয়াল রেশম শাড়ি পশ্চিমবঙ্গের নামে জিআই ট্যাগ পেয়েছে।",
-        "কালোনুনিয়া চাল ('প্রিন্স অব রাইস'): জলপাইগুড়ি, কোচবিহার ও আলিপুরদুয়ার জেলায় উৎপাদিত সুগন্ধি চাল।",
-        "সুন্দরবনের মধু: ম্যানগ্রোভ অরণ্য থেকে মৌলিদের সংগৃহীত প্রাকৃতিক মধু (WBSFDA দ্বারা বিপণনকৃত)।",
-        "দার্জিলিং চা ২০০৪–০৫ সালে ভারতের প্রথম জিআই ট্যাগ পেয়েছিল; বাংলার রসগোল্লা ২০১৭ সালে জিআই ট্যাগ পায়।",
-      ],
-      staticGkLinkEn: "GI tags in India are governed by the Geographical Indications of Goods (Registration and Protection) Act, 1999 (enforced Sept 2003; valid for 10 years at a time; Registry HQ: Chennai).",
-      staticGkLinkBn: "১৯৯৯ সালের জিআই আইন অনুযায়ী জিআই নিবন্ধনের মেয়াদ ১০ বছর (সদর দপ্তর: চেন্নাই)।",
-      examTrapEn: "Trap: Patent Office headquarters in India is in Kolkata, whereas the Geographical Indications (GI) Registry headquarters is in Chennai.",
-      examTrapBn: "সতর্কতা: ভারতের পেটেন্ট অফিসের সদর দপ্তর কলকাতায়, কিন্তু জিআই রেজিস্ট্রির সদর দপ্তর চেন্নাইতে।",
-    },
-    {
-      id: "pscwb-pool-3",
-      category: "Polity & Governance",
-      headlineEn: "16th Finance Commission of India (Article 280) — Chaired by Dr. Arvind Panagariya (Award Period: 2026–2031)",
-      headlineBn: "ভারতের ১৬তম অর্থ কমিশন (ধারা ২৮০) — চেয়ারম্যান ড. অরবিন্দ পানাগড়িয়া (সুপারিশকাল: ২০২৬–২০৩১)",
-      sourceTag: "PIB Finance · WBCS Polity Core",
-      whyInNewsEn: "The 16th Finance Commission headed by former NITI Aayog Vice-Chairman Dr. Arvind Panagariya held consultations with the West Bengal Government regarding horizontal & vertical tax devolution for 2026–2031.",
-      whyInNewsBn: "ড. অরবিন্দ পানাগড়িয়ার নেতৃত্বাধীন ১৬তম অর্থ কমিশন ২০২৬–২০৩১ মেয়াদের কর বণ্টন নিয়ে রাজ্যগুলির সাথে আলোচনা সম্পন্ন করেছে।",
-      examPointsEn: [
-        "Constituted by the President of India under Article 280(1) of the Constitution every 5 years to recommend distribution of net tax proceeds between the Centre and States.",
-        "Chairman of 16th Finance Commission: Dr. Arvind Panagariya (1st Vice-Chairman of NITI Aayog); Secretary: Ritvik Ranjanam Pandey.",
-        "4 Full-time/Part-time Members: Ajay Narayan Jha, Annie George Mathew, Dr. Manoj Panda, and Dr. Soumya Kanti Ghosh.",
-        "Award period of the 16th Finance Commission runs for 5 years from 1 April 2026 to 31 March 2031.",
-      ],
-      examPointsBn: [
-        "সংবিধানের ২৮০ নং ধারা অনুযায়ী ভারতের রাষ্ট্রপতি প্রতি ৫ বছর অন্তর কেন্দ্র ও রাজ্যের মধ্যে রাজস্ব বণ্টনের সুপারিশের জন্য অর্থ কমিশন গঠন করেন।",
-        "১৬তম অর্থ কমিশনের চেয়ারম্যান: ড. অরবিন্দ পানাগড়িয়া (নীতি আয়োগের প্রথম ভাইস-চেয়ারম্যান); সচিব: ঋত্বিক রঞ্জনম পান্ডে।",
-        "১৬তম অর্থ কমিশনের সুপারিশ কার্যকর থাকবে ১ এপ্রিল ২০২৬ থেকে ৩১ মার্চ ২০৩১ পর্যন্ত (৫ বছর)।",
-        "১৫তম অর্থ কমিশনের চেয়ারম্যান ছিলেন এন. কে. সিং (৪১% উল্লম্ব কর বণ্টনের সুপারিশ করেছিলেন)।",
-      ],
-      staticGkLinkEn: "1st Finance Commission of India was constituted in 1951 under the chairmanship of K.C. Neogy (from West Bengal); State Finance Commission is constituted under Article 243-I (Panchayats) & 243-Y (Municipalities).",
-      staticGkLinkBn: "ভারতের প্রথম অর্থ কমিশন ১৯৫১ সালে কে. সি. নিয়োগীর সভাপতিত্বে গঠিত হয়; রাজ্য অর্থ কমিশন সংবিধানের ২৪৩-I এবং ২৪৩-Y ধারার অধীনে গঠিত হয়।",
-      examTrapEn: "Trap: Central Finance Commission = Article 280; State Finance Commission = Article 243-I & 243-Y.",
-      examTrapBn: "সতর্কতা: কেন্দ্রীয় অর্থ কমিশন = ধারা ২৮০; রাজ্য অর্থ কমিশন = ধারা ২৪৩-I ও ২৪৩-Y।",
-    },
-    {
-      id: "pscwb-pool-4",
-      category: "West Bengal Special",
-      headlineEn: "Ghatal Master Plan (Shilabati–Kangsabati Basin), Karmashree Scheme & Damodar Valley Corporation (DVC)",
-      headlineBn: "ঘাটাল মাস্টার প্ল্যান (শিলাবতী নদী অববাহিকা), কর্মশ্রী প্রকল্প ও দামোদর ভ্যালি কর্পোরেশন (DVC)",
-      sourceTag: "WB Irrigation & Waterways · PSCWB Geography",
-      whyInNewsEn: "The West Bengal Government allocated state budget funding to execute the long-pending Ghatal Master Plan in Paschim Medinipur and launched the 'Karmashree' 50-day wage employment scheme.",
-      whyInNewsBn: "পশ্চিমবঙ্গ সরকার নিজস্ব অর্থায়নে পশ্চিম মেদিনীপুরের 'ঘাটাল মাস্টার প্ল্যান' রূপায়ণ এবং গ্রামীণ কর্মসংস্থানের জন্য 'কর্মশ্রী' প্রকল্প চালু করেছে।",
-      examPointsEn: [
-        "Ghatal Master Plan addresses chronic monsoon flooding in Paschim & Purba Medinipur across the Shilabati (Silai), Kangsabati (Kasai), and Rupnarayan river basins (Note: Dwarakeswar + Shilabati = Rupnarayan River near Ghatal).",
-        "Karmashree Scheme: State-funded rural employment scheme guaranteeing at least 50 days of wage work per year to every job-card holder in West Bengal.",
-        "Damodar Valley Corporation (DVC) was established on 7 July 1948 as Independent India's FIRST multipurpose river valley project, modeled on the Tennessee Valley Authority (TVA) of the USA.",
-        "4 key DVC dams: Tilaiya & Maithon (on Barakar River), Konar (on Konar River), and Panchet (on Damodar River) + Durgapur Barrage (1955).",
-      ],
-      examPointsBn: [
-        "ঘাটাল মাস্টার প্ল্যান শিলাবতী, কংসাবতী ও রূপনারায়ণ নদী অববাহিকায় বন্যা নিয়ন্ত্রণের প্রকল্প (দ্বারকেশ্বর ও শিলাবতী নদীর মিলিত প্রবাহ হলো রূপনারায়ণ)।",
-        "কর্মশ্রী প্রকল্প: রাজ্যের জব-কার্ডধারী গ্রামীণ পরিবারগুলিকে বছরে অন্তত ৫০ দিনের নিশ্চিত কাজ প্রদানের জন্য পশ্চিমবঙ্গ সরকারের নিজস্ব প্রকল্প।",
-        "দামোদর ভ্যালি কর্পোরেশন (DVC) ১৯৪৮ সালের ৭ জুলাই স্বাধীন ভারতের প্রথম বহুমুখী নদী উপত্যকা পরিকল্পনা হিসেবে গঠিত হয় (মার্কিন যুক্তরাষ্ট্রের TVA-র আদলে)।",
-        "DVC-এর ৪টি প্রধান বাঁধ: তিলাইয়া ও মাইথন (বরাকর নদী), কোনার (কোনার নদী) এবং পাঞ্চেত (দামোদর নদ)।",
-      ],
-      staticGkLinkEn: "Damodar River was historically called the 'Sorrow of Bengal' (বাংলার দুঃখ); it originates from Khamarpat Hill on the Chota Nagpur Plateau (Jharkhand) and joins the Hooghly River at Falta.",
-      staticGkLinkBn: "দামোদর নদ ছোটনাগপুর মালভূমির খামারপাত পাহাড় থেকে উৎপন্ন হয়ে ফলতার কাছে হুগলি নদীতে মিশেছে।",
-      examTrapEn: "Trap: Tilaiya and Maithon dams are built on the BARAKAR River (main tributary of Damodar), whereas Panchet dam is built on the DAMODAR River itself.",
-      examTrapBn: "সতর্কতা: তিলাইয়া ও মাইথন বাঁধ বরাকর নদীর ওপর, আর পাঞ্চেত বাঁধ দামোদর নদের ওপর নির্মিত।",
-    },
-    {
-      id: "pscwb-pool-5",
-      category: "Sports & Tournaments",
-      headlineEn: "133rd Durand Cup Football (Vivekananda Yuba Bharati Krirangan, Kolkata) — NorthEast United FC Wins Maiden Title",
-      headlineBn: "১৩৩তম ডুরান্ড কাপ ফুটবল (যুবভারতী ক্রীড়াঙ্গন, কলকাতা) — মোহনবাগানকে হারিয়ে নর্থ-ইস্ট ইউনাইটেডের প্রথম খেতাব জয়",
-      sourceTag: "GKToday Sports · Kolkata Maidan Special",
-      whyInNewsEn: "NorthEast United FC defeated defending champions Mohun Bagan Super Giant via penalty shootout at Salt Lake Stadium (Kolkata) to win their first-ever Durand Cup trophy.",
-      whyInNewsBn: "কলকাতার বিবেকানন্দ যুবভারতী ক্রীড়াঙ্গনে অনুষ্ঠিত ১৩৩তম ডুরান্ড কাপ ফাইনালে মোহনবাগান সুপার জায়ান্টকে পেনাল্টি শুটআউটে হারিয়ে নর্থ-ইস্ট ইউনাইটেড প্রথমবার চ্যাম্পিয়ন হয়েছে।",
-      examPointsEn: [
-        "Durand Cup (instituted in 1888 at Shimla by Sir Mortimer Durand, Foreign Secretary of British India) is the OLDEST football tournament in Asia and 3rd oldest in the world.",
-        "Golden Ball (Best Player): Noah Sadaoui; Golden Boot (Top Scorer): Noah Sadaoui; Golden Glove (Best Goalkeeper): Gurmeet Singh (NorthEast United FC).",
-        "Mohun Bagan & East Bengal are the most successful clubs in Durand Cup history (17 and 16 titles respectively).",
-        "Mohun Bagan AC (founded 15 August 1889 in North Kolkata) became the first Indian club to lift the IFA Shield on 29 July 1911 defeating East Yorkshire Regiment (2–1) under captain Shibdas Bhaduri.",
-      ],
-      examPointsBn: [
-        "১৮৮৮ সালে সিমলায় স্যার মর্টিমার ডুরান্ড প্রবর্তিত 'ডুরান্ড কাপ' এশিয়ার প্রাচীনতম ফুটবল টুর্নামেন্ট।",
-        "গোল্ডেন গ্লাভস জিতেছেন নর্থ-ইস্ট ইউনাইটেডের গোলরক্ষক গুরমীত সিং এবং গোল্ডেন বুট ও বল জিতেছেন নোয়া সাদাউই।",
-        "মোহনবাগান (১৭ বার) এবং ইস্টবেঙ্গল (১৬ বার) ডুরান্ড কাপের ইতিহাসে সফলতম দুটি ক্লাব।",
-        "১৯১১ সালের ২৯ জুলাই শিবদাস ভাদুড়ীর নেতৃত্বে মোহনবাগান ইস্ট ইয়র্কশায়ার রেজিমেন্টকে ২–১ গোলে হারিয়ে প্রথম ভারতীয় দল হিসেবে আইএফএ শিল্ড জয় করে।",
-      ],
-      staticGkLinkEn: "29 July is celebrated annually as 'Mohun Bagan Day'; National Sports Day in India is celebrated on 29 August (Major Dhyan Chand's birthday).",
-      staticGkLinkBn: "২৯ জুলাই 'মোহনবাগান দিবস' এবং ২৯ আগস্ট মেজর ধ্যানচাঁদের জন্মদিনে 'জাতীয় ক্রীড়া দিবস' পালিত হয়।",
-      examTrapEn: "Trap: Oldest football club in India = Mohun Bagan AC (1889); Oldest football tournament in Asia = Durand Cup (1888).",
-      examTrapBn: "সতর্কতা: ভারতের প্রাচীনতম ফুটবল ক্লাব মোহনবাগান (১৮৮৯), আর এশিয়ার প্রাচীনতম টুর্নামেন্ট ডুরান্ড কাপ (১৮৮৮)।",
-    },
-    {
-      id: "pscwb-pool-6",
-      category: "Economy & Banking",
-      headlineEn: "Classical Language Status Conferred on Bengali (বাংলা) — Total 11 Classical Languages in India",
-      headlineBn: "বাংলা ভাষাকে 'ধ্রুপদী ভাষা' (Classical Language)-র সরকারি স্বীকৃতি — ভারতে মোট ধ্রুপদী ভাষা ১১টি",
-      sourceTag: "PIB Culture · WBPSC Compulsory GK",
-      whyInNewsEn: "The Union Cabinet approved conferring 'Classical Language' (ধ্রুপদী ভাষা) status on five more languages — Bengali, Marathi, Assamese, Pali, and Prakrit — taking the total number of Classical Languages in India from 6 to 11.",
-      whyInNewsBn: "কেন্দ্রীয় মন্ত্রিসভা বাংলা, মারাঠি, অসমীয়া, পালি এবং প্রাকৃত — এই ৫টি ভাষাকে নতুন করে 'ধ্রুপদী ভাষা' (Classical Language) হিসেবে স্বীকৃতি দেওয়ায় ভারতে মোট ধ্রুপদী ভাষার সংখ্যা ৬ থেকে বেড়ে ১১ হয়েছে।",
-      examPointsEn: [
-        "5 Newly Added Classical Languages: Bengali (বাংলা), Marathi, Assamese, Pali, and Prakrit.",
-        "Earlier 6 Classical Languages: Tamil (2004 — 1st), Sanskrit (2005), Kannada (2008), Telugu (2008), Malayalam (2013), and Odia (2014).",
-        "Historical proof of Bengali's antiquity (1,500–2,000 years) was anchored by the 'Charyapada' (চর্যাপদ — earliest extant Bengali Buddhist mystic songs discovered by Haraprasad Shastri at the Royal Court Library of Nepal in 1907) and early inscriptions.",
-        "The Eighth Schedule of the Indian Constitution (Articles 344(1) and 351) currently recognizes 22 official languages (Note: Pali and Prakrit are Classical Languages now, though NOT in the 8th Schedule!).",
-      ],
-      examPointsBn: [
-        "নতুন স্বীকৃত ৫টি ধ্রুপদী ভাষা হলো: বাংলা, মারাঠি, অসমীয়া, পালি এবং প্রাকৃত (মোট ধ্রুপদী ভাষা = ১১টি)।",
-        "পূর্ববর্তী ৬টি ধ্রুপদী ভাষা ছিল: তামিল (২০০৪ — প্রথম), সংস্কৃত (২০০৫), কন্নড় (২০০৮), তেলুগু (২০০৮), মালয়ালম (২০১৩) এবং ওড়িয়া (২০১৪)।",
-        "১৯০৭ সালে মহামহোপাধ্যায় হরপ্রসাদ শাস্ত্রী নেপালের রাজদরবারের গ্রন্থাগার থেকে বাংলা ভাষার প্রাচীনতম নিদর্শন 'চর্যাপদ' আবিষ্কার করেন।",
-        "সংবিধানের অষ্টম তফসিলে (ধারা ৩৪৪ ও ৩৫১) বর্তমানে ২২টি ভাষা রয়েছে (লক্ষ্যণীয়: পালি ও প্রাকৃত ধ্রুপদী ভাষা হলেও অষ্টম তফসিলের ২২টি ভাষার অন্তর্ভুক্ত নয়)।",
-      ],
-      staticGkLinkEn: "Original Constitution (1950) had 14 languages in the 8th Schedule: Sindhi was added by 21st Amendment (1967); Konkani, Manipuri & Nepali by 71st Amendment (1992); Bodo, Dogri, Maithili & Santhali by 92nd Amendment (2003).",
-      staticGkLinkBn: "৯২তম সংবিধান সংশোধনীর (২০০৩) মাধ্যমে বোড়ো, ডোগরি, মৈথিলি এবং সাঁওতালি ভাষা অষ্টম তফসিলে যুক্ত হয়।",
-      examTrapEn: "Trap: Pali and Prakrit are among the 11 Classical Languages of India, but they are NOT among the 22 languages in the 8th Schedule of the Constitution.",
-      examTrapBn: "সতর্কতা: পালি ও প্রাকৃত ভারতের ১১টি ধ্রুপদী ভাষার অন্তর্ভুক্ত হলেও সংবিধানের অষ্টম তফসিলের ২২টি ভাষার তালিকায় নেই।",
-    },
-    {
-      id: "pscwb-pool-7",
-      category: "Polity & Governance",
-      headlineEn: "West Bengal Legislative Assembly Passes 'Aparajita Woman and Child Bill, 2024' & Articles 200–201",
-      headlineBn: "পশ্চিমবঙ্গ বিধানসভায় 'অপরাজিতা ওমেন অ্যান্ড চাইল্ড বিল' পাশ এবং সংবিধানের ২০০ ও ২০১ নং ধারা",
-      sourceTag: "WB Assembly Gazette · The Hindu Polity",
-      whyInNewsEn: "A special session of the West Bengal Legislative Assembly unanimously passed the 'Aparajita Woman and Child (West Bengal Criminal Laws Amendment) Bill', which was subsequently reserved by the Governor for the President's consideration under Article 200.",
-      whyInNewsBn: "পশ্চিমবঙ্গ বিধানসভার বিশেষ অধিবেশনে সর্বসম্মতিক্রমে 'অপরাজিতা বিল' পাশ হয় এবং রাজ্যপাল সংবিধানের ২০০ নং ধারা অনুযায়ী বিলটি রাষ্ট্রপতির বিবেচনার জন্য সংরক্ষিত রাখেন।",
-      examPointsEn: [
-        "Under Article 200 of the Constitution, when a State Bill is presented to the Governor, the Governor has 4 options: grant assent, withhold assent, return the bill (if not a Money Bill) for reconsideration, or reserve the bill for the consideration of the President.",
-        "Under Article 201, when a Bill is reserved for the President, the President may either give assent or withhold assent (or direct the Governor to return it to the State Legislature).",
-        "Criminal law and criminal procedure fall under the Concurrent List (List III — Entries 1 and 2) of the Seventh Schedule of the Constitution.",
-        "Under Article 254(2), if a State law on a Concurrent List subject is repugnant to an earlier Parliamentary law (such as Bharatiya Nyaya Sanhita), it prevails in that State ONLY if reserved for the President and receives Presidential assent.",
-      ],
-      examPointsBn: [
-        "সংবিধানের ২০০ নং ধারা অনুযায়ী রাজ্যপাল কোনো বিলে সম্মতি দিতে পারেন, সম্মতি স্থগিত রাখতে পারেন, পুনর্বিবেচনার জন্য ফেরত পাঠাতে পারেন অথবা রাষ্ট্রপতির বিবেচনার জন্য সংরক্ষিত রাখতে পারেন।",
-        "সংবিধানের ২০১ নং ধারায় রাষ্ট্রপতির কাছে সংরক্ষিত রাজ্য বিলের অনুমোদন বা প্রত্যাখ্যানের বিধান রয়েছে।",
-        "ফৌজদারি আইন (Criminal Law) ও ফৌজদারি কার্যবিধি সংবিধানের সপ্তম তফসিলের 'যুগ্ম তালিকা' (Concurrent List — List III)-র অন্তর্ভুক্ত।",
-        "ধারা ২৫৪(২) অনুযায়ী যুগ্ম তালিকার কোনো বিষয়ে কেন্দ্রীয় আইনের সাথে বিরোধ থাকলে রাজ্য আইনটি কেবল তখনই রাজ্যে কার্যকর হবে যদি রাষ্ট্রপতি তাতে সম্মতি প্রদান করেন।",
-      ],
-      staticGkLinkEn: "West Bengal has a Unicameral Legislature (Legislative Assembly / Bidhan Sabha with 294 elected seats); the West Bengal Legislative Council (Bidhan Parishad) was abolished on 1 August 1969 under Article 169.",
-      staticGkLinkBn: "১৯৬৯ সালের ১ আগস্ট সংবিধানের ১৬৯ নং ধারা অনুযায়ী পশ্চিমবঙ্গ বিধান পরিষদ (Legislative Council) বিলুপ্ত করা হয়; বর্তমানে পশ্চিমবঙ্গ বিধানসভার আসন সংখ্যা ২৯৪।",
-      examTrapEn: "Trap: President's Veto over Central Bills = Article 111; Governor's options on State Bills = Article 200; President's consideration of reserved State Bills = Article 201.",
-      examTrapBn: "সতর্কতা: কেন্দ্রীয় বিলে রাষ্ট্রপতির সম্মতি = ধারা ১১১; রাজ্য বিলে রাজ্যপালের ক্ষমতা = ধারা ২০০; সংরক্ষিত রাজ্য বিলে রাষ্ট্রপতির ক্ষমতা = ধারা ২০১।",
-    },
-    {
-      id: "pscwb-pool-8",
-      category: "Environment & GI Tags",
-      headlineEn: "43rd UNESCO World Heritage Site of India: Charaideo Moidams (Assam) & West Bengal's 3 UNESCO World Heritage Sites",
-      headlineBn: "ভারতের ৪৩তম ইউনেস্কো ওয়ার্ল্ড হেরিটেজ সাইট: আসামের 'চরাইদেও মৈদাম' এবং পশ্চিমবঙ্গের ৩টি বিশ্ব ঐতিহ্য ক্ষেত্র",
-      sourceTag: "UNESCO 46th Session (New Delhi) · PIB Culture",
-      whyInNewsEn: "At the 46th Session of the World Heritage Committee hosted for the first time by India at Bharat Mandapam (New Delhi), Assam's 'Moidams — the Mound-Burial System of the Ahom Dynasty' at Charaideo was inscribed as India's 43rd UNESCO World Heritage Site.",
-      whyInNewsBn: "নতুন দিল্লির ভারত মণ্ডপমে অনুষ্ঠিত বিশ্ব ঐতিহ্য কমিটির ৪৬তম অধিবেশনে আসামের আহোম রাজবংশের সমাধিক্ষেত্র 'চরাইদেও মৈদাম' ভারতের ৪৩তম ইউনেস্কো ওয়ার্ল্ড হেরিটেজ সাইটের স্বীকৃতি পেয়েছে।",
-      examPointsEn: [
-        "India now has 43 UNESCO World Heritage Sites: 35 Cultural, 7 Natural, and 1 Mixed site (Khangchendzonga National Park in Sikkim).",
-        "Charaideo Moidams (located in eastern Assam, founded by first Ahom King Chao Lung Siu-Ka-Pha in 1253 CE) are royal mound-burial vaults often compared to the Pyramids of Egypt.",
-        "West Bengal has 3 Tangible UNESCO World Heritage Sites: 1) Sundarbans National Park (1987, Natural), 2) Darjeeling Himalayan Railway (1999, Cultural — Mountain Railways of India), and 3) Santiniketan (September 2023 — 41st site of India, Cultural).",
-        "42nd UNESCO World Heritage Site of India (2023) was the Sacred Ensembles of the Hoysalas (Belur, Halebidu, and Somnathpura in Karnataka).",
-      ],
-      examPointsBn: [
-        "ভারতে বর্তমানে মোট ৪৩টি ইউনেস্কো ওয়ার্ল্ড হেরিটেজ সাইট রয়েছে (৩৫টি সাংস্কৃতিক, ৭টি প্রাকৃতিক এবং ১টি মিশ্র — সিকিমের কাঞ্চনজঙ্ঘা জাতীয় উদ্যান)।",
-        "আসামের চরাইদেও মৈদাম হলো আহোম রাজবংশের রাজকীয় সমাধিস্তূপ (১২৫৩ খ্রিস্টাব্দে প্রথম আহোম রাজা চাওলুং চুকাফা প্রতিষ্ঠিত), যাকে 'আসামের পিরামিড' বলা হয়।",
-        "পশ্চিমবঙ্গে ৩টি ইউনেস্কো ওয়ার্ল্ড হেরিটেজ সাইট রয়েছে: ১) সুন্দরবন জাতীয় উদ্যান (১৯৮৭), ২) দার্জিলিং হিমালয়ান রেলওয়ে (১৯৯৯) এবং ৩) শান্তিনিকেতন (২০২৩ — ভারতের ৪১তম সাইট)।",
-        "ভারতের ৪২তম ইউনেস্কো ওয়ার্ল্ড হেরিটেজ সাইট হলো কর্ণাটকের 'হোয়সল মন্দিরসমূহ' (বেলুড়, হালেবিড়ু ও সোমনাথপুরা)।",
-      ],
-      staticGkLinkEn: "Agra Fort, Ajanta Caves, Ellora Caves, and Taj Mahal were the FIRST four sites from India inscribed on the UNESCO World Heritage list in 1983.",
-      staticGkLinkBn: "১৯৮৩ সালে ভারতের প্রথম ৪টি স্থান ইউনেস্কো বিশ্ব ঐতিহ্য তালিকায় স্থান পায়: অজন্তা গুহা, ইলোরা গুহা, আগ্রা ফোর্ট এবং তাজমহল।",
-      examTrapEn: "Trap: 41st UNESCO Site = Santiniketan (West Bengal); 42nd = Hoysala Temples (Karnataka); 43rd = Charaideo Moidams (Assam).",
-      examTrapBn: "সতর্কতা: ৪১তম ইউনেস্কো সাইট = শান্তিনিকেতন (পশ্চিমবঙ্গ); ৪২তম = হোয়সল মন্দির (কর্ণাটক); ৪৩তম = চরাইদেও মৈদাম (আসাম)।",
-    },
-    {
-      id: "pscwb-pool-9",
-      category: "Science & Technology",
-      headlineEn: "Nobel Prizes 2024/2026 Cycle: AI Pioneers (Hopfield & Hinton in Physics; Hassabis & Jumper in Chemistry) & Economics (Acemoglu, Johnson, Robinson)",
-      headlineBn: "নোবেল পুরস্কার সংকলন: কৃত্রিম বুদ্ধিমত্তা (পদার্থবিদ্যা ও রসায়ন), অর্থনীতি (আসেমোগ্লু, জনসন, রবিনসন) এবং সাহিত্য (হান কাং)",
-      sourceTag: "Royal Swedish Academy · GKToday Nobel Special",
-      whyInNewsEn: "The Royal Swedish Academy of Sciences awarded the Nobel Prizes recognizing foundational breakthroughs in Artificial Neural Networks, AlphaFold protein structure prediction, microRNA gene regulation, and institutional economics.",
-      whyInNewsBn: "রয়্যাল সুইডিশ অ্যাকাডেমি কৃত্রিম নিউরাল নেটওয়ার্ক, প্রোটিন গঠন নির্ণয় (AlphaFold), মাইক্রো-আরএনএ (microRNA) এবং প্রাতিষ্ঠানিক অর্থনীতির গবেষণায় নোবেল পুরস্কার ঘোষণা করেছে।",
-      examPointsEn: [
-        "Nobel Prize in Literature: South Korean author Han Kang ('for her intense poetic prose that confronts historical traumas'; famous novel: 'The Vegetarian') — first Asian woman to win the Literature Nobel.",
-        "Nobel Peace Prize: Japanese grassroots organization 'Nihon Hidankyo' (confederation of atomic bomb survivors / Hibakusha of Hiroshima and Nagasaki).",
-        "Economic Sciences (Sveriges Riksbank Prize): Daron Acemoglu, Simon Johnson, and James A. Robinson for studies of how inclusive vs. extractive colonial institutions affect national prosperity (famous book: 'Why Nations Fail').",
-        "Physiology or Medicine: Victor Ambros and Gary Ruvkun for the discovery of microRNA and its role in post-transcriptional gene regulation.",
-      ],
-      examPointsBn: [
-        "সাহিত্যে নোবেল: দক্ষিণ কোরিয়ার লেখিকা হান কাং (Han Kang — প্রথম এশীয় মহিলা হিসেবে সাহিত্যে নোবেল; বিখ্যাত উপন্যাস: 'The Vegetarian')।",
-        "শান্তিতে নোবেল: জাপানের পরমাণু বোমা হামলা থেকে বেঁচে যাওয়া মানুষদের সংগঠন 'নিহন হিদানকিও' (Nihon Hidankyo)।",
-        "অর্থনীতিতে নোবেল: ড্যারন আসেমোগ্লু, সাইমন জনসন এবং জেমস এ. রবিনসন (বিখ্যাত গ্রন্থ: 'Why Nations Fail')।",
-        "চিকিৎসাবিজ্ঞানে নোবেল: ভিক্টর অ্যামব্রোস এবং গ্যারি রুভকুন (microRNA আবিষ্কারের জন্য)।",
-      ],
-      staticGkLinkEn: "Bengal's Nobel Laureates & Connections: Rabindranath Tagore (Literature, 1913 — 'Gitanjali', 1st Asian Nobel laureate), Sir Ronald Ross (Medicine, 1902 — discovered malaria parasite lifecycle in Kolkata), C.V. Raman (Physics, 1930 — worked at IACS Kolkata), Mother Teresa (Peace, 1979), Amartya Sen (Economics, 1998), and Abhijit Vinayak Banerjee (Economics, 2019).",
-      staticGkLinkBn: "রবীন্দ্রনাথ ঠাকুর (১৯১৩, সাহিত্য), অমর্ত্য সেন (১৯৯৮, অর্থনীতি) এবং অভিজিৎ বিনায়ক বন্দ্যোপাধ্যায় (২০১৯, অর্থনীতি) নোবেল পুরস্কারে ভূষিত হয়েছেন।",
-      examTrapEn: "Trap: Physics Nobel went to John Hopfield & Geoffrey Hinton (foundational Machine Learning), while Chemistry Nobel went to David Baker, Demis Hassabis & John Jumper (AlphaFold protein prediction).",
-      examTrapBn: "সতর্কতা: পদার্থবিদ্যায় নোবেল পেয়েছেন হপফিল্ড ও হিন্টন (নিউরাল নেটওয়ার্ক), আর রসায়নে পেয়েছেন ডেভিড বেকার, ডেমিস হাসাবিস ও জন জাম্পার (প্রোটিন গঠন ও AlphaFold)।",
-    },
-    {
-      id: "pscwb-pool-10",
-      category: "National & International",
-      headlineEn: "51st Chief Justice of India (Justice Sanjiv Khanna) & Constitutional Provisions of Supreme Court (Articles 124–147)",
-      headlineBn: "ভারতের ৫১তম প্রধান বিচারপতি (বিচারপতি সঞ্জীব খান্না) এবং সুপ্রিম কোর্টের সাংবিধানিক ধারা (ধারা ১২৪–১৪৭)",
-      sourceTag: "PIB Law & Justice · WBCS Polity",
-      whyInNewsEn: "President Droupadi Murmu appointed Justice Sanjiv Khanna as the 51st Chief Justice of India (CJI) under Article 124(2) of the Constitution, succeeding the 50th CJI Justice D.Y. Chandrachud.",
-      whyInNewsBn: "রাষ্ট্রপতি দ্রৌপদী মুর্মু সংবিধানের ১২৪(২) নং ধারা অনুযায়ী বিচারপতি সঞ্জীব খান্নাকে ভারতের ৫১তম প্রধান বিচারপতি হিসেবে নিযুক্ত করেছেন।",
-      examPointsEn: [
-        "Supreme Court of India is governed by Part V, Chapter IV of the Constitution (Articles 124 to 147); inaugurated on 28 January 1950 (succeeding the Federal Court of India set up under the Government of India Act, 1935).",
-        "First Chief Justice of India (1950–51): Justice Harilal Jekisundas Kania; First Bengali Chief Justice of India: Justice Bijan Kumar Mukherjea (4th CJI, 1954–56).",
-        "Other notable Bengali CJIs include Justice Sudhi Ranjan Das (5th CJI), Justice Amal Kumar Sarkar (8th CJI), Justice A.N. Ray (14th CJI), Justice Sabyasachi Mukharji (20th CJI), and Justice Altamas Kabir (39th CJI).",
-        "Supreme Court judges hold office until the age of 65 years (Article 124(2)), whereas High Court judges hold office until the age of 62 years (Article 217 — raised from 60 to 62 by the 15th Amendment, 1963).",
-      ],
-      examPointsBn: [
-        "ভারতের সুপ্রিম কোর্ট সংবিধানের ৫ম অংশের ১২৪ থেকে ১৪৭ নং ধারার অধীনে পরিচালিত হয় (উদ্বোধন: ২৮ জানুয়ারি ১৯৫০)।",
-        "ভারতের প্রথম প্রধান বিচারপতি: বিচারপতি হরিলাল জে. কানিয়া; প্রথম বাঙালি প্রধান বিচারপতি: বিচারপতি বিজন কুমার মুখোপাধ্যায় (৪র্থ CJI)।",
-        "সুপ্রিম কোর্টের বিচারপতিদের অবসরের বয়স ৬৫ বছর (ধারা ১২৪), আর হাইকোর্টের বিচারপতিদের অবসরের বয়স ৬২ বছর (ধারা ২১৭ — ১৫তম সংশোধনী দ্বারা ৬০ থেকে বাড়িয়ে ৬২ করা হয়)।",
-        "এখন পর্যন্ত সুপ্রিম কোর্টে কোনো মহিলা প্রধান বিচারপতি (CJI) হননি; সুপ্রিম কোর্টের প্রথম মহিলা বিচারপতি ছিলেন বিচারপতি ফাতিমা বিবি (১৯৮৯)।",
-      ],
-      staticGkLinkEn: "Calcutta High Court (established on 1 July 1862 under the Indian High Courts Act, 1861) is the OLDEST High Court in India; its first Chief Justice was Sir Barnes Peacock and first Indian permanent judge was Justice Sambhunath Pandit.",
-      staticGkLinkBn: "১৮৬২ সালের ১ জুলাই প্রতিষ্ঠিত কলকাতা হাইকোর্ট ভারতের প্রাচীনতম হাইকোর্ট (প্রথম প্রধান বিচারপতি: স্যার বার্নস পিকক; প্রথম ভারতীয় বিচারপতি: শম্ভুনাথ পণ্ডিত)।",
-      examTrapEn: "Trap: Supreme Court of Judicature at Fort William (Calcutta) was set up in 1774 under Regulating Act 1773 (Sir Elijah Impey), whereas Calcutta High Court was set up in 1862.",
-      examTrapBn: "সতর্কতা: কলকাতার ফোর্ট উইলিয়ামে সুপ্রিম কোর্ট স্থাপিত হয় ১৭৭৪ সালে (রেগুলেটিং অ্যাক্ট ১৭৭৩), আর কলকাতা হাইকোর্ট স্থাপিত হয় ১৮৬২ সালে।",
-    },
-    {
-      id: "pscwb-pool-11",
-      category: "West Bengal Special",
-      headlineEn: "Syama Prasad Mookerjee Port (Kolkata–Haldia), Tajpur Deep-Sea Port & National Waterway-1 (Ganga–Bhagirathi–Hooghly)",
-      headlineBn: "শ্যামাপ্রসাদ মুখার্জি বন্দর (কলকাতা-হলদিয়া), তাজপুর গভীর সমুদ্র বন্দর এবং জাতীয় জলপথ-১ (NW-1)",
-      sourceTag: "Ministry of Ports, Shipping & Waterways · WB Geography",
-      whyInNewsEn: "Syama Prasad Mookerjee Port (Kolkata) expanded multi-modal cargo operations along National Waterway-1 (Haldia to Varanasi) and Indo-Bangladesh Protocol Route.",
-      whyInNewsBn: "কলকাতার শ্যামাপ্রসাদ মুখার্জি বন্দর জাতীয় জলপথ-১ (হলদিয়া থেকে বারাণসী) এবং ইন্দো-বাংলাদেশ প্রোটোকল রুটে পণ্য পরিবহণ পরিকাঠামো সম্প্রসারণ করেছে।",
-      examPointsEn: [
-        "Kolkata Port (commissioned in 1870; renamed Syama Prasad Mookerjee Port in June 2020 on its 150th anniversary) is India's ONLY major riverine port, situated ~203 km inland on the Hooghly River.",
-        "Comprises two dock systems: Kolkata Dock System (KDS — Kidderpore & Netaji Subhas Docks) on the eastern bank and Haldia Dock Complex (HDC, Purba Medinipur) at the confluence of the Haldi and Hooghly rivers.",
-        "National Waterway-1 (NW-1, declared in 1986) is India's longest operational national waterway (1,620 km), connecting Haldia (West Bengal) to Prayagraj/Varanasi along the Ganga–Bhagirathi–Hooghly river system ('Jal Marg Vikas Project').",
-        "Farakka Barrage (Murshidabad district, commissioned in 1975, length ~2.24 km) diverts 40,000 cusecs of Ganga water into the Bhagirathi–Hooghly river to flush silt and keep Kolkata Port navigable.",
-      ],
-      examPointsBn: [
-        "কলকাতা বন্দর (১৮৭০ সালে চালু; ২০২০ সালে নামকরণ 'শ্যামাপ্রসাদ মুখার্জি বন্দর') ভারতের একমাত্র প্রধান নদী বন্দর (Riverine Major Port)।",
-        "এর দুটি ডক ব্যবস্থা রয়েছে: কলকাতা ডক সিস্টেম (খিদিরপুর ও নেতাজি সুভাষ ডক) এবং হলদিয়া ডক কমপ্লেক্স (হলদি ও হুগলি নদীর সঙ্গমস্থলে, পূর্ব মেদিনীপুর)।",
-        "জাতীয় জলপথ-১ (NW-1, দৈর্ঘ্য ১,৬২০ কিমি) গঙ্গা-ভাগীরথী-হুগলি নদীপথে পশ্চিমবঙ্গের হলদিয়া থেকে উত্তরপ্রদেশের প্রয়াগরাজ পর্যন্ত বিস্তৃত।",
-        "১৯৭৫ সালে চালু হওয়া ফারাক্কা ব্যারাজ (মুর্শিদাবাদ) কলকাতা বন্দরের নাব্যতা বজায় রাখতে গঙ্গা থেকে ভাগীরথী নদীতে জল প্রবাহিত করে।",
-      ],
-      staticGkLinkEn: "Haldi River is formed by the confluence of the Kangsabati (Kasai) and Keleghai rivers in Medinipur.",
-      staticGkLinkBn: "কংসাবতী (কঁসাই) ও কেলেঘাই নদীর মিলিত প্রবাহের নাম 'হলদি নদী'।",
-      examTrapEn: "Trap: Rupnarayan River = Dwarakeswar + Shilabati; Haldi River = Kangsabati + Keleghai.",
-      examTrapBn: "সতর্কতা: রূপনারায়ণ নদী = দ্বারকেশ্বর + শিলাবতী; আর হলদি নদী = কংসাবতী + কেলেঘাই।",
-    },
-    {
-      id: "pscwb-pool-12",
-      category: "Ranks, Reports & Indices",
-      headlineEn: "Global Hunger Index (GHI), World Happiness Report & RBI Monetary Policy Committee (Section 45ZB)",
-      headlineBn: "গ্লোবাল হাঙ্গার ইনডেক্স (GHI), বিশ্ব সুখ সূচক এবং আরবিআই-এর মুদ্রানীতি কমিটি (MPC)",
-      sourceTag: "GKToday Economy & Reports · RBI",
-      whyInNewsEn: "Concern Worldwide and Welthungerhilfe released the Global Hunger Index (GHI), while the Government of India reconstituted the external members of the RBI Monetary Policy Committee (MPC).",
-      whyInNewsBn: "গ্লোবাল হাঙ্গার ইনডেক্স (GHI) প্রকাশিত হয়েছে এবং ভারত সরকার আরবিআই-এর ৬-সদস্যের মুদ্রানীতি কমিটির (MPC) বহিরাগত সদস্যদের পুনর্গঠন করেছে।",
-      examPointsEn: [
-        "Global Hunger Index (GHI) is published jointly by Concern Worldwide (Ireland) and Welthungerhilfe (Germany) based on 4 indicators: Undernourishment, Child Stunting, Child Wasting, and Child Mortality.",
-        "Monetary Policy Committee (MPC) was constituted in 2016 under Section 45ZB of the RBI Act, 1934 (on the recommendation of the Urjit Patel Committee) to maintain CPI inflation at 4% (±2% tolerance band: 2% to 6%).",
-        "MPC has 6 members: 3 from RBI (Governor as ex-officio Chairperson, Deputy Governor in charge of Monetary Policy, and 1 RBI officer) + 3 external members appointed by the Central Government for a 4-year term.",
-        "World Happiness Report is published annually on 20 March by the UN Sustainable Development Solutions Network (SDSN); Finland topped for the 7th consecutive year.",
-      ],
-      examPointsBn: [
-        "গ্লোবাল হাঙ্গার ইনডেক্স যৌথভাবে প্রকাশ করে আয়ারল্যান্ডের Concern Worldwide এবং জার্মানির Welthungerhilfe (৪টি সূচকের ভিত্তিতে)।",
-        "উর্জিত প্যাটেল কমিটির সুপারিশে ১৯৩৪ সালের আরবিআই আইনের 45ZB ধারা অনুযায়ী ২০১৬ সালে ৬-সদস্যের মুদ্রানীতি কমিটি (MPC) গঠিত হয়।",
-        "MPC-এর লক্ষ্য খুচরো মুদ্রাস্ফীতি (CPI Inflation) ৪% স্তরে রাখা (সহনশীলতার সীমা ২% থেকে ৬%)।",
-        "বিশ্ব সুখ সূচকে (World Happiness Report) ফিনল্যান্ড টানা সপ্তমবার প্রথম স্থান অধিকার করেছে।",
-      ],
-      staticGkLinkEn: "Consumer Price Index (CPI Combined) is released monthly by the National Statistical Office (NSO) under MoSPI (Base Year: 2012 = 100).",
-      staticGkLinkBn: "জাতীয় পরিসংখ্যান কার্যালয় (NSO) প্রতি মাসে ভোক্তা মূল্য সূচক বা CPI প্রকাশ করে (ভিত্তিবর্ষ ২০১২)।",
-      examTrapEn: "Trap: Global Hunger Index is NOT published by FAO or UNDP — it is published by Concern Worldwide & Welthungerhilfe.",
-      examTrapBn: "সতর্কতা: গ্লোবাল হাঙ্গার ইনডেক্স রাষ্ট্রপুঞ্জের FAO বা UNDP প্রকাশ করে না, এটি প্রকাশ করে Concern Worldwide ও Welthungerhilfe।",
-    },
-  ];
 
 
   const deletedDateRows = await queryClient<Array<{ edition_date: string }>>`
@@ -2667,7 +2401,7 @@ export async function runAutonomousCurrentAffairsAgent(params: {
     ...crawled.crawledUrls,
   ]);
 
-  let searchModelUsed = "gemini-3.8-flash";
+  let searchModelUsed = "gemini-4-hydrogen";
   let lastGeminiError = "";
 
   try {
@@ -3079,14 +2813,34 @@ MANDATORY EXAM-STANDARD DEPTH & QUALITY RULES:
     model: string;
   }> = [];
 
+  const dedupDebugRows: Array<{
+    headline: string;
+    category: string;
+    maxCosine: number;
+    status: string;
+    model: string;
+  }> = [];
+
   for (let i = 0; i < lexicalSurvivors.length; i++) {
     if (newUniqueTopics.length >= missingCount) break;
     const candidate = lexicalSurvivors[i];
     const vec = survivorEmbeddings[i];
 
-    const isSemanticDuplicate = storedVectors.some(
-      (existingVec) => computeRawCosineSimilarity(vec.values, existingVec) > 0.86
-    );
+    let maxCosine = 0;
+    for (const existingVec of storedVectors) {
+      const sim = computeRawCosineSimilarity(vec.values, existingVec);
+      if (sim > maxCosine) maxCosine = sim;
+    }
+
+    const isSemanticDuplicate = maxCosine > 0.86;
+    dedupDebugRows.push({
+      headline: candidate.headlineEn.slice(0, 62),
+      category: candidate.category,
+      maxCosine: Number(maxCosine.toFixed(4)),
+      status: isSemanticDuplicate ? "DROPPED (>0.86)" : "ACCEPTED",
+      model: vec.model,
+    });
+
     if (isSemanticDuplicate) {
       droppedDuplicatesCount++;
       continue;
@@ -3104,6 +2858,12 @@ MANDATORY EXAM-STANDARD DEPTH & QUALITY RULES:
       model: vec.model,
     });
   }
+
+  logVectorDebug(
+    "DEDUP",
+    `Edition ${editionDate}: checked ${lexicalSurvivors.length} candidates against ${existingVectorRows.length} stored vectors -> accepted ${newUniqueTopics.length}, dropped ${droppedDuplicatesCount}`,
+    dedupDebugRows
+  );
 
   // Top-Up Pass: If after lexical & vector deduplication total topics is still < 12 (e.g. 9 or 10),
   // run one fast supplemental extraction batch so every edition reliably has 12 to 14 topics!
@@ -5051,7 +4811,19 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
         extractedTextHint: body.extractedTextHint,
       });
 
-      // 2. Compute embeddings for each chunk (`gemini-embedding-2-preview` with deterministic L2 fallback)
+      logVectorDebug(
+        "CHUNK",
+        `Uploaded "${docTitle}" (${fileFormat}) -> extracted ${extracted.chunks.length} chunks`,
+        extracted.chunks.map((ch, idx) => ({
+          chunkIndex: idx + 1,
+          category: ch.category,
+          headline: ch.headlineEn.slice(0, 62),
+          chars: ch.contentEn.length,
+          facts: ch.keyFacts.length,
+        }))
+      );
+
+      // 2. Compute embeddings for each chunk (`gemini-embedding-2` with deterministic L2 fallback)
       const chunksWithEmbeddings = await Promise.all(
         extracted.chunks.map(async (ch) => {
           const textForEmbedding = `${ch.category} | ${ch.headlineEn} | ${ch.headlineBn} | ${ch.contentEn} | ${ch.keyFacts.join("; ")}`;
@@ -5068,7 +4840,7 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
         new Set(chunksWithEmbeddings.map((c) => c.category))
       );
       const embeddingModelUsed =
-        chunksWithEmbeddings[0]?.embeddingModel || "gemini-embedding-2-preview";
+        chunksWithEmbeddings[0]?.embeddingModel || "gemini-embedding-2";
       const embeddingDimsUsed = chunksWithEmbeddings[0]?.embedding.length || 128;
 
       const [savedDoc] = await queryClient<{ id: string }[]>`
@@ -5130,6 +4902,18 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
         `;
       }
 
+      logVectorDebug(
+        "STORE",
+        `Stored doc=${savedDoc.id} | model=${embeddingModelUsed} | dims=${embeddingDimsUsed} | chunks=${chunksWithEmbeddings.length}`,
+        chunksWithEmbeddings.map((ch, idx) => ({
+          chunkIndex: idx + 1,
+          category: ch.category,
+          headline: ch.headlineEn.slice(0, 62),
+          dims: ch.embedding.length,
+          vecSample: `[${ch.embedding.slice(0, 4).join(", ")}...]`,
+        }))
+      );
+
       return reply.status(201).send({
         documentId: savedDoc.id,
         title: docTitle,
@@ -5141,6 +4925,14 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
         embeddingModel: embeddingModelUsed,
         embeddingDims: embeddingDimsUsed,
         categories: categoriesCovered,
+        chunksPreview: chunksWithEmbeddings.map((ch, idx) => ({
+          chunkIndex: idx + 1,
+          category: ch.category,
+          headlineEn: ch.headlineEn,
+          chars: ch.contentEn.length,
+          factsCount: ch.keyFacts.length,
+          dims: ch.embedding.length,
+        })),
       });
     }
   );
@@ -5263,16 +5055,33 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
           const finalScore = Math.min(0.99, Math.max(0.15, cosSim * 0.65 + kwBoost));
           return {
             chunk: c,
+            rawCosine: Number(cosSim.toFixed(4)),
+            kwBoost: Number(kwBoost.toFixed(4)),
             similarityScore: Number(finalScore.toFixed(3)),
           };
         })
         .sort((a, b) => b.similarityScore - a.similarityScore)
         .slice(0, topK);
 
+      logVectorDebug(
+        "SEARCH",
+        `Query="${rawQuery}" | model=${queryEmbedding.model} | scanned=${filtered.length} chunks | topK=${topK}`,
+        scored.map((item, idx) => ({
+          rank: idx + 1,
+          category: item.chunk.category,
+          headline: item.chunk.headline_en.slice(0, 58),
+          rawCosine: item.rawCosine,
+          kwBoost: item.kwBoost,
+          finalScore: item.similarityScore,
+          scope: item.chunk.scope_label,
+        }))
+      );
+
       return {
         query: rawQuery,
         embeddingModel: queryEmbedding.model,
-        results: scored.map(({ chunk: c, similarityScore }) => ({
+        scannedChunksCount: filtered.length,
+        results: scored.map(({ chunk: c, rawCosine, kwBoost, similarityScore }) => ({
           id: c.id,
           documentId: c.document_id,
           chunkIndex: c.chunk_index,
@@ -5288,6 +5097,7 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
           targetYear: c.target_year,
           sourcePublisher: c.source_publisher,
           similarityScore,
+          debugScores: { rawCosine, kwBoost, finalScore: similarityScore },
         })),
       };
     }
@@ -5521,38 +5331,47 @@ function buildDeterministicNormalizedEmbedding(text: string, dims = 128): number
   return vec.map((v) => Number((v / norm).toFixed(5)));
 }
 
+const GEMINI_EMBEDDING_MODELS = Array.from(
+  new Set([
+    process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-2",
+    "gemini-embedding-2-preview",
+  ])
+);
+
 async function computeTextVectorEmbedding(text: string): Promise<{
   values: number[];
   model: string;
 }> {
-  try {
-    const ai = getGenAIClient();
-    const embedPromise = ai.models.embedContent({
-      model: "gemini-embedding-2-preview",
-      contents: text.slice(0, 2000),
-    });
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Embedding timeout")), 4500)
-    );
-    const resp = await Promise.race([embedPromise, timeoutPromise]);
-    const rawVals = resp.embeddings?.[0]?.values;
-    if (Array.isArray(rawVals) && rawVals.length > 0) {
-      // Project/slice to 128 normalized dimensions so PostgreSQL JSONB storage and cosine search remain ultra-fast
-      const sliced = rawVals.slice(0, 128);
-      let normSq = 0;
-      for (const v of sliced) normSq += v * v;
-      const norm = Math.sqrt(normSq) || 1;
-      return {
-        values: sliced.map((v) => Number((v / norm).toFixed(5))),
-        model: "gemini-embedding-2-preview",
-      };
+  const ai = getGenAIClient();
+  for (const embedModel of GEMINI_EMBEDDING_MODELS) {
+    try {
+      const embedPromise = ai.models.embedContent({
+        model: embedModel,
+        contents: text.slice(0, 2000),
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Embedding timeout")), 4500)
+      );
+      const resp = await Promise.race([embedPromise, timeoutPromise]);
+      const rawVals = resp.embeddings?.[0]?.values;
+      if (Array.isArray(rawVals) && rawVals.length > 0) {
+        // Project/slice to 128 normalized dimensions so PostgreSQL JSONB storage and cosine search remain ultra-fast
+        const sliced = rawVals.slice(0, 128);
+        let normSq = 0;
+        for (const v of sliced) normSq += v * v;
+        const norm = Math.sqrt(normSq) || 1;
+        return {
+          values: sliced.map((v) => Number((v / norm).toFixed(5))),
+          model: embedModel,
+        };
+      }
+    } catch {
+      // Try next embedding model candidate
     }
-  } catch {
-    // Fallback to deterministic 128-dim L2-normalized semantic token embedding
   }
   return {
     values: buildDeterministicNormalizedEmbedding(text, 128),
-    model: "gemini-embedding-2-preview (hybrid-128d)",
+    model: "gemini-embedding-2 (hybrid-128d-fallback)",
   };
 }
 
