@@ -72,13 +72,10 @@ export interface CaAgentStepLog {
 }
 
 function getGenAIClient(): GoogleGenAI {
-  const apiKey =
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "GEMINI_API_KEY environment variable is not configured in .env. Please set GEMINI_API_KEY in your root .env file."
+      "GEMINI_API_KEY environment variable is not configured in .env. Please set GEMINI_API_KEY in the environment."
     );
   }
   return new GoogleGenAI({
@@ -102,15 +99,12 @@ export type ModelTier = "fast" | "balanced" | "deep";
 const GEMINI_MODEL_TIERS: Record<ModelTier, string[]> = {
   fast: Array.from(
     new Set([
-      process.env.GEMINI_FAST_MODEL || "gemini-3.1-flash-lite",
-      "gemini-4-hydrogen",
-      "gemini-2.5-flash",
+      process.env.GEMINI_FAST_MODEL || "gemini-3.1-flash-lite"
     ])
   ),
   balanced: Array.from(
     new Set([
-      process.env.GEMINI_PRIMARY_MODEL || "gemini-4-hydrogen",
-      "gemini-2.5-flash",
+      process.env.GEMINI_PRIMARY_MODEL || "gemini-4-hydrogen"
     ])
   ),
   deep: Array.from(
@@ -599,7 +593,7 @@ export async function ensureCurrentAffairsSchema(): Promise<void> {
       const currentToday = getTodayIso();
       caAutoScheduler.lastAutoRunAt = new Date().toISOString();
       caAutoScheduler.lastAutoCollectedDate = currentToday;
-      void seedFullYearClerkshipArchive().catch(() => {});
+      void seedFullYearClerkshipArchive().catch(() => { });
     }, 30 * 60 * 1000); // Checks every 30 minutes
   }
 }
@@ -1052,45 +1046,45 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
       'Comprehensive 12-topic exam-oriented synthesis grounded on PYQArena (The Hindu 2nd Sept 2026), GKToday, PIB & WB Gazette across Polity, WB Special, Economy, Space, Sports, Awards, Defence & Indices.',
       'PYQArena (দ্য হিন্দু ২ সেপ্টেম্বর ২০২৬), GKToday এবং পিআইবি ভিত্তিক ১২টি অত্যন্ত গুরুত্বপূর্ণ পরীক্ষা-কেন্দ্রিক কারেন্ট অ্যাফেয়ার্স ও ক্যাটাগরিভিত্তিক সংকলন।',
       ${JSON.stringify([
-        "https://www.pyqarena.com/current-affairs-from-the-hindu-2nd-september-2026/",
-        "https://www.gktoday.in/current-affairs/",
-        "https://pib.gov.in",
-        "https://www.thehindu.com",
-      ])}::jsonb,
+    "https://www.pyqarena.com/current-affairs-from-the-hindu-2nd-september-2026/",
+    "https://www.gktoday.in/current-affairs/",
+    "https://pib.gov.in",
+    "https://www.thehindu.com",
+  ])}::jsonb,
       ${JSON.stringify([
-        {
-          stepNumber: 1,
-          agentRole: "Web-Scout & Source Harvester Agent",
-          actionSummary: "Grounded on PYQArena (The Hindu 2nd Sept 2026) + GKToday + PIB",
-          status: "completed",
-          durationMs: 640,
-          details: "Harvested 12 high-probability WBPSC Clerkship & WBCS Prelims topics across all 10 exam categories.",
-        },
-        {
-          stepNumber: 2,
-          agentRole: "Monthly Category Classifier Agent",
-          actionSummary: "Classified all 12 topics into Sports, Awards, Science, Polity, Economy, WB Special, Defence & Indices",
-          status: "completed",
-          durationMs: 420,
-          details: "Assigned deterministic category tags for end-of-month categorized PDF capsule compilation.",
-        },
-        {
-          stepNumber: 3,
-          agentRole: "Concise Exam-Point Synthesizer Agent",
-          actionSummary: "Distilled 48 concise bullet points + 12 Static GK Hooks + 12 Exam Traps",
-          status: "completed",
-          durationMs: 510,
-          details: "Formatted for Floating Animated Flashcard Deck and Categorized Monthly PDF.",
-        },
-        {
-          stepNumber: 4,
-          agentRole: "Fact-Critic & PYQ MCQ Generator Agent",
-          actionSummary: "Verified constitutional articles, dates, and generated bilingual PYQ MCQs",
-          status: "completed",
-          durationMs: 450,
-          details: "Zero duplicate stems; verified Bengali conjuncts.",
-        },
-      ])}::jsonb,
+    {
+      stepNumber: 1,
+      agentRole: "Web-Scout & Source Harvester Agent",
+      actionSummary: "Grounded on PYQArena (The Hindu 2nd Sept 2026) + GKToday + PIB",
+      status: "completed",
+      durationMs: 640,
+      details: "Harvested 12 high-probability WBPSC Clerkship & WBCS Prelims topics across all 10 exam categories.",
+    },
+    {
+      stepNumber: 2,
+      agentRole: "Monthly Category Classifier Agent",
+      actionSummary: "Classified all 12 topics into Sports, Awards, Science, Polity, Economy, WB Special, Defence & Indices",
+      status: "completed",
+      durationMs: 420,
+      details: "Assigned deterministic category tags for end-of-month categorized PDF capsule compilation.",
+    },
+    {
+      stepNumber: 3,
+      agentRole: "Concise Exam-Point Synthesizer Agent",
+      actionSummary: "Distilled 48 concise bullet points + 12 Static GK Hooks + 12 Exam Traps",
+      status: "completed",
+      durationMs: 510,
+      details: "Formatted for Floating Animated Flashcard Deck and Categorized Monthly PDF.",
+    },
+    {
+      stepNumber: 4,
+      agentRole: "Fact-Critic & PYQ MCQ Generator Agent",
+      actionSummary: "Verified constitutional articles, dates, and generated bilingual PYQ MCQs",
+      status: "completed",
+      durationMs: 450,
+      details: "Zero duplicate stems; verified Bengali conjuncts.",
+    },
+  ])}::jsonb,
       ${JSON.stringify(sept2Topics)}::jsonb,
       ${JSON.stringify(sept2Mcqs)}::jsonb,
       '12-Topic Hooks: [84th Amend = 2026 Freeze] · [Tamluk 1942 = Satish Samanta] · [ULI = RBIH] · [Chandrayaan-4 = Sample Return] · [45th Chess Olympiad = Double Gold Budapest] · [GII = Rank 39 (WIPO)] · [SC Sub-Classification = 7-Judge Davinder Singh]',
@@ -1123,538 +1117,538 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
     topics: CaTopicItem[];
     mcqs: CaMcqItem[];
   }> = [
-    {
-      editionDate: "2025-11-26",
-      titleEn: "November 2025 Categorized Monthly Capsule — Samvidhan Divas, COP29 Climate Finance & 56th Tiger Reserve",
-      titleBn: "নভেম্বর ২০২৫ ক্যাটাগরিভিত্তিক মাসিক ক্যাপসুল — সংবিধান দিবস, COP29 জলবায়ু সম্মেলন ও ৫৬তম টাইগার রিজার্ভ",
-      summaryEn: "Categorized November 2025 digest covering Constitution Day (26 Nov), UNFCCC COP29 Climate Finance, Guru Ghasidas-Tamor Pingla (56th Tiger Reserve), and Booker/Jnanpith Literary Honours.",
-      summaryBn: "নভেম্বর ২০২৫-এর ক্যাটাগরিভিত্তিক কারেন্ট অ্যাফেয়ার্স: সংবিধান দিবস (২৬ নভেম্বর), COP29 জলবায়ু সম্মেলন এবং ৫৬তম টাইগার রিজার্ভ।",
-      mnemonicsEn: "[26 Nov 1949 = Samvidhan Divas] · [COP29 = Baku, Azerbaijan] · [COP30 = Belem, Brazil] · [Tiger Reserve #56 = Guru Ghasidas-Tamor Pingla (Chhattisgarh)]",
-      mnemonicsBn: "[২৬ নভেম্বর ১৯৪৯ = সংবিধান দিবস] · [COP29 = বাকু, আজারবাইজান] · [৫৬তম টাইগার রিজার্ভ = গুরু ঘাসিদাস-তমোর পিংলা (ছত্তিশগড়)]",
-      topics: [
-        {
-          id: "ca-2025-11-26-1",
-          category: "Polity & Governance",
-          headlineEn: "Samvidhan Divas (26 November) — Adoption of the Indian Constitution & Drafting Committee",
-          headlineBn: "সংবিধান দিবস (২৬ নভেম্বর) — ভারতীয় সংবিধান গ্রহণ ও খসড়া কমিটি",
-          sourceTag: "GKToday · PIB Polity",
-          whyInNewsEn: "India observed Samvidhan Divas (Constitution Day) on 26 November commemorating the adoption of the Constitution by the Constituent Assembly on 26 November 1949.",
-          whyInNewsBn: "১৯৪৯ সালের ২৬ নভেম্বর গণপরিষদ কর্তৃক ভারতীয় সংবিধান গৃহীত হওয়ার স্মরণে ২৬ নভেম্বর সংবিধান দিবস উদযাপিত হয়েছে।",
-          examPointsEn: [
-            "Adopted on 26 November 1949 (observed as Constitution Day / Samvidhan Divas since 2015); came into full force on 26 January 1950.",
-            "Articles relating to citizenship (Arts. 5–9), elections (Art. 324), and provisional Parliament came into force immediately on 26 November 1949.",
-            "Constituent Assembly took 2 years, 11 months, and 18 days across 11 sessions; Dr. B.R. Ambedkar chaired the 7-member Drafting Committee (set up on 29 August 1947).",
-            "Original Constitution was handwritten in English by Prem Behari Narain Raizada and illuminated by Nandalal Bose and Beohar Rammanohar Sinha of Santiniketan (Visva-Bharati).",
-          ],
-          examPointsBn: [
-            "১৯৪৯ সালের ২৬ নভেম্বর সংবিধান গৃহীত হয় (২০১৫ সাল থেকে এই দিনটি 'সংবিধান দিবস' হিসেবে পালিত হচ্ছে) এবং ১৯৫০ সালের ২৬ জানুয়ারি কার্যকর হয়।",
-            "নাগরিকত্ব (ধারা ৫–৯) ও নির্বাচন কমিশন (ধারা ৩২৪) সংক্রান্ত ধারাগুলি ১৯৪৯ সালের ২৬ নভেম্বরই কার্যকর হয়েছিল।",
-            "গণপরিষদের মোট সময় লেগেছিল ২ বছর ১১ মাস ১৮ দিন; খসড়া কমিটির (Drafting Committee) চেয়ারম্যান ছিলেন ড. বি. আর. আম্বেদকর।",
-            "মূল সংবিধানটি ইংরেজিতে ক্যালিগ্রাফি করেন প্রেম বিহারী নারায়ণ রাইজাদা এবং অলংকরণ করেন শান্তিনিকেতনের কলাভবনের নন্দলাল বসু ও রামমনোহর সিনহা।",
-          ],
-          staticGkLinkEn: "Constituent Assembly first met on 9 December 1946 with Dr. Sachchidananda Sinha as temporary President; Dr. Rajendra Prasad was elected permanent President on 11 December 1946.",
-          staticGkLinkBn: "গণপরিষদের প্রথম অধিবেশন বসে ১৯৪৬ সালের ৯ ডিসেম্বর (অস্থায়ী সভাপতি: ড. সচ্চিদানন্দ সিনহা; স্থায়ী সভাপতি: ড. রাজেন্দ্র প্রসাদ, ১১ ডিসেম্বর ১৯৪৬)।",
-          examTrapEn: "Trap: Constitution was ADOPTED on 26 November 1949, but ENFORCED on 26 January 1950.",
-          examTrapBn: "সতর্কতা: সংবিধান 'গৃহীত' (Adopted) হয় ২৬ নভেম্বর ১৯৪৯, কিন্তু 'কার্যকর' (Enforced) হয় ২৬ জানুয়ারি ১৯৫০।",
-        },
-        {
-          id: "ca-2026-11-15-2",
-          category: "Environment & GI Tags",
-          headlineEn: "UNFCCC COP29 Climate Summit (Baku) & Guru Ghasidas-Tamor Pingla Notified as 56th Tiger Reserve",
-          headlineBn: "UNFCCC COP29 জলবায়ু সম্মেলন (বাকু) এবং ভারতের ৫৬তম টাইগার রিজার্ভ 'গুরু ঘাসিদাস-তমোর পিংলা'",
-          sourceTag: "GKToday Environment · NTCA",
-          whyInNewsEn: "UNFCCC COP29 concluded in Baku (Azerbaijan) with a New Collective Quantified Goal (NCQG) on climate finance, while India notified its 56th Tiger Reserve in Chhattisgarh.",
-          whyInNewsBn: "আজারবাইজানের বাকুতে COP29 জলবায়ু সম্মেলন সম্পন্ন হয়েছে এবং ছত্তিশগড়ের গুরু ঘাসিদাস-তমোর পিংলা ভারতের ৫৬তম টাইগার রিজার্ভ হিসেবে ঘোষিত হয়েছে।",
-          examPointsEn: [
-            "COP29 hosted in Baku, Azerbaijan; agreed on $300 billion/year climate finance goal by 2035 for developing nations (COP30 to be hosted in Belem, Brazil).",
-            "Guru Ghasidas-Tamor Pingla Tiger Reserve in Chhattisgarh notified as India's 56th Tiger Reserve (3rd largest in India after Nagarjunasagar-Srisailam in AP and Manas in Assam).",
-            "West Bengal has 2 Tiger Reserves: Sundarbans Tiger Reserve (South 24 Parganas) and Buxa Tiger Reserve (Alipurduar).",
-            "Project Tiger was launched on 1 April 1973 from Jim Corbett National Park (Uttarakhand); National Tiger Conservation Authority (NTCA) is a statutory body under the Wildlife Protection Act, 1972.",
-          ],
-          examPointsBn: [
-            "আজারবাইজানের বাকুতে COP29 অনুষ্ঠিত হয়েছে (পরবর্তী COP30 ব্রাজিলের বেলেম শহরে অনুষ্ঠিত হবে)।",
-            "ছত্তিশগড়ের 'গুরু ঘাসিদাস-তমোর পিংলা' ভারতের ৫৬তম টাইগার রিজার্ভ (আয়তনের দিক থেকে নাগার্জুনসাগর-শ্রীশৈলম ও মানসের পর ভারতের ৩য় বৃহত্তম)।",
-            "পশ্চিমবঙ্গে ২টি টাইগার রিজার্ভ রয়েছে: সুন্দরবন টাইগার রিজার্ভ এবং বক্সা টাইগার রিজার্ভ (আলিপুরদুয়ার)।",
-            "১৯৭৩ সালের ১ এপ্রিল প্রজেক্ট টাইগার চালু হয়; NTCA হলো ১৯৭২ সালের বন্যপ্রাণী সুরক্ষা আইনের অধীনে গঠিত একটি বিধিবদ্ধ সংস্থা।",
-          ],
-          staticGkLinkEn: "Madhya Pradesh is known as the 'Tiger State of India' with the highest tiger population (785 tigers).",
-          staticGkLinkBn: "মধ্যপ্রদেশকে ভারতের 'টাইগার স্টেট' বলা হয় (সর্বাধিক বাঘের সংখ্যা: ৭৮৫টি)।",
-          examTrapEn: "Trap: Largest Tiger Reserve in India by area is Nagarjunasagar-Srisailam (Andhra Pradesh), NOT Corbett.",
-          examTrapBn: "সতর্কতা: ভারতের বৃহত্তম টাইগার রিজার্ভ হলো অন্ধ্রপ্রদেশের নাগার্জুনসাগর-শ্রীশৈলম।",
-        },
-        {
-          id: "ca-2026-11-15-3",
-          category: "Awards & Honours",
-          headlineEn: "Booker Prize ('Orbital' by Samantha Harvey) & Jnanpith Award (Gulzar & Jagadguru Rambhadracharya)",
-          headlineBn: "বুকার পুরস্কার ('অরবিটাল' — সামান্থা হার্ভে) এবং ৫৮তম জ্ঞানপীঠ পুরস্কার",
-          sourceTag: "GKToday Awards · The Hindu Literary",
-          whyInNewsEn: "British author Samantha Harvey won the Booker Prize for her space-station novel 'Orbital', while the 58th Jnanpith Award honoured Urdu poet Gulzar and Sanskrit scholar Rambhadracharya.",
-          whyInNewsBn: "ব্রিটিশ লেখিকা সামান্থা হার্ভে তাঁর 'Orbital' উপন্যাসের জন্য বুকার পুরস্কার জিতেছেন এবং গুলজার ও জগদ্গুরু রামভদ্রাচার্য ৫৮তম জ্ঞানপীঠ পুরস্কারে ভূষিত হয়েছেন।",
-          examPointsEn: [
-            "Samantha Harvey won the Booker Prize for 'Orbital', a novel set aboard the International Space Station over a single 24-hour day (16 orbits of Earth).",
-            "58th Jnanpith Award (India's highest literary award, instituted in 1961) was jointly conferred on Gulzar (Urdu) and Jagadguru Rambhadracharya (Sanskrit).",
-            "First recipient of the Jnanpith Award: G. Sankara Kurup (1965, Malayalam); First Bengali recipient: Tarasankar Bandyopadhyay ('Ganadevata', 1966).",
-            "First woman to win the Jnanpith Award was Bengali novelist Ashapurna Devi in 1976 for 'Pratham Pratishruti'.",
-          ],
-          examPointsBn: [
-            "আন্তর্জাতিক মহাকাশ স্টেশনের পটভূমিতে রচিত 'Orbital' উপন্যাসের জন্য সামান্থা হার্ভে বুকার পুরস্কার লাভ করেছেন।",
-            "৫৮তম জ্ঞানপীঠ পুরস্কার (ভারতের সর্বোচ্চ সাহিত্য সম্মান) যৌথভাবে পেয়েছেন গুলজার (উর্দু) এবং জগদ্গুরু রামভদ্রাচার্য (সংস্কৃত)।",
-            "প্রথম জ্ঞানপীঠ প্রাপক: জি. শঙ্কর কুরুপ (১৯৬৫, মালয়ালম); প্রথম বাঙালি প্রাপক: তারাশঙ্কর বন্দ্যোপাধ্যায় ('গণদেবতা', ১৯৬৬)।",
-            "প্রথম মহিলা হিসেবে জ্ঞানপীঠ পুরস্কার পান আশাপূর্ণা দেবী ১৯৭৬ সালে ('প্রথম প্রতিশ্রুতি' উপন্যাসের জন্য)।",
-          ],
-          staticGkLinkEn: "Other Bengali Jnanpith laureates: Bishnu Dey (1971), Subhash Mukhopadhyay (1991), Mahasweta Devi (1996), Sankha Ghosh (2016), and Amitav Ghosh (2018 — first in English).",
-          staticGkLinkBn: "অমিতাভ ঘোষ ২০১৮ সালে প্রথম ইংরেজি ভাষার লেখক হিসেবে জ্ঞানপীঠ পুরস্কার পান।",
-          examTrapEn: "Trap: International Booker Prize (for translated fiction) was won by Jenny Erpenbeck ('Kairos'), whereas the main Booker Prize was won by Samantha Harvey ('Orbital').",
-          examTrapBn: "সতর্কতা: মূল বুকার পুরস্কার জিতেছে 'Orbital' (সামান্থা হার্ভে), আর ইন্টারন্যাশনাল বুকার জিতেছে 'Kairos' (জেনি এরপেনবেক)।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2026-11-15-1",
-          category: "Awards & Honours",
-          stem: {
-            en: "Who was the first woman in India to receive the prestigious Jnanpith Award (in 1976 for the Bengali novel 'Pratham Pratishruti')?",
-            bn: "ভারতের প্রথম মহিলা হিসেবে কে ১৯৭৬ সালে 'প্রথম প্রতিশ্রুতি' উপন্যাসের জন্য জ্ঞানপীঠ পুরস্কার লাভ করেন?",
+      {
+        editionDate: "2025-11-26",
+        titleEn: "November 2025 Categorized Monthly Capsule — Samvidhan Divas, COP29 Climate Finance & 56th Tiger Reserve",
+        titleBn: "নভেম্বর ২০২৫ ক্যাটাগরিভিত্তিক মাসিক ক্যাপসুল — সংবিধান দিবস, COP29 জলবায়ু সম্মেলন ও ৫৬তম টাইগার রিজার্ভ",
+        summaryEn: "Categorized November 2025 digest covering Constitution Day (26 Nov), UNFCCC COP29 Climate Finance, Guru Ghasidas-Tamor Pingla (56th Tiger Reserve), and Booker/Jnanpith Literary Honours.",
+        summaryBn: "নভেম্বর ২০২৫-এর ক্যাটাগরিভিত্তিক কারেন্ট অ্যাফেয়ার্স: সংবিধান দিবস (২৬ নভেম্বর), COP29 জলবায়ু সম্মেলন এবং ৫৬তম টাইগার রিজার্ভ।",
+        mnemonicsEn: "[26 Nov 1949 = Samvidhan Divas] · [COP29 = Baku, Azerbaijan] · [COP30 = Belem, Brazil] · [Tiger Reserve #56 = Guru Ghasidas-Tamor Pingla (Chhattisgarh)]",
+        mnemonicsBn: "[২৬ নভেম্বর ১৯৪৯ = সংবিধান দিবস] · [COP29 = বাকু, আজারবাইজান] · [৫৬তম টাইগার রিজার্ভ = গুরু ঘাসিদাস-তমোর পিংলা (ছত্তিশগড়)]",
+        topics: [
+          {
+            id: "ca-2025-11-26-1",
+            category: "Polity & Governance",
+            headlineEn: "Samvidhan Divas (26 November) — Adoption of the Indian Constitution & Drafting Committee",
+            headlineBn: "সংবিধান দিবস (২৬ নভেম্বর) — ভারতীয় সংবিধান গ্রহণ ও খসড়া কমিটি",
+            sourceTag: "GKToday · PIB Polity",
+            whyInNewsEn: "India observed Samvidhan Divas (Constitution Day) on 26 November commemorating the adoption of the Constitution by the Constituent Assembly on 26 November 1949.",
+            whyInNewsBn: "১৯৪৯ সালের ২৬ নভেম্বর গণপরিষদ কর্তৃক ভারতীয় সংবিধান গৃহীত হওয়ার স্মরণে ২৬ নভেম্বর সংবিধান দিবস উদযাপিত হয়েছে।",
+            examPointsEn: [
+              "Adopted on 26 November 1949 (observed as Constitution Day / Samvidhan Divas since 2015); came into full force on 26 January 1950.",
+              "Articles relating to citizenship (Arts. 5–9), elections (Art. 324), and provisional Parliament came into force immediately on 26 November 1949.",
+              "Constituent Assembly took 2 years, 11 months, and 18 days across 11 sessions; Dr. B.R. Ambedkar chaired the 7-member Drafting Committee (set up on 29 August 1947).",
+              "Original Constitution was handwritten in English by Prem Behari Narain Raizada and illuminated by Nandalal Bose and Beohar Rammanohar Sinha of Santiniketan (Visva-Bharati).",
+            ],
+            examPointsBn: [
+              "১৯৪৯ সালের ২৬ নভেম্বর সংবিধান গৃহীত হয় (২০১৫ সাল থেকে এই দিনটি 'সংবিধান দিবস' হিসেবে পালিত হচ্ছে) এবং ১৯৫০ সালের ২৬ জানুয়ারি কার্যকর হয়।",
+              "নাগরিকত্ব (ধারা ৫–৯) ও নির্বাচন কমিশন (ধারা ৩২৪) সংক্রান্ত ধারাগুলি ১৯৪৯ সালের ২৬ নভেম্বরই কার্যকর হয়েছিল।",
+              "গণপরিষদের মোট সময় লেগেছিল ২ বছর ১১ মাস ১৮ দিন; খসড়া কমিটির (Drafting Committee) চেয়ারম্যান ছিলেন ড. বি. আর. আম্বেদকর।",
+              "মূল সংবিধানটি ইংরেজিতে ক্যালিগ্রাফি করেন প্রেম বিহারী নারায়ণ রাইজাদা এবং অলংকরণ করেন শান্তিনিকেতনের কলাভবনের নন্দলাল বসু ও রামমনোহর সিনহা।",
+            ],
+            staticGkLinkEn: "Constituent Assembly first met on 9 December 1946 with Dr. Sachchidananda Sinha as temporary President; Dr. Rajendra Prasad was elected permanent President on 11 December 1946.",
+            staticGkLinkBn: "গণপরিষদের প্রথম অধিবেশন বসে ১৯৪৬ সালের ৯ ডিসেম্বর (অস্থায়ী সভাপতি: ড. সচ্চিদানন্দ সিনহা; স্থায়ী সভাপতি: ড. রাজেন্দ্র প্রসাদ, ১১ ডিসেম্বর ১৯৪৬)।",
+            examTrapEn: "Trap: Constitution was ADOPTED on 26 November 1949, but ENFORCED on 26 January 1950.",
+            examTrapBn: "সতর্কতা: সংবিধান 'গৃহীত' (Adopted) হয় ২৬ নভেম্বর ১৯৪৯, কিন্তু 'কার্যকর' (Enforced) হয় ২৬ জানুয়ারি ১৯৫০।",
           },
-          options: {
-            A: { en: "Mahasweta Devi", bn: "মহাশ্বেতা দেবী" },
-            B: { en: "Ashapurna Devi", bn: "আশাপূর্ণা দেবী" },
-            C: { en: "Amrita Pritam", bn: "অমৃতা প্রীতম" },
-            D: { en: "Leela Majumdar", bn: "লীলা মজুমদার" },
+          {
+            id: "ca-2026-11-15-2",
+            category: "Environment & GI Tags",
+            headlineEn: "UNFCCC COP29 Climate Summit (Baku) & Guru Ghasidas-Tamor Pingla Notified as 56th Tiger Reserve",
+            headlineBn: "UNFCCC COP29 জলবায়ু সম্মেলন (বাকু) এবং ভারতের ৫৬তম টাইগার রিজার্ভ 'গুরু ঘাসিদাস-তমোর পিংলা'",
+            sourceTag: "GKToday Environment · NTCA",
+            whyInNewsEn: "UNFCCC COP29 concluded in Baku (Azerbaijan) with a New Collective Quantified Goal (NCQG) on climate finance, while India notified its 56th Tiger Reserve in Chhattisgarh.",
+            whyInNewsBn: "আজারবাইজানের বাকুতে COP29 জলবায়ু সম্মেলন সম্পন্ন হয়েছে এবং ছত্তিশগড়ের গুরু ঘাসিদাস-তমোর পিংলা ভারতের ৫৬তম টাইগার রিজার্ভ হিসেবে ঘোষিত হয়েছে।",
+            examPointsEn: [
+              "COP29 hosted in Baku, Azerbaijan; agreed on $300 billion/year climate finance goal by 2035 for developing nations (COP30 to be hosted in Belem, Brazil).",
+              "Guru Ghasidas-Tamor Pingla Tiger Reserve in Chhattisgarh notified as India's 56th Tiger Reserve (3rd largest in India after Nagarjunasagar-Srisailam in AP and Manas in Assam).",
+              "West Bengal has 2 Tiger Reserves: Sundarbans Tiger Reserve (South 24 Parganas) and Buxa Tiger Reserve (Alipurduar).",
+              "Project Tiger was launched on 1 April 1973 from Jim Corbett National Park (Uttarakhand); National Tiger Conservation Authority (NTCA) is a statutory body under the Wildlife Protection Act, 1972.",
+            ],
+            examPointsBn: [
+              "আজারবাইজানের বাকুতে COP29 অনুষ্ঠিত হয়েছে (পরবর্তী COP30 ব্রাজিলের বেলেম শহরে অনুষ্ঠিত হবে)।",
+              "ছত্তিশগড়ের 'গুরু ঘাসিদাস-তমোর পিংলা' ভারতের ৫৬তম টাইগার রিজার্ভ (আয়তনের দিক থেকে নাগার্জুনসাগর-শ্রীশৈলম ও মানসের পর ভারতের ৩য় বৃহত্তম)।",
+              "পশ্চিমবঙ্গে ২টি টাইগার রিজার্ভ রয়েছে: সুন্দরবন টাইগার রিজার্ভ এবং বক্সা টাইগার রিজার্ভ (আলিপুরদুয়ার)।",
+              "১৯৭৩ সালের ১ এপ্রিল প্রজেক্ট টাইগার চালু হয়; NTCA হলো ১৯৭২ সালের বন্যপ্রাণী সুরক্ষা আইনের অধীনে গঠিত একটি বিধিবদ্ধ সংস্থা।",
+            ],
+            staticGkLinkEn: "Madhya Pradesh is known as the 'Tiger State of India' with the highest tiger population (785 tigers).",
+            staticGkLinkBn: "মধ্যপ্রদেশকে ভারতের 'টাইগার স্টেট' বলা হয় (সর্বাধিক বাঘের সংখ্যা: ৭৮৫টি)।",
+            examTrapEn: "Trap: Largest Tiger Reserve in India by area is Nagarjunasagar-Srisailam (Andhra Pradesh), NOT Corbett.",
+            examTrapBn: "সতর্কতা: ভারতের বৃহত্তম টাইগার রিজার্ভ হলো অন্ধ্রপ্রদেশের নাগার্জুনসাগর-শ্রীশৈলম।",
           },
-          correctOption: "B",
-          explanation: {
-            en: "Ashapurna Devi became the first woman to win the Jnanpith Award in 1976 for her trilogy opener 'Pratham Pratishruti'.",
-            bn: "আশাপূর্ণা দেবী ১৯৭৬ সালে 'প্রথম প্রতিশ্রুতি' উপন্যাসের জন্য প্রথম মহিলা হিসেবে জ্ঞানপীঠ পুরস্কার পান।",
+          {
+            id: "ca-2026-11-15-3",
+            category: "Awards & Honours",
+            headlineEn: "Booker Prize ('Orbital' by Samantha Harvey) & Jnanpith Award (Gulzar & Jagadguru Rambhadracharya)",
+            headlineBn: "বুকার পুরস্কার ('অরবিটাল' — সামান্থা হার্ভে) এবং ৫৮তম জ্ঞানপীঠ পুরস্কার",
+            sourceTag: "GKToday Awards · The Hindu Literary",
+            whyInNewsEn: "British author Samantha Harvey won the Booker Prize for her space-station novel 'Orbital', while the 58th Jnanpith Award honoured Urdu poet Gulzar and Sanskrit scholar Rambhadracharya.",
+            whyInNewsBn: "ব্রিটিশ লেখিকা সামান্থা হার্ভে তাঁর 'Orbital' উপন্যাসের জন্য বুকার পুরস্কার জিতেছেন এবং গুলজার ও জগদ্গুরু রামভদ্রাচার্য ৫৮তম জ্ঞানপীঠ পুরস্কারে ভূষিত হয়েছেন।",
+            examPointsEn: [
+              "Samantha Harvey won the Booker Prize for 'Orbital', a novel set aboard the International Space Station over a single 24-hour day (16 orbits of Earth).",
+              "58th Jnanpith Award (India's highest literary award, instituted in 1961) was jointly conferred on Gulzar (Urdu) and Jagadguru Rambhadracharya (Sanskrit).",
+              "First recipient of the Jnanpith Award: G. Sankara Kurup (1965, Malayalam); First Bengali recipient: Tarasankar Bandyopadhyay ('Ganadevata', 1966).",
+              "First woman to win the Jnanpith Award was Bengali novelist Ashapurna Devi in 1976 for 'Pratham Pratishruti'.",
+            ],
+            examPointsBn: [
+              "আন্তর্জাতিক মহাকাশ স্টেশনের পটভূমিতে রচিত 'Orbital' উপন্যাসের জন্য সামান্থা হার্ভে বুকার পুরস্কার লাভ করেছেন।",
+              "৫৮তম জ্ঞানপীঠ পুরস্কার (ভারতের সর্বোচ্চ সাহিত্য সম্মান) যৌথভাবে পেয়েছেন গুলজার (উর্দু) এবং জগদ্গুরু রামভদ্রাচার্য (সংস্কৃত)।",
+              "প্রথম জ্ঞানপীঠ প্রাপক: জি. শঙ্কর কুরুপ (১৯৬৫, মালয়ালম); প্রথম বাঙালি প্রাপক: তারাশঙ্কর বন্দ্যোপাধ্যায় ('গণদেবতা', ১৯৬৬)।",
+              "প্রথম মহিলা হিসেবে জ্ঞানপীঠ পুরস্কার পান আশাপূর্ণা দেবী ১৯৭৬ সালে ('প্রথম প্রতিশ্রুতি' উপন্যাসের জন্য)।",
+            ],
+            staticGkLinkEn: "Other Bengali Jnanpith laureates: Bishnu Dey (1971), Subhash Mukhopadhyay (1991), Mahasweta Devi (1996), Sankha Ghosh (2016), and Amitav Ghosh (2018 — first in English).",
+            staticGkLinkBn: "অমিতাভ ঘোষ ২০১৮ সালে প্রথম ইংরেজি ভাষার লেখক হিসেবে জ্ঞানপীঠ পুরস্কার পান।",
+            examTrapEn: "Trap: International Booker Prize (for translated fiction) was won by Jenny Erpenbeck ('Kairos'), whereas the main Booker Prize was won by Samantha Harvey ('Orbital').",
+            examTrapBn: "সতর্কতা: মূল বুকার পুরস্কার জিতেছে 'Orbital' (সামান্থা হার্ভে), আর ইন্টারন্যাশনাল বুকার জিতেছে 'Kairos' (জেনি এরপেনবেক)।",
           },
-        },
-      ],
-    },
-    {
-      editionDate: "2026-06-20",
-      titleEn: "June 2026 Categorized Capsule — 18th Lok Sabha Constitution, Nalanda University & T20 World Cup",
-      titleBn: "জুন ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ১৮তম লোকসভা গঠন, নালন্দা বিশ্ববিদ্যালয় ও টি-২০ বিশ্বকাপ",
-      summaryEn: "Categorized June 2026 digest covering 18th Lok Sabha Speaker & Pro-tem Speaker articles, Nalanda University new campus in Rajgir, and India's ICC Men's T20 World Cup triumph.",
-      summaryBn: "জুন ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ১৮তম লোকসভার স্পিকার নির্বাচন, রাজগীরে নালন্দা বিশ্ববিদ্যালয়ের নতুন ক্যাম্পাস এবং ভারতের টি-২০ বিশ্বকাপ জয়।",
-      mnemonicsEn: "[Art. 93 = Speaker of Lok Sabha] · [Art. 95(1) = Pro-tem Speaker] · [Nalanda = Founded by Kumaragupta I (5th Century CE)] · [ICC T20 WC = India beat South Africa in Barbados]",
-      mnemonicsBn: "[ধারা ৯৩ = লোকসভার স্পিকার] · [নালন্দা মহাবিহার = প্রথম কুমারগুপ্ত প্রতিষ্ঠিত] · [টি-২০ বিশ্বকাপ = বার্বাডোজে দক্ষিণ আফ্রিকাকে হারিয়ে ভারত চ্যাম্পিয়ন]",
-      topics: [
-        {
-          id: "ca-2026-06-20-1",
-          category: "Sports & Tournaments",
-          headlineEn: "India Wins ICC Men's T20 World Cup (Barbados) & ICC Women's T20 Updates",
-          headlineBn: "ভারতের আইসিসি টি-২০ বিশ্বকাপ জয় (বার্বাডোজ) এবং ক্রীড়া পুরস্কার",
-          sourceTag: "GKToday Sports",
-          whyInNewsEn: "India defeated South Africa by 7 runs in the final at Kensington Oval, Bridgetown (Barbados) to win its second ICC Men's T20 World Cup title.",
-          whyInNewsBn: "ওয়েস্ট ইন্ডিজের বার্বাডোজে ফাইনালে দক্ষিণ আফ্রিকাকে ৭ রানে হারিয়ে ভারত দ্বিতীয়বার আইসিসি পুরুষ টি-২০ বিশ্বকাপ চ্যাম্পিয়ন হয়েছে।",
-          examPointsEn: [
-            "India won its 2nd T20 World Cup title (first was in 2007 under M.S. Dhoni in South Africa) under Captain Rohit Sharma and Coach Rahul Dravid.",
-            "Player of the Match in Final: Virat Kohli (76 runs); Player of the Tournament: Jasprit Bumrah (15 wickets at 4.17 economy).",
-            "Co-hosted by West Indies and USA; India became the first team in history to win the T20 World Cup unbeaten (8–0).",
-            "Following the final, Rohit Sharma, Virat Kohli, and Ravindra Jadeja announced their retirement from T20 Internationals.",
-          ],
-          examPointsBn: [
-            "রোহিত শর্মার নেতৃত্বে ভারত দ্বিতীয়বার টি-২০ বিশ্বকাপ জিতেছে (প্রথমবার ২০০৭ সালে মহেন্দ্র সিং ধোনির নেতৃত্বে)।",
-            "ফাইনালে ম্যাচের সেরা: বিরাট কোহলি (৭৬ রান); টুর্নামেন্টের সেরা (Player of the Tournament): জসপ্রীত বুমরাহ (১৫ উইকেট)।",
-            "ওয়েস্ট ইন্ডিজ ও মার্কিন যুক্তরাষ্ট্র যৌথভাবে এই বিশ্বকাপ আয়োজন করেছিল; ভারত অপরাজিত থেকে চ্যাম্পিয়ন হয়।",
-            "ফাইনালের পর রোহিত শর্মা, বিরাট কোহলি ও রবীন্দ্র জাদেজা আন্তর্জাতিক টি-২০ ক্রিকেট থেকে অবসর ঘোষণা করেন।",
-          ],
-          staticGkLinkEn: "India has won 2 ODI World Cups (1983 under Kapil Dev, 2011 under M.S. Dhoni) and 2 T20 World Cups (2007, 2024).",
-          staticGkLinkBn: "ভারত ২ বার একদিনের বিশ্বকাপ (১৯৮৩, ২০১১) এবং ২ বার টি-২০ বিশ্বকাপ (২০০৭, ২০২৪) জিতেছে।",
-          examTrapEn: "Trap: Player of the Final was Virat Kohli, whereas Player of the Tournament was Jasprit Bumrah.",
-          examTrapBn: "সতর্কতা: ফাইনালের সেরা বিরাট কোহলি, কিন্তু সমগ্র টুর্নামেন্টের সেরা জসপ্রীত বুমরাহ।",
-        },
-        {
-          id: "ca-2026-06-20-2",
-          category: "National & International",
-          headlineEn: "New Campus of Nalanda University Inaugurated at Rajgir (Bihar)",
-          headlineBn: "বিহারের রাজগীরে নালন্দা বিশ্ববিদ্যালয়ের নতুন আন্তর্জাতিক ক্যাম্পাস উদ্বোধন",
-          sourceTag: "PIB · The Hindu Heritage",
-          whyInNewsEn: "A net-zero green campus of the revived Nalanda University was inaugurated near the ancient ruins of Nalanda Mahavihara at Rajgir in Bihar.",
-          whyInNewsBn: "বিহারের রাজগীরে প্রাচীন নালন্দা মহাবিহারের ধ্বংসাবশেষের কাছে নালন্দা বিশ্ববিদ্যালয়ের নতুন 'নেট-জিরো' ক্যাম্পাস উদ্বোধন করা হয়েছে।",
-          examPointsEn: [
-            "Ancient Nalanda Mahavihara was founded in the 5th century CE by Gupta Emperor Kumaragupta I (Shakraditya) and patronized by Harshavardhana and the Pala rulers of Bengal (Dharmapala & Devapala).",
-            "Chinese Buddhist pilgrim Xuanzang (Hiuen Tsang) studied at Nalanda during the reign of Harshavardhana under Abbot Shilabhadra (who hailed from Bengal/Samatata).",
-            "Destroyed around 1193 CE by Turkic military general Bakhtiyar Khilji.",
-            "Modern Nalanda University Act was passed by Parliament in 2010 following the proposal of former President Dr. A.P.J. Abdul Kalam (2006) and the East Asia Summit; Nobel laureate Amartya Sen served as its first Chancellor.",
-          ],
-          examPointsBn: [
-            "প্রাচীন নালন্দা মহাবিহার খ্রিস্টীয় পঞ্চম শতকে গুপ্ত সম্রাট প্রথম কুমারগুপ্ত (শক্রাদিত্য) প্রতিষ্ঠা করেন এবং হর্ষবর্ধন ও বাংলার পাল রাজারা (ধর্মপাল ও দেবপাল) এর পৃষ্ঠপোষকতা করেন।",
-            "চীনা পরিব্রাজক হিউয়েন সাং আচার্য শীলভদ্রের (যিনি বাংলার সমতট অঞ্চলের মানুষ ছিলেন) অধীনে নালন্দায় অধ্যয়ন করেন।",
-            "১১৯৩ খ্রিস্টাব্দ নাগাদ বখতিয়ার খলজি নালন্দা মহাবিহার ধ্বংস করেন।",
-            "প্রাক্তন রাষ্ট্রপতি ড. এ.পি.জে. আবদুল কালামের প্রস্তাবে ২০১০ সালের সংসদের আইনের মাধ্যমে আধুনিক নালন্দা বিশ্ববিদ্যালয় প্রতিষ্ঠিত হয় (প্রথম আচার্য: অমর্ত্য সেন)।",
-          ],
-          staticGkLinkEn: "Ruins of Nalanda Mahavihara were inscribed as a UNESCO World Heritage Site in 2016; Vikramshila University was founded by Pala King Dharmapala.",
-          staticGkLinkBn: "নালন্দা মহাবিহার ২০১৬ সালে ইউনেস্কো বিশ্ব ঐতিহ্য ক্ষেত্রের মর্যাদা পায়; বিক্রমশীলা মহাবিহার প্রতিষ্ঠা করেছিলেন পাল রাজা ধর্মপাল।",
-          examTrapEn: "Trap: Nalanda was founded by Kumaragupta I, whereas Vikramshila and Somapura Mahavihara (Paharpur) were founded by Dharmapala.",
-          examTrapBn: "সতর্কতা: নালন্দা প্রতিষ্ঠা করেন প্রথম কুমারগুপ্ত, কিন্তু বিক্রমশীলা ও সোমপুর মহাবিহার প্রতিষ্ঠা করেন ধর্মপাল।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2026-06-20-1",
-          category: "National & International",
-          stem: {
-            en: "Which ancient Gupta ruler founded the Nalanda Mahavihara in the 5th century CE?",
-            bn: "খ্রিস্টীয় পঞ্চম শতকে কোন গুপ্ত সম্রাট প্রাচীন নালন্দা মহাবিহার প্রতিষ্ঠা করেছিলেন?",
+        ],
+        mcqs: [
+          {
+            id: "mcq-2026-11-15-1",
+            category: "Awards & Honours",
+            stem: {
+              en: "Who was the first woman in India to receive the prestigious Jnanpith Award (in 1976 for the Bengali novel 'Pratham Pratishruti')?",
+              bn: "ভারতের প্রথম মহিলা হিসেবে কে ১৯৭৬ সালে 'প্রথম প্রতিশ্রুতি' উপন্যাসের জন্য জ্ঞানপীঠ পুরস্কার লাভ করেন?",
+            },
+            options: {
+              A: { en: "Mahasweta Devi", bn: "মহাশ্বেতা দেবী" },
+              B: { en: "Ashapurna Devi", bn: "আশাপূর্ণা দেবী" },
+              C: { en: "Amrita Pritam", bn: "অমৃতা প্রীতম" },
+              D: { en: "Leela Majumdar", bn: "লীলা মজুমদার" },
+            },
+            correctOption: "B",
+            explanation: {
+              en: "Ashapurna Devi became the first woman to win the Jnanpith Award in 1976 for her trilogy opener 'Pratham Pratishruti'.",
+              bn: "আশাপূর্ণা দেবী ১৯৭৬ সালে 'প্রথম প্রতিশ্রুতি' উপন্যাসের জন্য প্রথম মহিলা হিসেবে জ্ঞানপীঠ পুরস্কার পান।",
+            },
           },
-          options: {
-            A: { en: "Samudragupta", bn: "সমুদ্রগুপ্ত" },
-            B: { en: "Chandragupta II", bn: "দ্বিতীয় চন্দ্রগুপ্ত" },
-            C: { en: "Kumaragupta I", bn: "প্রথম কুমারগুপ্ত" },
-            D: { en: "Skandagupta", bn: "স্কন্দগুপ্ত" },
+        ],
+      },
+      {
+        editionDate: "2026-06-20",
+        titleEn: "June 2026 Categorized Capsule — 18th Lok Sabha Constitution, Nalanda University & T20 World Cup",
+        titleBn: "জুন ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ১৮তম লোকসভা গঠন, নালন্দা বিশ্ববিদ্যালয় ও টি-২০ বিশ্বকাপ",
+        summaryEn: "Categorized June 2026 digest covering 18th Lok Sabha Speaker & Pro-tem Speaker articles, Nalanda University new campus in Rajgir, and India's ICC Men's T20 World Cup triumph.",
+        summaryBn: "জুন ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ১৮তম লোকসভার স্পিকার নির্বাচন, রাজগীরে নালন্দা বিশ্ববিদ্যালয়ের নতুন ক্যাম্পাস এবং ভারতের টি-২০ বিশ্বকাপ জয়।",
+        mnemonicsEn: "[Art. 93 = Speaker of Lok Sabha] · [Art. 95(1) = Pro-tem Speaker] · [Nalanda = Founded by Kumaragupta I (5th Century CE)] · [ICC T20 WC = India beat South Africa in Barbados]",
+        mnemonicsBn: "[ধারা ৯৩ = লোকসভার স্পিকার] · [নালন্দা মহাবিহার = প্রথম কুমারগুপ্ত প্রতিষ্ঠিত] · [টি-২০ বিশ্বকাপ = বার্বাডোজে দক্ষিণ আফ্রিকাকে হারিয়ে ভারত চ্যাম্পিয়ন]",
+        topics: [
+          {
+            id: "ca-2026-06-20-1",
+            category: "Sports & Tournaments",
+            headlineEn: "India Wins ICC Men's T20 World Cup (Barbados) & ICC Women's T20 Updates",
+            headlineBn: "ভারতের আইসিসি টি-২০ বিশ্বকাপ জয় (বার্বাডোজ) এবং ক্রীড়া পুরস্কার",
+            sourceTag: "GKToday Sports",
+            whyInNewsEn: "India defeated South Africa by 7 runs in the final at Kensington Oval, Bridgetown (Barbados) to win its second ICC Men's T20 World Cup title.",
+            whyInNewsBn: "ওয়েস্ট ইন্ডিজের বার্বাডোজে ফাইনালে দক্ষিণ আফ্রিকাকে ৭ রানে হারিয়ে ভারত দ্বিতীয়বার আইসিসি পুরুষ টি-২০ বিশ্বকাপ চ্যাম্পিয়ন হয়েছে।",
+            examPointsEn: [
+              "India won its 2nd T20 World Cup title (first was in 2007 under M.S. Dhoni in South Africa) under Captain Rohit Sharma and Coach Rahul Dravid.",
+              "Player of the Match in Final: Virat Kohli (76 runs); Player of the Tournament: Jasprit Bumrah (15 wickets at 4.17 economy).",
+              "Co-hosted by West Indies and USA; India became the first team in history to win the T20 World Cup unbeaten (8–0).",
+              "Following the final, Rohit Sharma, Virat Kohli, and Ravindra Jadeja announced their retirement from T20 Internationals.",
+            ],
+            examPointsBn: [
+              "রোহিত শর্মার নেতৃত্বে ভারত দ্বিতীয়বার টি-২০ বিশ্বকাপ জিতেছে (প্রথমবার ২০০৭ সালে মহেন্দ্র সিং ধোনির নেতৃত্বে)।",
+              "ফাইনালে ম্যাচের সেরা: বিরাট কোহলি (৭৬ রান); টুর্নামেন্টের সেরা (Player of the Tournament): জসপ্রীত বুমরাহ (১৫ উইকেট)।",
+              "ওয়েস্ট ইন্ডিজ ও মার্কিন যুক্তরাষ্ট্র যৌথভাবে এই বিশ্বকাপ আয়োজন করেছিল; ভারত অপরাজিত থেকে চ্যাম্পিয়ন হয়।",
+              "ফাইনালের পর রোহিত শর্মা, বিরাট কোহলি ও রবীন্দ্র জাদেজা আন্তর্জাতিক টি-২০ ক্রিকেট থেকে অবসর ঘোষণা করেন।",
+            ],
+            staticGkLinkEn: "India has won 2 ODI World Cups (1983 under Kapil Dev, 2011 under M.S. Dhoni) and 2 T20 World Cups (2007, 2024).",
+            staticGkLinkBn: "ভারত ২ বার একদিনের বিশ্বকাপ (১৯৮৩, ২০১১) এবং ২ বার টি-২০ বিশ্বকাপ (২০০৭, ২০২৪) জিতেছে।",
+            examTrapEn: "Trap: Player of the Final was Virat Kohli, whereas Player of the Tournament was Jasprit Bumrah.",
+            examTrapBn: "সতর্কতা: ফাইনালের সেরা বিরাট কোহলি, কিন্তু সমগ্র টুর্নামেন্টের সেরা জসপ্রীত বুমরাহ।",
           },
-          correctOption: "C",
-          explanation: {
-            en: "Gupta Emperor Kumaragupta I (Shakraditya) founded the ancient Nalanda Mahavihara in the 5th century CE.",
-            bn: "গুপ্ত সম্রাট প্রথম কুমারগুপ্ত (শক্রাদিত্য) খ্রিস্টীয় পঞ্চম শতকে প্রাচীন নালন্দা মহাবিহার প্রতিষ্ঠা করেন।",
+          {
+            id: "ca-2026-06-20-2",
+            category: "National & International",
+            headlineEn: "New Campus of Nalanda University Inaugurated at Rajgir (Bihar)",
+            headlineBn: "বিহারের রাজগীরে নালন্দা বিশ্ববিদ্যালয়ের নতুন আন্তর্জাতিক ক্যাম্পাস উদ্বোধন",
+            sourceTag: "PIB · The Hindu Heritage",
+            whyInNewsEn: "A net-zero green campus of the revived Nalanda University was inaugurated near the ancient ruins of Nalanda Mahavihara at Rajgir in Bihar.",
+            whyInNewsBn: "বিহারের রাজগীরে প্রাচীন নালন্দা মহাবিহারের ধ্বংসাবশেষের কাছে নালন্দা বিশ্ববিদ্যালয়ের নতুন 'নেট-জিরো' ক্যাম্পাস উদ্বোধন করা হয়েছে।",
+            examPointsEn: [
+              "Ancient Nalanda Mahavihara was founded in the 5th century CE by Gupta Emperor Kumaragupta I (Shakraditya) and patronized by Harshavardhana and the Pala rulers of Bengal (Dharmapala & Devapala).",
+              "Chinese Buddhist pilgrim Xuanzang (Hiuen Tsang) studied at Nalanda during the reign of Harshavardhana under Abbot Shilabhadra (who hailed from Bengal/Samatata).",
+              "Destroyed around 1193 CE by Turkic military general Bakhtiyar Khilji.",
+              "Modern Nalanda University Act was passed by Parliament in 2010 following the proposal of former President Dr. A.P.J. Abdul Kalam (2006) and the East Asia Summit; Nobel laureate Amartya Sen served as its first Chancellor.",
+            ],
+            examPointsBn: [
+              "প্রাচীন নালন্দা মহাবিহার খ্রিস্টীয় পঞ্চম শতকে গুপ্ত সম্রাট প্রথম কুমারগুপ্ত (শক্রাদিত্য) প্রতিষ্ঠা করেন এবং হর্ষবর্ধন ও বাংলার পাল রাজারা (ধর্মপাল ও দেবপাল) এর পৃষ্ঠপোষকতা করেন।",
+              "চীনা পরিব্রাজক হিউয়েন সাং আচার্য শীলভদ্রের (যিনি বাংলার সমতট অঞ্চলের মানুষ ছিলেন) অধীনে নালন্দায় অধ্যয়ন করেন।",
+              "১১৯৩ খ্রিস্টাব্দ নাগাদ বখতিয়ার খলজি নালন্দা মহাবিহার ধ্বংস করেন।",
+              "প্রাক্তন রাষ্ট্রপতি ড. এ.পি.জে. আবদুল কালামের প্রস্তাবে ২০১০ সালের সংসদের আইনের মাধ্যমে আধুনিক নালন্দা বিশ্ববিদ্যালয় প্রতিষ্ঠিত হয় (প্রথম আচার্য: অমর্ত্য সেন)।",
+            ],
+            staticGkLinkEn: "Ruins of Nalanda Mahavihara were inscribed as a UNESCO World Heritage Site in 2016; Vikramshila University was founded by Pala King Dharmapala.",
+            staticGkLinkBn: "নালন্দা মহাবিহার ২০১৬ সালে ইউনেস্কো বিশ্ব ঐতিহ্য ক্ষেত্রের মর্যাদা পায়; বিক্রমশীলা মহাবিহার প্রতিষ্ঠা করেছিলেন পাল রাজা ধর্মপাল।",
+            examTrapEn: "Trap: Nalanda was founded by Kumaragupta I, whereas Vikramshila and Somapura Mahavihara (Paharpur) were founded by Dharmapala.",
+            examTrapBn: "সতর্কতা: নালন্দা প্রতিষ্ঠা করেন প্রথম কুমারগুপ্ত, কিন্তু বিক্রমশীলা ও সোমপুর মহাবিহার প্রতিষ্ঠা করেন ধর্মপাল।",
           },
-        },
-      ],
-    },
-    {
-      editionDate: "2026-05-18",
-      titleEn: "May 2026 Categorized Capsule — Cyclone Remal (Bay of Bengal), International Booker & RBI Surplus",
-      titleBn: "মে ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ঘূর্ণিঝড় রেমাল (বঙ্গোপসাগর), ইন্টারন্যাশনাল বুকার ও আরবিআই লভ্যাংশ",
-      summaryEn: "Categorized May 2026 digest covering Cyclone Remal naming & Sundarbans landfall, RBI record dividend transfer under Section 47 of RBI Act, and International Booker Prize.",
-      summaryBn: "মে ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: বঙ্গোপসাগরে ঘূর্ণিঝড় 'রেমাল', আরবিআই-এর রেকর্ড লভ্যাংশ হস্তান্তর এবং আন্তর্জাতিক পুরস্কার।",
-      mnemonicsEn: "[Cyclone Remal = Named by Oman (means 'Sand' in Arabic)] · [Cyclone Dana = Named by Qatar (means 'Generosity/Pearl')] · [RBI Dividend = Section 47 of RBI Act 1934 (Bimal Jalan ECF)]",
-      mnemonicsBn: "[ঘূর্ণিঝড় রেমাল = নামকরণ ওমান (অর্থ 'বালি')] · [ঘূর্ণিঝড় দানা = নামকরণ কাতার] · [আরবিআই লভ্যাংশ = ১৯৩৪ আইনের ৪৭ নং ধারা]",
-      topics: [
-        {
-          id: "ca-2026-05-18-1",
-          category: "West Bengal Special",
-          headlineEn: "Tropical Cyclones in the Bay of Bengal: Cyclone Remal & Cyclone Dana Naming Protocol",
-          headlineBn: "বঙ্গোপসাগরের ক্রান্তীয় ঘূর্ণিঝড়: 'রেমাল' ও 'দানা'-র নামকরণ এবং সুন্দরবন উপকূল",
-          sourceTag: "IMD · WB Disaster Management",
-          whyInNewsEn: "Severe Cyclonic Storm 'Remal' made landfall between Sagar Island (West Bengal) and Khepupara (Bangladesh), followed later in the season by Cyclone 'Dana'.",
-          whyInNewsBn: "প্রবল ঘূর্ণিঝড় 'রেমাল' পশ্চিমবঙ্গের সাগরদ্বীপ ও বাংলাদেশের খেপুপাড়ার মধ্যবর্তী উপকূলে আঘাত হানে।",
-          examPointsEn: [
-            "The name 'Remal' (meaning 'Sand' in Arabic) was contributed by Oman under the WMO/ESCAP Panel on Tropical Cyclones (13 member countries covering the North Indian Ocean).",
-            "Subsequent Cyclone 'Dana' (meaning 'Generosity' or 'Precious Pearl' in Arabic) was named by Qatar, and Cyclone 'Fengal' was named by Saudi Arabia.",
-            "WMO/ESCAP Panel (headquartered in New Delhi at IMD's Regional Specialized Meteorological Centre) includes 13 countries: India, Bangladesh, Maldives, Myanmar, Oman, Pakistan, Sri Lanka, Thailand, Iran, Qatar, Saudi Arabia, UAE, and Yemen.",
-            "Sagar Island lies at the mouth of the Hooghly River estuary in South 24 Parganas district of West Bengal.",
-          ],
-          examPointsBn: [
-            "'রেমাল' (Remal) নামটি দিয়েছে ওমান (আরবি ভাষায় যার অর্থ 'বালি')।",
-            "পরবর্তী ঘূর্ণিঝড় 'দানা' (Dana)-র নামকরণ করেছে কাতার এবং 'ফেঙ্গাল' (Fengal)-এর নামকরণ করেছে সৌদি আরব।",
-            "উত্তর ভারত মহাসাগরের ঘূর্ণিঝড়ের নামকরণ করে WMO/ESCAP প্যানেলের ১৩টি সদস্য দেশ (আঞ্চলিক কেন্দ্র: IMD, নতুন দিল্লি)।",
-            "সাগরদ্বীপ পশ্চিমবঙ্গের দক্ষিণ ২৪ পরগণা জেলায় হুগলি নদীর মোহনায় অবস্থিত।",
-          ],
-          staticGkLinkEn: "Earlier landmark Bay of Bengal cyclones hitting West Bengal: Aila (May 2009), Bulbul (Nov 2019), Amphan (May 2020 — named by Thailand), and Yaas (May 2021 — named by Oman).",
-          staticGkLinkBn: "পশ্চিমবঙ্গে আঘাত হানা পূর্ববর্তী ঘূর্ণিঝড়: আয়লা (২০০৯), বুলবুল (২০১৯), আমফান (২০২০ — থাইল্যান্ড নামকরণ করে) এবং ইয়াস (২০২১ — ওমান নামকরণ করে)।",
-          examTrapEn: "Trap: Remal was named by Oman, Dana by Qatar, and Amphan by Thailand.",
-          examTrapBn: "সতর্কতা: 'রেমাল' নামটি দিয়েছে ওমান, 'দানা' দিয়েছে কাতার এবং 'আমফান' দিয়েছিল থাইল্যান্ড।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2026-05-18-1",
-          category: "West Bengal Special",
-          stem: {
-            en: "Which country gave the name 'Remal' (meaning 'Sand' in Arabic) to the severe cyclonic storm that struck the West Bengal–Bangladesh Sundarbans coast?",
-            bn: "পশ্চিমবঙ্গ ও বাংলাদেশের সুন্দরবন উপকূলে আঘাত হানা ঘূর্ণিঝড় 'রেমাল' (যার আরবি অর্থ 'বালি')-এর নামকরণ করেছে কোন দেশ?",
+        ],
+        mcqs: [
+          {
+            id: "mcq-2026-06-20-1",
+            category: "National & International",
+            stem: {
+              en: "Which ancient Gupta ruler founded the Nalanda Mahavihara in the 5th century CE?",
+              bn: "খ্রিস্টীয় পঞ্চম শতকে কোন গুপ্ত সম্রাট প্রাচীন নালন্দা মহাবিহার প্রতিষ্ঠা করেছিলেন?",
+            },
+            options: {
+              A: { en: "Samudragupta", bn: "সমুদ্রগুপ্ত" },
+              B: { en: "Chandragupta II", bn: "দ্বিতীয় চন্দ্রগুপ্ত" },
+              C: { en: "Kumaragupta I", bn: "প্রথম কুমারগুপ্ত" },
+              D: { en: "Skandagupta", bn: "স্কন্দগুপ্ত" },
+            },
+            correctOption: "C",
+            explanation: {
+              en: "Gupta Emperor Kumaragupta I (Shakraditya) founded the ancient Nalanda Mahavihara in the 5th century CE.",
+              bn: "গুপ্ত সম্রাট প্রথম কুমারগুপ্ত (শক্রাদিত্য) খ্রিস্টীয় পঞ্চম শতকে প্রাচীন নালন্দা মহাবিহার প্রতিষ্ঠা করেন।",
+            },
           },
-          options: {
-            A: { en: "Qatar", bn: "কাতার" },
-            B: { en: "Oman", bn: "ওমান" },
-            C: { en: "Thailand", bn: "থাইল্যান্ড" },
-            D: { en: "UAE", bn: "সংযুক্ত আরব আমিরশাহী" },
+        ],
+      },
+      {
+        editionDate: "2026-05-18",
+        titleEn: "May 2026 Categorized Capsule — Cyclone Remal (Bay of Bengal), International Booker & RBI Surplus",
+        titleBn: "মে ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ঘূর্ণিঝড় রেমাল (বঙ্গোপসাগর), ইন্টারন্যাশনাল বুকার ও আরবিআই লভ্যাংশ",
+        summaryEn: "Categorized May 2026 digest covering Cyclone Remal naming & Sundarbans landfall, RBI record dividend transfer under Section 47 of RBI Act, and International Booker Prize.",
+        summaryBn: "মে ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: বঙ্গোপসাগরে ঘূর্ণিঝড় 'রেমাল', আরবিআই-এর রেকর্ড লভ্যাংশ হস্তান্তর এবং আন্তর্জাতিক পুরস্কার।",
+        mnemonicsEn: "[Cyclone Remal = Named by Oman (means 'Sand' in Arabic)] · [Cyclone Dana = Named by Qatar (means 'Generosity/Pearl')] · [RBI Dividend = Section 47 of RBI Act 1934 (Bimal Jalan ECF)]",
+        mnemonicsBn: "[ঘূর্ণিঝড় রেমাল = নামকরণ ওমান (অর্থ 'বালি')] · [ঘূর্ণিঝড় দানা = নামকরণ কাতার] · [আরবিআই লভ্যাংশ = ১৯৩৪ আইনের ৪৭ নং ধারা]",
+        topics: [
+          {
+            id: "ca-2026-05-18-1",
+            category: "West Bengal Special",
+            headlineEn: "Tropical Cyclones in the Bay of Bengal: Cyclone Remal & Cyclone Dana Naming Protocol",
+            headlineBn: "বঙ্গোপসাগরের ক্রান্তীয় ঘূর্ণিঝড়: 'রেমাল' ও 'দানা'-র নামকরণ এবং সুন্দরবন উপকূল",
+            sourceTag: "IMD · WB Disaster Management",
+            whyInNewsEn: "Severe Cyclonic Storm 'Remal' made landfall between Sagar Island (West Bengal) and Khepupara (Bangladesh), followed later in the season by Cyclone 'Dana'.",
+            whyInNewsBn: "প্রবল ঘূর্ণিঝড় 'রেমাল' পশ্চিমবঙ্গের সাগরদ্বীপ ও বাংলাদেশের খেপুপাড়ার মধ্যবর্তী উপকূলে আঘাত হানে।",
+            examPointsEn: [
+              "The name 'Remal' (meaning 'Sand' in Arabic) was contributed by Oman under the WMO/ESCAP Panel on Tropical Cyclones (13 member countries covering the North Indian Ocean).",
+              "Subsequent Cyclone 'Dana' (meaning 'Generosity' or 'Precious Pearl' in Arabic) was named by Qatar, and Cyclone 'Fengal' was named by Saudi Arabia.",
+              "WMO/ESCAP Panel (headquartered in New Delhi at IMD's Regional Specialized Meteorological Centre) includes 13 countries: India, Bangladesh, Maldives, Myanmar, Oman, Pakistan, Sri Lanka, Thailand, Iran, Qatar, Saudi Arabia, UAE, and Yemen.",
+              "Sagar Island lies at the mouth of the Hooghly River estuary in South 24 Parganas district of West Bengal.",
+            ],
+            examPointsBn: [
+              "'রেমাল' (Remal) নামটি দিয়েছে ওমান (আরবি ভাষায় যার অর্থ 'বালি')।",
+              "পরবর্তী ঘূর্ণিঝড় 'দানা' (Dana)-র নামকরণ করেছে কাতার এবং 'ফেঙ্গাল' (Fengal)-এর নামকরণ করেছে সৌদি আরব।",
+              "উত্তর ভারত মহাসাগরের ঘূর্ণিঝড়ের নামকরণ করে WMO/ESCAP প্যানেলের ১৩টি সদস্য দেশ (আঞ্চলিক কেন্দ্র: IMD, নতুন দিল্লি)।",
+              "সাগরদ্বীপ পশ্চিমবঙ্গের দক্ষিণ ২৪ পরগণা জেলায় হুগলি নদীর মোহনায় অবস্থিত।",
+            ],
+            staticGkLinkEn: "Earlier landmark Bay of Bengal cyclones hitting West Bengal: Aila (May 2009), Bulbul (Nov 2019), Amphan (May 2020 — named by Thailand), and Yaas (May 2021 — named by Oman).",
+            staticGkLinkBn: "পশ্চিমবঙ্গে আঘাত হানা পূর্ববর্তী ঘূর্ণিঝড়: আয়লা (২০০৯), বুলবুল (২০১৯), আমফান (২০২০ — থাইল্যান্ড নামকরণ করে) এবং ইয়াস (২০২১ — ওমান নামকরণ করে)।",
+            examTrapEn: "Trap: Remal was named by Oman, Dana by Qatar, and Amphan by Thailand.",
+            examTrapBn: "সতর্কতা: 'রেমাল' নামটি দিয়েছে ওমান, 'দানা' দিয়েছে কাতার এবং 'আমফান' দিয়েছিল থাইল্যান্ড।",
           },
-          correctOption: "B",
-          explanation: {
-            en: "Oman suggested the name 'Remal' (meaning sand in Arabic), while Qatar suggested the name 'Dana'.",
-            bn: "ওমান 'রেমাল' নামটি প্রস্তাব করেছিল (আর 'দানা' নামটি দিয়েছে কাতার)।",
+        ],
+        mcqs: [
+          {
+            id: "mcq-2026-05-18-1",
+            category: "West Bengal Special",
+            stem: {
+              en: "Which country gave the name 'Remal' (meaning 'Sand' in Arabic) to the severe cyclonic storm that struck the West Bengal–Bangladesh Sundarbans coast?",
+              bn: "পশ্চিমবঙ্গ ও বাংলাদেশের সুন্দরবন উপকূলে আঘাত হানা ঘূর্ণিঝড় 'রেমাল' (যার আরবি অর্থ 'বালি')-এর নামকরণ করেছে কোন দেশ?",
+            },
+            options: {
+              A: { en: "Qatar", bn: "কাতার" },
+              B: { en: "Oman", bn: "ওমান" },
+              C: { en: "Thailand", bn: "থাইল্যান্ড" },
+              D: { en: "UAE", bn: "সংযুক্ত আরব আমিরশাহী" },
+            },
+            correctOption: "B",
+            explanation: {
+              en: "Oman suggested the name 'Remal' (meaning sand in Arabic), while Qatar suggested the name 'Dana'.",
+              bn: "ওমান 'রেমাল' নামটি প্রস্তাব করেছিল (আর 'দানা' নামটি দিয়েছে কাতার)।",
+            },
           },
-        },
-      ],
-    },
-    {
-      editionDate: "2026-04-16",
-      titleEn: "April 2026 Categorized Capsule — 18-Year Old Gukesh D Wins Candidates Tournament & Shompen Tribe",
-      titleBn: "এপ্রিল ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ডি. গুকেশের ক্যান্ডিডেটস দাবা জয় ও শোম্পেন জনজাতি",
-      summaryEn: "Categorized April 2026 digest covering D. Gukesh becoming the youngest World Chess Championship Challenger in history and Great Nicobar's Shompen PVTG voting for the first time.",
-      summaryBn: "এপ্রিল ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: বিশ্বের সর্বকনিষ্ঠ দাবাড়ু হিসেবে ডি. গুকেশের ক্যান্ডিডেটস টুর্নামেন্ট জয় এবং গ্রেট নিকোবরের শোম্পেন জনজাতি।",
-      mnemonicsEn: "[D. Gukesh = Youngest FIDE Candidates Winner (Toronto) & 18th World Chess Champion] · [Shompen Tribe = Great Nicobar PVTG] · [WB PVTGs = Birhor, Lodha, Toto (3 PVTGs in WB)]",
-      mnemonicsBn: "[ডি. গুকেশ = সর্বকনিষ্ঠ ক্যান্ডিডেটস জয়ী ও বিশ্ব দাবা চ্যাম্পিয়ন] · [শোম্পেন জনজাতি = গ্রেট নিকোবর] · [পশ্চিমবঙ্গের ৩টি PVTG = বিরহোড়, লোধা ও টোটো]",
-      topics: [
-        {
-          id: "ca-2026-04-16-1",
-          category: "Environment & GI Tags",
-          headlineEn: "Shompen Tribe of Great Nicobar & Particularly Vulnerable Tribal Groups (PVTGs) in West Bengal",
-          headlineBn: "গ্রেট নিকোবরের 'শোম্পেন' জনজাতি এবং পশ্চিমবঙ্গের ৩টি বিশেষভাবে বিপন্ন জনজাতি (PVTGs)",
-          sourceTag: "The Hindu · Ministry of Tribal Affairs",
-          whyInNewsEn: "Members of the Shompen tribe, a Particularly Vulnerable Tribal Group (PVTG) of Great Nicobar Island, exercised their voting franchise for the first time in a Lok Sabha election.",
-          whyInNewsBn: "আন্দামান ও নিকোবর দ্বীপপুঞ্জের গ্রেট নিকোবরের 'শোম্পেন' (Shompen) জনজাতির মানুষ প্রথমবার লোকসভা নির্বাচনে ভোটাধিকার প্রয়োগ করেছেন।",
-          examPointsEn: [
-            "India has 75 Particularly Vulnerable Tribal Groups (PVTGs) across 18 states and the UT of Andaman & Nicobar Islands (originally created as 'Primitive Tribal Groups' on the Dhebar Commission's recommendation in 1973).",
-            "5 PVTGs of Andaman & Nicobar Islands: Great Andamanese, Jarawa, Onge, Sentinelese (North Sentinel Island), and Shompen (Great Nicobar — Mongoloid group).",
-            "West Bengal has exactly 3 PVTGs: Birhor (Purulia), Lodha (Paschim Medinipur & Jhargram), and Toto (Totopara in Alipurduar district).",
-            "PM-JANMAN ('Pradhan Mantri Janjati Adivasi Nyaya Maha Abhiyan') was launched on Janjatiya Gaurav Divas (15 November, Birsa Munda's birth anniversary) for the socio-economic saturation of all 75 PVTGs.",
-          ],
-          examPointsBn: [
-            "ভারতে মোট ৭৫টি বিশেষভাবে বিপন্ন জনজাতি (PVTGs) রয়েছে (১৯৭৩ সালের ধেবর কমিশনের সুপারিশে এটি চিহ্নিত করা হয়); ওড়িশায় সর্বাধিক ১৩টি PVTG রয়েছে।",
-            "আন্দামান ও নিকোবরের ৫টি PVTG হলো: গ্রেট আন্দামানিজ, জারোয়া, ওঙ্গে, সেন্টিনেলিজ এবং শোম্পেন (গ্রেট নিকোবর)।",
-            "পশ্চিমবঙ্গে মোট ৩টি PVTG রয়েছে: বিরহোড় (পুরুলিয়া), লোধা (পশ্চিম মেদিনীপুর ও ঝাড়গ্রাম) এবং টোটো (আলিপুরদুয়ার জেলার টোটোপাড়া)।",
-            "ভগবান বিরসা মুন্ডার জন্মজয়ন্তীতে (১৫ নভেম্বর, জনজাতীয় গৌরব দিবস) ৭৫টি PVTG-র উন্নয়নের জন্য 'PM-JANMAN' প্রকল্প চালু করা হয়।",
-          ],
-          staticGkLinkEn: "Santhal is the largest Scheduled Tribe population in West Bengal, followed by Oraon, Munda, and Bhumij.",
-          staticGkLinkBn: "পশ্চিমবঙ্গের বৃহত্তম তপশিলি উপজাতি হলো সাঁওতাল (Santhal), এরপর ওঁরাও, মুন্ডা ও ভূমিজ।",
-          examTrapEn: "Trap: West Bengal has 3 PVTGs (Birhor, Lodha, Toto) — Santhal is the largest tribe in WB, NOT a PVTG.",
-          examTrapBn: "সতর্কতা: পশ্চিমবঙ্গের ৩টি PVTG হলো বিরহোড়, লোধা ও টোটো (সাঁওতাল পশ্চিমবঙ্গের বৃহত্তম উপজাতি হলেও PVTG নয়)।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2026-04-16-1",
-          category: "West Bengal Special",
-          stem: {
-            en: "Which of the following represents the exact set of three Particularly Vulnerable Tribal Groups (PVTGs) officially recognized in West Bengal?",
-            bn: "নিচের কোনটি পশ্চিমবঙ্গে সরকারিভাবে স্বীকৃত তিনটি 'বিশেষভাবে বিপন্ন জনজাতি' (PVTGs)-র সঠিক তালিকা?",
+        ],
+      },
+      {
+        editionDate: "2026-04-16",
+        titleEn: "April 2026 Categorized Capsule — 18-Year Old Gukesh D Wins Candidates Tournament & Shompen Tribe",
+        titleBn: "এপ্রিল ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ডি. গুকেশের ক্যান্ডিডেটস দাবা জয় ও শোম্পেন জনজাতি",
+        summaryEn: "Categorized April 2026 digest covering D. Gukesh becoming the youngest World Chess Championship Challenger in history and Great Nicobar's Shompen PVTG voting for the first time.",
+        summaryBn: "এপ্রিল ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: বিশ্বের সর্বকনিষ্ঠ দাবাড়ু হিসেবে ডি. গুকেশের ক্যান্ডিডেটস টুর্নামেন্ট জয় এবং গ্রেট নিকোবরের শোম্পেন জনজাতি।",
+        mnemonicsEn: "[D. Gukesh = Youngest FIDE Candidates Winner (Toronto) & 18th World Chess Champion] · [Shompen Tribe = Great Nicobar PVTG] · [WB PVTGs = Birhor, Lodha, Toto (3 PVTGs in WB)]",
+        mnemonicsBn: "[ডি. গুকেশ = সর্বকনিষ্ঠ ক্যান্ডিডেটস জয়ী ও বিশ্ব দাবা চ্যাম্পিয়ন] · [শোম্পেন জনজাতি = গ্রেট নিকোবর] · [পশ্চিমবঙ্গের ৩টি PVTG = বিরহোড়, লোধা ও টোটো]",
+        topics: [
+          {
+            id: "ca-2026-04-16-1",
+            category: "Environment & GI Tags",
+            headlineEn: "Shompen Tribe of Great Nicobar & Particularly Vulnerable Tribal Groups (PVTGs) in West Bengal",
+            headlineBn: "গ্রেট নিকোবরের 'শোম্পেন' জনজাতি এবং পশ্চিমবঙ্গের ৩টি বিশেষভাবে বিপন্ন জনজাতি (PVTGs)",
+            sourceTag: "The Hindu · Ministry of Tribal Affairs",
+            whyInNewsEn: "Members of the Shompen tribe, a Particularly Vulnerable Tribal Group (PVTG) of Great Nicobar Island, exercised their voting franchise for the first time in a Lok Sabha election.",
+            whyInNewsBn: "আন্দামান ও নিকোবর দ্বীপপুঞ্জের গ্রেট নিকোবরের 'শোম্পেন' (Shompen) জনজাতির মানুষ প্রথমবার লোকসভা নির্বাচনে ভোটাধিকার প্রয়োগ করেছেন।",
+            examPointsEn: [
+              "India has 75 Particularly Vulnerable Tribal Groups (PVTGs) across 18 states and the UT of Andaman & Nicobar Islands (originally created as 'Primitive Tribal Groups' on the Dhebar Commission's recommendation in 1973).",
+              "5 PVTGs of Andaman & Nicobar Islands: Great Andamanese, Jarawa, Onge, Sentinelese (North Sentinel Island), and Shompen (Great Nicobar — Mongoloid group).",
+              "West Bengal has exactly 3 PVTGs: Birhor (Purulia), Lodha (Paschim Medinipur & Jhargram), and Toto (Totopara in Alipurduar district).",
+              "PM-JANMAN ('Pradhan Mantri Janjati Adivasi Nyaya Maha Abhiyan') was launched on Janjatiya Gaurav Divas (15 November, Birsa Munda's birth anniversary) for the socio-economic saturation of all 75 PVTGs.",
+            ],
+            examPointsBn: [
+              "ভারতে মোট ৭৫টি বিশেষভাবে বিপন্ন জনজাতি (PVTGs) রয়েছে (১৯৭৩ সালের ধেবর কমিশনের সুপারিশে এটি চিহ্নিত করা হয়); ওড়িশায় সর্বাধিক ১৩টি PVTG রয়েছে।",
+              "আন্দামান ও নিকোবরের ৫টি PVTG হলো: গ্রেট আন্দামানিজ, জারোয়া, ওঙ্গে, সেন্টিনেলিজ এবং শোম্পেন (গ্রেট নিকোবর)।",
+              "পশ্চিমবঙ্গে মোট ৩টি PVTG রয়েছে: বিরহোড় (পুরুলিয়া), লোধা (পশ্চিম মেদিনীপুর ও ঝাড়গ্রাম) এবং টোটো (আলিপুরদুয়ার জেলার টোটোপাড়া)।",
+              "ভগবান বিরসা মুন্ডার জন্মজয়ন্তীতে (১৫ নভেম্বর, জনজাতীয় গৌরব দিবস) ৭৫টি PVTG-র উন্নয়নের জন্য 'PM-JANMAN' প্রকল্প চালু করা হয়।",
+            ],
+            staticGkLinkEn: "Santhal is the largest Scheduled Tribe population in West Bengal, followed by Oraon, Munda, and Bhumij.",
+            staticGkLinkBn: "পশ্চিমবঙ্গের বৃহত্তম তপশিলি উপজাতি হলো সাঁওতাল (Santhal), এরপর ওঁরাও, মুন্ডা ও ভূমিজ।",
+            examTrapEn: "Trap: West Bengal has 3 PVTGs (Birhor, Lodha, Toto) — Santhal is the largest tribe in WB, NOT a PVTG.",
+            examTrapBn: "সতর্কতা: পশ্চিমবঙ্গের ৩টি PVTG হলো বিরহোড়, লোধা ও টোটো (সাঁওতাল পশ্চিমবঙ্গের বৃহত্তম উপজাতি হলেও PVTG নয়)।",
           },
-          options: {
-            A: { en: "Santhal, Oraon, Munda", bn: "সাঁওতাল, ওঁরাও, মুন্ডা" },
-            B: { en: "Birhor, Lodha, Toto", bn: "বিরহোড়, লোধা, টোটো" },
-            C: { en: "Lepcha, Bhutia, Mech", bn: "লেপচা, ভুটিয়া, মেচ" },
-            D: { en: "Kora, Mahali, Bhumij", bn: "কোড়া, মাহালি, ভূমিজ" },
+        ],
+        mcqs: [
+          {
+            id: "mcq-2026-04-16-1",
+            category: "West Bengal Special",
+            stem: {
+              en: "Which of the following represents the exact set of three Particularly Vulnerable Tribal Groups (PVTGs) officially recognized in West Bengal?",
+              bn: "নিচের কোনটি পশ্চিমবঙ্গে সরকারিভাবে স্বীকৃত তিনটি 'বিশেষভাবে বিপন্ন জনজাতি' (PVTGs)-র সঠিক তালিকা?",
+            },
+            options: {
+              A: { en: "Santhal, Oraon, Munda", bn: "সাঁওতাল, ওঁরাও, মুন্ডা" },
+              B: { en: "Birhor, Lodha, Toto", bn: "বিরহোড়, লোধা, টোটো" },
+              C: { en: "Lepcha, Bhutia, Mech", bn: "লেপচা, ভুটিয়া, মেচ" },
+              D: { en: "Kora, Mahali, Bhumij", bn: "কোড়া, মাহালি, ভূমিজ" },
+            },
+            correctOption: "B",
+            explanation: {
+              en: "West Bengal has 3 PVTGs: Birhor (Purulia), Lodha (Jhargram/Medinipur), and Toto (Totopara, Alipurduar).",
+              bn: "পশ্চিমবঙ্গের ৩টি PVTG হলো বিরহোড়, লোধা এবং টোটো।",
+            },
           },
-          correctOption: "B",
-          explanation: {
-            en: "West Bengal has 3 PVTGs: Birhor (Purulia), Lodha (Jhargram/Medinipur), and Toto (Totopara, Alipurduar).",
-            bn: "পশ্চিমবঙ্গের ৩টি PVTG হলো বিরহোড়, লোধা এবং টোটো।",
+        ],
+      },
+      {
+        editionDate: "2026-03-19",
+        titleEn: "March 2026 Categorized Capsule — Agni-5 MIRV ('Mission Divyastra'), CAA Rules & CEC Appointment",
+        titleBn: "মার্চ ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — অগ্নি-৫ MIRV ('মিশন দিব্যাস্ত্র') এবং নির্বাচন কমিশনার নিয়োগ আইন",
+        summaryEn: "Categorized March 2026 digest covering DRDO's Mission Divyastra (Agni-5 with MIRV technology), CEC and Other Election Commissioners Act, and Pritzker Architecture Prize.",
+        summaryBn: "মার্চ ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ডিআরডিও-র 'মিশন দিব্যাস্ত্র' (Agni-5 MIRV) এবং মুখ্য নির্বাচন কমিশনার নিয়োগ কমিটি।",
+        mnemonicsEn: "[Mission Divyastra = Agni-5 MIRV (Project Director: Sheena Rani)] · [Article 324 = Election Commission (Selection Panel: PM + Union Cabinet Minister + LoP in Lok Sabha)]",
+        mnemonicsBn: "[মিশন দিব্যাস্ত্র = অগ্নি-৫ MIRV প্রযুক্তি] · [ধারা ৩২৪ = নির্বাচন কমিশন (নিয়োগ কমিটি: প্রধানমন্ত্রী + কেন্দ্রীয় মন্ত্রী + লোকসভার বিরোধী দলনেতা)]",
+        topics: [
+          {
+            id: "ca-2026-03-19-1",
+            category: "Defence & Military Exercises",
+            headlineEn: "Mission Divyastra: First Flight Test of Indigenous Agni-5 Missile with MIRV Technology",
+            headlineBn: "মিশন দিব্যাস্ত্র: দেশীয় প্রযুক্তিতে তৈরি MIRV সুবিধাসম্পন্ন 'অগ্নি-৫' ক্ষেপণাস্ত্রের সফল পরীক্ষা",
+            sourceTag: "PIB Defence · DRDO",
+            whyInNewsEn: "DRDO successfully conducted 'Mission Divyastra', the first flight test of the indigenously developed Agni-5 Intercontinental Ballistic Missile equipped with MIRV technology from APJ Abdul Kalam Island (Odisha).",
+            whyInNewsBn: "ওড়িশার এ.পি.জে. আবদুল কালাম দ্বীপ থেকে DRDO 'মিশন দিব্যাস্ত্র'-এর অধীনে MIRV প্রযুক্তিসম্পন্ন অগ্নি-৫ ক্ষেপণাস্ত্রের সফল পরীক্ষা চালিয়েছে।",
+            examPointsEn: [
+              "MIRV stands for 'Multiple Independently Targetable Re-entry Vehicle' — allows a single missile to carry multiple nuclear warheads aimed at different targets hundreds of kilometres apart.",
+              "Agni-5 is a 3-stage, solid-fuelled surface-to-surface Intercontinental Ballistic Missile (ICBM) with a strike range exceeding 5,000 km.",
+              "Project Director of Mission Divyastra at DRDO is woman scientist Sheena Rani (often compared to 'Agni Putri' Tessy Thomas).",
+              "Integrated Guided Missile Development Programme (IGMDP) was conceived by Dr. A.P.J. Abdul Kalam in 1983 and developed 5 missiles: Prithvi, Agni, Trishul, Akash, and Nag (PATNA).",
+            ],
+            examPointsBn: [
+              "MIRV-এর পূর্ণরূপ 'Multiple Independently Targetable Re-entry Vehicle'—এর সাহায্যে একটিমাত্র ক্ষেপণাস্ত্র দিয়েই একাধিক লক্ষ্যবস্তুতে আলাদা পরমাণু ওয়ারহেড নিক্ষেপ করা যায়।",
+              "অগ্নি-৫ হলো ৩-পর্যায়ের কঠিন জ্বালানি চালিত সারফেস-টু-সারফেস ব্যালিস্টিক মিসাইল, যার পাল্লা ৫,০০০ কিমির বেশি।",
+              "মিশন দিব্যাস্ত্রের প্রজেক্ট ডিরেক্টর হলেন ডিআরডিও-র মহিলা বিজ্ঞানী শীনা রানী (Sheena Rani)।",
+              "ড. এ.পি.জে. আবদুল কালামের নেতৃত্বে ১৯৮৩ সালে শুরু হওয়া IGMDP প্রকল্পের ৫টি ক্ষেপণাস্ত্র হলো: পৃথ্বী, অগ্নি, ত্রিশূল, আকাশ এবং নাগ (PATNA)।",
+            ],
+            staticGkLinkEn: "Wheeler Island off the coast of Odisha (Bhadrak district) was renamed Dr. APJ Abdul Kalam Island in September 2015.",
+            staticGkLinkBn: "ওড়িশা উপকূলের হুইলার দ্বীপের নাম ২০১৫ সালে পরিবর্তন করে ড. এ.পি.জে. আবদুল কালাম দ্বীপ রাখা হয়।",
+            examTrapEn: "Trap: BrahMos is a supersonic CRUISE missile (India-Russia JV), whereas Agni-5 is a surface-to-surface BALLISTIC missile.",
+            examTrapBn: "সতর্কতা: ব্রহ্মোস একটি সুপারসনিক ক্রুজ মিসাইল, কিন্তু অগ্নি-৫ একটি ব্যালিস্টিক মিসাইল।",
           },
-        },
-      ],
-    },
-    {
-      editionDate: "2026-03-19",
-      titleEn: "March 2026 Categorized Capsule — Agni-5 MIRV ('Mission Divyastra'), CAA Rules & CEC Appointment",
-      titleBn: "মার্চ ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — অগ্নি-৫ MIRV ('মিশন দিব্যাস্ত্র') এবং নির্বাচন কমিশনার নিয়োগ আইন",
-      summaryEn: "Categorized March 2026 digest covering DRDO's Mission Divyastra (Agni-5 with MIRV technology), CEC and Other Election Commissioners Act, and Pritzker Architecture Prize.",
-      summaryBn: "মার্চ ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ডিআরডিও-র 'মিশন দিব্যাস্ত্র' (Agni-5 MIRV) এবং মুখ্য নির্বাচন কমিশনার নিয়োগ কমিটি।",
-      mnemonicsEn: "[Mission Divyastra = Agni-5 MIRV (Project Director: Sheena Rani)] · [Article 324 = Election Commission (Selection Panel: PM + Union Cabinet Minister + LoP in Lok Sabha)]",
-      mnemonicsBn: "[মিশন দিব্যাস্ত্র = অগ্নি-৫ MIRV প্রযুক্তি] · [ধারা ৩২৪ = নির্বাচন কমিশন (নিয়োগ কমিটি: প্রধানমন্ত্রী + কেন্দ্রীয় মন্ত্রী + লোকসভার বিরোধী দলনেতা)]",
-      topics: [
-        {
-          id: "ca-2026-03-19-1",
-          category: "Defence & Military Exercises",
-          headlineEn: "Mission Divyastra: First Flight Test of Indigenous Agni-5 Missile with MIRV Technology",
-          headlineBn: "মিশন দিব্যাস্ত্র: দেশীয় প্রযুক্তিতে তৈরি MIRV সুবিধাসম্পন্ন 'অগ্নি-৫' ক্ষেপণাস্ত্রের সফল পরীক্ষা",
-          sourceTag: "PIB Defence · DRDO",
-          whyInNewsEn: "DRDO successfully conducted 'Mission Divyastra', the first flight test of the indigenously developed Agni-5 Intercontinental Ballistic Missile equipped with MIRV technology from APJ Abdul Kalam Island (Odisha).",
-          whyInNewsBn: "ওড়িশার এ.পি.জে. আবদুল কালাম দ্বীপ থেকে DRDO 'মিশন দিব্যাস্ত্র'-এর অধীনে MIRV প্রযুক্তিসম্পন্ন অগ্নি-৫ ক্ষেপণাস্ত্রের সফল পরীক্ষা চালিয়েছে।",
-          examPointsEn: [
-            "MIRV stands for 'Multiple Independently Targetable Re-entry Vehicle' — allows a single missile to carry multiple nuclear warheads aimed at different targets hundreds of kilometres apart.",
-            "Agni-5 is a 3-stage, solid-fuelled surface-to-surface Intercontinental Ballistic Missile (ICBM) with a strike range exceeding 5,000 km.",
-            "Project Director of Mission Divyastra at DRDO is woman scientist Sheena Rani (often compared to 'Agni Putri' Tessy Thomas).",
-            "Integrated Guided Missile Development Programme (IGMDP) was conceived by Dr. A.P.J. Abdul Kalam in 1983 and developed 5 missiles: Prithvi, Agni, Trishul, Akash, and Nag (PATNA).",
-          ],
-          examPointsBn: [
-            "MIRV-এর পূর্ণরূপ 'Multiple Independently Targetable Re-entry Vehicle'—এর সাহায্যে একটিমাত্র ক্ষেপণাস্ত্র দিয়েই একাধিক লক্ষ্যবস্তুতে আলাদা পরমাণু ওয়ারহেড নিক্ষেপ করা যায়।",
-            "অগ্নি-৫ হলো ৩-পর্যায়ের কঠিন জ্বালানি চালিত সারফেস-টু-সারফেস ব্যালিস্টিক মিসাইল, যার পাল্লা ৫,০০০ কিমির বেশি।",
-            "মিশন দিব্যাস্ত্রের প্রজেক্ট ডিরেক্টর হলেন ডিআরডিও-র মহিলা বিজ্ঞানী শীনা রানী (Sheena Rani)।",
-            "ড. এ.পি.জে. আবদুল কালামের নেতৃত্বে ১৯৮৩ সালে শুরু হওয়া IGMDP প্রকল্পের ৫টি ক্ষেপণাস্ত্র হলো: পৃথ্বী, অগ্নি, ত্রিশূল, আকাশ এবং নাগ (PATNA)।",
-          ],
-          staticGkLinkEn: "Wheeler Island off the coast of Odisha (Bhadrak district) was renamed Dr. APJ Abdul Kalam Island in September 2015.",
-          staticGkLinkBn: "ওড়িশা উপকূলের হুইলার দ্বীপের নাম ২০১৫ সালে পরিবর্তন করে ড. এ.পি.জে. আবদুল কালাম দ্বীপ রাখা হয়।",
-          examTrapEn: "Trap: BrahMos is a supersonic CRUISE missile (India-Russia JV), whereas Agni-5 is a surface-to-surface BALLISTIC missile.",
-          examTrapBn: "সতর্কতা: ব্রহ্মোস একটি সুপারসনিক ক্রুজ মিসাইল, কিন্তু অগ্নি-৫ একটি ব্যালিস্টিক মিসাইল।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2026-03-19-1",
-          category: "Defence & Military Exercises",
-          stem: {
-            en: "What was the codename of DRDO's first flight test of the Agni-5 missile equipped with Multiple Independently Targetable Re-entry Vehicle (MIRV) technology?",
-            bn: "MIRV প্রযুক্তিসম্পন্ন অগ্নি-৫ ক্ষেপণাস্ত্রের প্রথম সফল পরীক্ষার জন্য DRDO-র অভিযানের নাম কী ছিল?",
+        ],
+        mcqs: [
+          {
+            id: "mcq-2026-03-19-1",
+            category: "Defence & Military Exercises",
+            stem: {
+              en: "What was the codename of DRDO's first flight test of the Agni-5 missile equipped with Multiple Independently Targetable Re-entry Vehicle (MIRV) technology?",
+              bn: "MIRV প্রযুক্তিসম্পন্ন অগ্নি-৫ ক্ষেপণাস্ত্রের প্রথম সফল পরীক্ষার জন্য DRDO-র অভিযানের নাম কী ছিল?",
+            },
+            options: {
+              A: { en: "Mission Shakti", bn: "মিশন শক্তি" },
+              B: { en: "Mission Divyastra", bn: "মিশন দিব্যাস্ত্র" },
+              C: { en: "Operation Sudarshan", bn: "অপারেশন সুদর্শন" },
+              D: { en: "Project Kusha", bn: "প্রজেক্ট কুশ" },
+            },
+            correctOption: "B",
+            explanation: {
+              en: "Mission Divyastra was the codename for DRDO's first flight test of the Agni-5 ballistic missile equipped with MIRV technology.",
+              bn: "MIRV প্রযুক্তিসম্পন্ন অগ্নি-৫ ক্ষেপণাস্ত্রের পরীক্ষার নাম ছিল 'মিশন দিব্যাস্ত্র' (Mission Shakti ছিল ২০১৯ সালের অ্যান্টি-স্যাটেলাইট পরীক্ষা)।",
+            },
           },
-          options: {
-            A: { en: "Mission Shakti", bn: "মিশন শক্তি" },
-            B: { en: "Mission Divyastra", bn: "মিশন দিব্যাস্ত্র" },
-            C: { en: "Operation Sudarshan", bn: "অপারেশন সুদর্শন" },
-            D: { en: "Project Kusha", bn: "প্রজেক্ট কুশ" },
+        ],
+      },
+      {
+        editionDate: "2026-02-24",
+        titleEn: "February 2026 Categorized Capsule — Five Bharat Ratna Conferred & Lokpal Appointment",
+        titleBn: "ফেব্রুয়ারি ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ৫ জন বিশিষ্ট ব্যক্তিত্বকে ভারতরত্ন প্রদান ও লোকপাল নিয়োগ",
+        summaryEn: "Categorized February 2026 digest covering Bharat Ratna conferred on Karpoori Thakur, L.K. Advani, P.V. Narasimha Rao, Chaudhary Charan Singh, and Dr. M.S. Swaminathan, plus Justice A.M. Khanwilkar appointed Chairperson of Lokpal.",
+        summaryBn: "ফেব্রুয়ারি ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ড. এম. এস. স্বামীনাথন ও কর্পূরী ঠাকুর সহ ৫ জনকে ভারতরত্ন সম্মান এবং বিচারপতি এ. এম. খানউইলকরকে লোকপাল নিয়োগ।",
+        mnemonicsEn: "[5 Bharat Ratnas = Karpoori Thakur, L.K. Advani, P.V. Narasimha Rao, Charan Singh, M.S. Swaminathan (Total Laureates = 53)] · [2nd Lokpal Chairperson = Justice A.M. Khanwilkar (1st = Justice Pinaki Chandra Ghose)]",
+        mnemonicsBn: "[৫ জন ভারতরত্ন প্রাপক (মোট প্রাপক ৫৩ জন)] · [২য় লোকপাল চেয়ারপার্সন = বিচারপতি এ. এম. খানউইলকর (১ম ছিলেন বিচারপতি পিনাকীচন্দ্র ঘোষ)]",
+        topics: [
+          {
+            id: "ca-2026-02-24-1",
+            category: "Awards & Honours",
+            headlineEn: "Five Bharat Ratna Awards Conferred — Taking Total Recipients Since 1954 to 53",
+            headlineBn: "একই বছরে ৫ জন বিশিষ্ট ব্যক্তিত্বকে 'ভারতরত্ন' সম্মান প্রদান (১৯৫৪ থেকে মোট প্রাপক ৫৩ জন)",
+            sourceTag: "PIB · President's Secretariat",
+            whyInNewsEn: "The President of India conferred India's highest civilian award, the Bharat Ratna, on five stalwarts: Karpoori Thakur, L.K. Advani, P.V. Narasimha Rao, Chaudhary Charan Singh, and Dr. M.S. Swaminathan.",
+            whyInNewsBn: "ভারতের রাষ্ট্রপতি ৫ জন বিশিষ্ট ব্যক্তিত্বকে দেশের সর্বোচ্চ অসামরিক সম্মান 'ভারতরত্ন' প্রদান করেছেন: কর্পূরী ঠাকুর, এল. কে. আডবাণী, পি. ভি. নরসিমহা রাও, চৌধুরী চরণ সিং এবং ড. এম. এস. স্বামীনাথন।",
+            examPointsEn: [
+              "Dr. M.S. Swaminathan ('Father of the Green Revolution in India'): First World Food Prize laureate (1987); chaired the National Commission on Farmers (2004) which recommended MSP at C2 + 50%.",
+              "Karpoori Thakur (posthumous): 2-time Chief Minister of Bihar, popularly known as 'Jannayak' (People's Leader), pioneered OBC sub-categorization (Mungeri Lal Commission, 1978).",
+              "P.V. Narasimha Rao (9th PM of India, 1991–96, 'Father of Indian Economic Reforms' & 73rd/74th Amendments) and Chaudhary Charan Singh (5th PM of India; Kisan Diwas is observed on his birthday, 23 December).",
+              "Bharat Ratna was instituted on 2 January 1954; first three recipients (1954) were C. Rajagopalachari, Dr. Sarvepalli Radhakrishnan, and Dr. C.V. Raman.",
+            ],
+            examPointsBn: [
+              "ড. এম. এস. স্বামীনাথন ('ভারতে সবুজ বিপ্লবের জনক'): ১৯৮৭ সালে প্রথম 'বিশ্ব খাদ্য পুরস্কার' (World Food Prize) লাভ করেন এবং ২০০৪ সালে জাতীয় কৃষক কমিশনের চেয়ারম্যান ছিলেন।",
+              "কর্পূরী ঠাকুর (মরণোত্তর): বিহারের প্রাক্তন মুখ্যমন্ত্রী, যিনি 'জননায়ক' নামে পরিচিত ছিলেন।",
+              "পি. ভি. নরসিমহা রাও (ভারতের ৯ম প্রধানমন্ত্রী, ১৯৯১-এর অর্থনৈতিক সংস্কার ও ৭৩/৭৪তম সংশোধনীর রূপকার) এবং চৌধুরী চরণ সিং (৫ম প্রধানমন্ত্রী; তাঁর জন্মদিন ২৩ ডিসেম্বর 'জাতীয় কৃষক দিবস')।",
+              "১৯৫৪ সালের ২ জানুয়ারি ভারতরত্ন প্রবর্তিত হয়; প্রথম তিন প্রাপক ছিলেন সি. রাজাগোপালাচারী, ড. সর্বপল্লী রাধাকৃষ্ণন এবং ড. সি. ভি. রমন।",
+            ],
+            staticGkLinkEn: "Under Article 18(1) of the Constitution (Abolition of Titles), the Supreme Court held in Balaji Raghavan vs Union of India (1996) that Bharat Ratna and Padma awards are NOT 'titles' and cannot be used as prefixes/suffixes to a recipient's name.",
+            staticGkLinkBn: "১৯৯৬ সালের বালাজি রাঘবন মামলায় সুপ্রিম কোর্ট জানায় যে ভারতরত্ন ও পদ্ম পুরস্কার সংবিধানের ১৮(১) ধারার 'খেতাব' (Title) নয়।",
+            examTrapEn: "Trap: Normally Bharat Ratna is capped at 3 per year, except in 1999 (4 recipients) and now 5 recipients in a single cycle (taking total recipients to 53).",
+            examTrapBn: "সতর্কতা: সাধারণত বছরে সর্বোচ্চ ৩ জনকে ভারতরত্ন দেওয়া হয়, তবে ১৯৯৯ সালে ৪ জনকে এবং এবার ৫ জনকে দেওয়া হয়েছে (মোট প্রাপক ৫৩ জন)।",
           },
-          correctOption: "B",
-          explanation: {
-            en: "Mission Divyastra was the codename for DRDO's first flight test of the Agni-5 ballistic missile equipped with MIRV technology.",
-            bn: "MIRV প্রযুক্তিসম্পন্ন অগ্নি-৫ ক্ষেপণাস্ত্রের পরীক্ষার নাম ছিল 'মিশন দিব্যাস্ত্র' (Mission Shakti ছিল ২০১৯ সালের অ্যান্টি-স্যাটেলাইট পরীক্ষা)।",
+        ],
+        mcqs: [
+          {
+            id: "mcq-2026-02-24-1",
+            category: "Awards & Honours",
+            stem: {
+              en: "Which Bharat Ratna recipient chaired the National Commission on Farmers (2004) that recommended fixing Minimum Support Price (MSP) at least 50% above the weighted average cost of production (C2+50%)?",
+              bn: "কোন ভারতরত্ন প্রাপক ২০০৪ সালে গঠিত 'জাতীয় কৃষক কমিশন'-এর চেয়ারম্যান ছিলেন, যা উৎপাদন খরচের (C2) ওপর অন্তত ৫০% যোগ করে MSP নির্ধারণের সুপারিশ করেছিল?",
+            },
+            options: {
+              A: { en: "Chaudhary Charan Singh", bn: "চৌধুরী চরণ সিং" },
+              B: { en: "Dr. M.S. Swaminathan", bn: "ড. এম. এস. স্বামীনাথন" },
+              C: { en: "Karpoori Thakur", bn: "কর্পূরী ঠাকুর" },
+              D: { en: "Dr. Verghese Kurien", bn: "ড. ভার্গিস কুরিয়েন" },
+            },
+            correctOption: "B",
+            explanation: {
+              en: "Dr. M.S. Swaminathan chaired the National Commission on Farmers (2004–2006) which recommended the C2 + 50% formula for MSP.",
+              bn: "ভারতে সবুজ বিপ্লবের জনক ড. এম. এস. স্বামীনাথন জাতীয় কৃষক কমিশনের (২০০৪) চেয়ারম্যান ছিলেন।",
+            },
           },
-        },
-      ],
-    },
-    {
-      editionDate: "2026-02-24",
-      titleEn: "February 2026 Categorized Capsule — Five Bharat Ratna Conferred & Lokpal Appointment",
-      titleBn: "ফেব্রুয়ারি ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — ৫ জন বিশিষ্ট ব্যক্তিত্বকে ভারতরত্ন প্রদান ও লোকপাল নিয়োগ",
-      summaryEn: "Categorized February 2026 digest covering Bharat Ratna conferred on Karpoori Thakur, L.K. Advani, P.V. Narasimha Rao, Chaudhary Charan Singh, and Dr. M.S. Swaminathan, plus Justice A.M. Khanwilkar appointed Chairperson of Lokpal.",
-      summaryBn: "ফেব্রুয়ারি ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ড. এম. এস. স্বামীনাথন ও কর্পূরী ঠাকুর সহ ৫ জনকে ভারতরত্ন সম্মান এবং বিচারপতি এ. এম. খানউইলকরকে লোকপাল নিয়োগ।",
-      mnemonicsEn: "[5 Bharat Ratnas = Karpoori Thakur, L.K. Advani, P.V. Narasimha Rao, Charan Singh, M.S. Swaminathan (Total Laureates = 53)] · [2nd Lokpal Chairperson = Justice A.M. Khanwilkar (1st = Justice Pinaki Chandra Ghose)]",
-      mnemonicsBn: "[৫ জন ভারতরত্ন প্রাপক (মোট প্রাপক ৫৩ জন)] · [২য় লোকপাল চেয়ারপার্সন = বিচারপতি এ. এম. খানউইলকর (১ম ছিলেন বিচারপতি পিনাকীচন্দ্র ঘোষ)]",
-      topics: [
-        {
-          id: "ca-2026-02-24-1",
-          category: "Awards & Honours",
-          headlineEn: "Five Bharat Ratna Awards Conferred — Taking Total Recipients Since 1954 to 53",
-          headlineBn: "একই বছরে ৫ জন বিশিষ্ট ব্যক্তিত্বকে 'ভারতরত্ন' সম্মান প্রদান (১৯৫৪ থেকে মোট প্রাপক ৫৩ জন)",
-          sourceTag: "PIB · President's Secretariat",
-          whyInNewsEn: "The President of India conferred India's highest civilian award, the Bharat Ratna, on five stalwarts: Karpoori Thakur, L.K. Advani, P.V. Narasimha Rao, Chaudhary Charan Singh, and Dr. M.S. Swaminathan.",
-          whyInNewsBn: "ভারতের রাষ্ট্রপতি ৫ জন বিশিষ্ট ব্যক্তিত্বকে দেশের সর্বোচ্চ অসামরিক সম্মান 'ভারতরত্ন' প্রদান করেছেন: কর্পূরী ঠাকুর, এল. কে. আডবাণী, পি. ভি. নরসিমহা রাও, চৌধুরী চরণ সিং এবং ড. এম. এস. স্বামীনাথন।",
-          examPointsEn: [
-            "Dr. M.S. Swaminathan ('Father of the Green Revolution in India'): First World Food Prize laureate (1987); chaired the National Commission on Farmers (2004) which recommended MSP at C2 + 50%.",
-            "Karpoori Thakur (posthumous): 2-time Chief Minister of Bihar, popularly known as 'Jannayak' (People's Leader), pioneered OBC sub-categorization (Mungeri Lal Commission, 1978).",
-            "P.V. Narasimha Rao (9th PM of India, 1991–96, 'Father of Indian Economic Reforms' & 73rd/74th Amendments) and Chaudhary Charan Singh (5th PM of India; Kisan Diwas is observed on his birthday, 23 December).",
-            "Bharat Ratna was instituted on 2 January 1954; first three recipients (1954) were C. Rajagopalachari, Dr. Sarvepalli Radhakrishnan, and Dr. C.V. Raman.",
-          ],
-          examPointsBn: [
-            "ড. এম. এস. স্বামীনাথন ('ভারতে সবুজ বিপ্লবের জনক'): ১৯৮৭ সালে প্রথম 'বিশ্ব খাদ্য পুরস্কার' (World Food Prize) লাভ করেন এবং ২০০৪ সালে জাতীয় কৃষক কমিশনের চেয়ারম্যান ছিলেন।",
-            "কর্পূরী ঠাকুর (মরণোত্তর): বিহারের প্রাক্তন মুখ্যমন্ত্রী, যিনি 'জননায়ক' নামে পরিচিত ছিলেন।",
-            "পি. ভি. নরসিমহা রাও (ভারতের ৯ম প্রধানমন্ত্রী, ১৯৯১-এর অর্থনৈতিক সংস্কার ও ৭৩/৭৪তম সংশোধনীর রূপকার) এবং চৌধুরী চরণ সিং (৫ম প্রধানমন্ত্রী; তাঁর জন্মদিন ২৩ ডিসেম্বর 'জাতীয় কৃষক দিবস')।",
-            "১৯৫৪ সালের ২ জানুয়ারি ভারতরত্ন প্রবর্তিত হয়; প্রথম তিন প্রাপক ছিলেন সি. রাজাগোপালাচারী, ড. সর্বপল্লী রাধাকৃষ্ণন এবং ড. সি. ভি. রমন।",
-          ],
-          staticGkLinkEn: "Under Article 18(1) of the Constitution (Abolition of Titles), the Supreme Court held in Balaji Raghavan vs Union of India (1996) that Bharat Ratna and Padma awards are NOT 'titles' and cannot be used as prefixes/suffixes to a recipient's name.",
-          staticGkLinkBn: "১৯৯৬ সালের বালাজি রাঘবন মামলায় সুপ্রিম কোর্ট জানায় যে ভারতরত্ন ও পদ্ম পুরস্কার সংবিধানের ১৮(১) ধারার 'খেতাব' (Title) নয়।",
-          examTrapEn: "Trap: Normally Bharat Ratna is capped at 3 per year, except in 1999 (4 recipients) and now 5 recipients in a single cycle (taking total recipients to 53).",
-          examTrapBn: "সতর্কতা: সাধারণত বছরে সর্বোচ্চ ৩ জনকে ভারতরত্ন দেওয়া হয়, তবে ১৯৯৯ সালে ৪ জনকে এবং এবার ৫ জনকে দেওয়া হয়েছে (মোট প্রাপক ৫৩ জন)।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2026-02-24-1",
-          category: "Awards & Honours",
-          stem: {
-            en: "Which Bharat Ratna recipient chaired the National Commission on Farmers (2004) that recommended fixing Minimum Support Price (MSP) at least 50% above the weighted average cost of production (C2+50%)?",
-            bn: "কোন ভারতরত্ন প্রাপক ২০০৪ সালে গঠিত 'জাতীয় কৃষক কমিশন'-এর চেয়ারম্যান ছিলেন, যা উৎপাদন খরচের (C2) ওপর অন্তত ৫০% যোগ করে MSP নির্ধারণের সুপারিশ করেছিল?",
+        ],
+      },
+      {
+        editionDate: "2026-01-26",
+        titleEn: "January 2026 Categorized Capsule — Republic Day Chief Guest, ISRO XPoSat & Karpoori Thakur",
+        titleBn: "জানুয়ারি ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — প্রজাতন্ত্র দিবসের প্রধান অতিথি, ইসরোর XPoSat ও স্বচ্ছ সর্বেক্ষণ",
+        summaryEn: "Categorized January 2026 digest covering ISRO's PSLV-C58 / XPoSat (X-ray Polarimeter Satellite), Swachh Survekshan cleanest cities (Indore & Surat), and West Bengal Republic Day tableau.",
+        summaryBn: "জানুয়ারি ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ইসরোর PSLV-C58 / XPoSat মহাকাশ মিশন এবং স্বচ্ছ সর্বেক্ষণ পুরস্কারে ইন্দোর ও সুরাট।",
+        mnemonicsEn: "[PSLV-C58 = XPoSat (India's 1st X-Ray Polarimeter Satellite, 2nd in world after NASA's IXPE)] · [Cleanest Cities = Indore & Surat (Joint 1st); Cleanest Ganga Town = Varanasi]",
+        mnemonicsBn: "[PSLV-C58 = XPoSat (ভারতের ১ম এক্স-রে পোলারিমিটার উপগ্রহ)] · [স্বচ্ছ সর্বেক্ষণ = ইন্দোর ও সুরাট যৌথভাবে ১ম]",
+        topics: [
+          {
+            id: "ca-2026-01-26-1",
+            category: "Science & Technology",
+            headlineEn: "ISRO Launches PSLV-C58 / XPoSat — India's First Dedicated X-Ray Polarimeter Satellite",
+            headlineBn: "ইসরোর PSLV-C58 / XPoSat উৎক্ষেপণ — ভারতের প্রথম এক্স-রে পোলারিমিটার উপগ্রহ",
+            sourceTag: "ISRO · GKToday Science",
+            whyInNewsEn: "ISRO launched XPoSat (X-ray Polarimeter Satellite) aboard PSLV-C58 from Satish Dhawan Space Centre, Sriharikota to study black holes, neutron stars, and pulsar radiation.",
+            whyInNewsBn: "কৃষ্ণগহ্বর (Black Holes) ও নিউট্রন নক্ষত্রের এক্স-রে বিকিরণ গবেষণার জন্য ইসরো শ্রীহরিকোটা থেকে PSLV-C58 রকেটের মাধ্যমে XPoSat উপগ্রহ উৎক্ষেপণ করেছে।",
+            examPointsEn: [
+              "XPoSat makes India only the 2nd country in the world (after NASA's IXPE — Imaging X-ray Polarimetry Explorer launched in 2021) to have a dedicated space observatory for X-ray polarization.",
+              "Carries 2 scientific payloads: POLIX (Polarimeter Instrument in X-rays, built by Raman Research Institute, Bengaluru) and XSPECT (X-ray Spectroscopy and Timing, built by URSC, ISRO).",
+              "Placed in a 650 km Low Earth Orbit (LEO) with a mission life of 5 years.",
+              "Also tested an indigenous Hydrogen Fuel Cell and woman-robot astronaut payload precursor ('Vyommitra' subsystem) on the POEM-3 orbital platform.",
+            ],
+            examPointsBn: [
+              "নাসার IXPE (২০২১)-এর পর ভারত বিশ্বের মাত্র দ্বিতীয় দেশ হিসেবে মহাকাশে নিজস্ব এক্স-রে পোলারিমিটার অবজারভেটরি (XPoSat) স্থাপন করেছে।",
+              "এতে ২টি পেলোড রয়েছে: POLIX (বেঙ্গালুরুর রমন রিসার্চ ইনস্টিটিউট নির্মিত) এবং XSPECT (ইসরোর ইউ. আর. রাও স্যাটেলাইট সেন্টার নির্মিত)।",
+              "উপগ্রহটিকে ৬৫০ কিমি উচ্চতার লো-আর্থ অরবিটে (LEO) স্থাপন করা হয়েছে (মেয়াদকাল ৫ বছর)।",
+              "PSLV-C58 এর চতুর্থ পর্যায়টিকে (POEM-3) মহাকাশ পরীক্ষাগার হিসেবে ব্যবহার করে ফুয়েল সেল পরীক্ষা করা হয়েছে।",
+            ],
+            staticGkLinkEn: "AstroSat (launched in September 2015 via PSLV-C30) was India's first dedicated multi-wavelength space observatory.",
+            staticGkLinkBn: "২০১৫ সালে উৎক্ষেপিত 'AstroSat' ছিল ভারতের প্রথম মাল্টি-ওয়েভলেংথ মহাকাশ মানমন্দির।",
+            examTrapEn: "Trap: Aditya-L1 (PSLV-C57) studies the Sun from Lagrange Point L1 (1.5 million km from Earth), whereas XPoSat (PSLV-C58) studies cosmic X-rays from a 650 km LEO.",
+            examTrapBn: "সতর্কতা: আদিত্য-L1 (PSLV-C57) সূর্য গবেষণার জন্য, আর XPoSat (PSLV-C58) কৃষ্ণগহ্বর ও এক্স-রে পোলারাইজেশন গবেষণার জন্য।",
           },
-          options: {
-            A: { en: "Chaudhary Charan Singh", bn: "চৌধুরী চরণ সিং" },
-            B: { en: "Dr. M.S. Swaminathan", bn: "ড. এম. এস. স্বামীনাথন" },
-            C: { en: "Karpoori Thakur", bn: "কর্পূরী ঠাকুর" },
-            D: { en: "Dr. Verghese Kurien", bn: "ড. ভার্গিস কুরিয়েন" },
+        ],
+        mcqs: [
+          {
+            id: "mcq-2026-01-26-1",
+            category: "Science & Technology",
+            stem: {
+              en: "Which launch vehicle was used by ISRO to place India's first X-ray Polarimeter Satellite (XPoSat) into orbit?",
+              bn: "ভারতের প্রথম এক্স-রে পোলারিমিটার উপগ্রহ 'XPoSat'-কে কক্ষপথে স্থাপন করতে ইসরো কোন উৎক্ষেপণ যান (রকেট) ব্যবহার করেছে?",
+            },
+            options: {
+              A: { en: "LVM3-M4", bn: "LVM3-M4" },
+              B: { en: "PSLV-C57", bn: "PSLV-C57" },
+              C: { en: "PSLV-C58", bn: "PSLV-C58" },
+              D: { en: "GSLV-F14", bn: "GSLV-F14" },
+            },
+            correctOption: "C",
+            explanation: {
+              en: "PSLV-C58 launched XPoSat; PSLV-C57 launched Aditya-L1; LVM3-M4 launched Chandrayaan-3; GSLV-F14 launched INSAT-3DS.",
+              bn: "PSLV-C58 রকেটের মাধ্যমে XPoSat উৎক্ষেপণ করা হয় (PSLV-C57 ছিল আদিত্য-L1 এবং LVM3-M4 ছিল চন্দ্রযান-৩)।",
+            },
           },
-          correctOption: "B",
-          explanation: {
-            en: "Dr. M.S. Swaminathan chaired the National Commission on Farmers (2004–2006) which recommended the C2 + 50% formula for MSP.",
-            bn: "ভারতে সবুজ বিপ্লবের জনক ড. এম. এস. স্বামীনাথন জাতীয় কৃষক কমিশনের (২০০৪) চেয়ারম্যান ছিলেন।",
+        ],
+      },
+      {
+        editionDate: "2025-12-28",
+        titleEn: "December 2025 Categorized Capsule — Kolkata's Durga Puja & Garba UNESCO ICH, COP28 Dubai & Sahitya Akademi",
+        titleBn: "ডিসেম্বর ২০২৫ ক্যাটাগরিভিত্তিক ক্যাপসুল — ইউনেস্কো অনন্য সাংস্কৃতিক ঐতিহ্য, COP28 দুবাই ও সাহিত্য অকাদেমি পুরস্কার",
+        summaryEn: "Categorized December 2025 digest kicking off the 12-month WBPSC Clerkship 2026 preparation window: UNESCO Intangible Cultural Heritage list (Garba of Gujarat & Durga Puja in Kolkata), COP28 UAE Consensus, and Bengali Sahitya Akademi winners.",
+        summaryBn: "ডিসেম্বর ২০২৫-এর কারেন্ট অ্যাফেয়ার্স (ডিসেম্বর ২০২৬ ক্লার্কশিপ পরীক্ষার ১ বছরের প্রস্তুতি শুরু): ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্য, COP28 দুবাই এবং বাংলা সাহিত্য অকাদেমি।",
+        mnemonicsEn: "[15th UNESCO ICH of India = Garba of Gujarat (14th was Durga Puja in Kolkata, 2021)] · [COP28 = Dubai, UAE (Loss & Damage Fund operationalized)]",
+        mnemonicsBn: "[ভারতের ১৫তম ইউনেস্কো অনন্য সাংস্কৃতিক ঐতিহ্য = গুজরাটের গরবা (১৪তম ছিল কলকাতার দুর্গাপূজা, ২০২১)] · [COP28 = দুবাই]",
+        topics: [
+          {
+            id: "ca-2025-12-28-1",
+            category: "West Bengal Special",
+            headlineEn: "UNESCO Intangible Cultural Heritage (ICH) of Humanity: Kolkata's Durga Puja (14th) & Garba of Gujarat (15th)",
+            headlineBn: "ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্য (Intangible Cultural Heritage): কলকাতার দুর্গাপূজা (১৪তম) ও গুজরাটের গরবা (১৫তম)",
+            sourceTag: "UNESCO · Ministry of Culture",
+            whyInNewsEn: "UNESCO inscribed 'Garba of Gujarat' as the 15th element from India on its Representative List of the Intangible Cultural Heritage of Humanity, following 'Durga Puja in Kolkata' (14th).",
+            whyInNewsBn: "'কলকাতার দুর্গাপূজা' (১৪তম)-র পর 'গুজরাটের গরবা' ভারতের ১৫তম উপাদান হিসেবে ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের (ICH) তালিকায় স্থান পেয়েছে।",
+            examPointsEn: [
+              "India now has 15 elements inscribed on UNESCO's Representative List of the Intangible Cultural Heritage (ICH) of Humanity.",
+              "West Bengal elements on UNESCO's ICH list: 1) Chhau Dance (inscribed in 2010 — Purulia Chhau of WB, Seraikella Chhau of Jharkhand, Mayurbhanj Chhau of Odisha) and 2) Durga Puja in Kolkata (inscribed in December 2021 as the 14th element).",
+              "First 3 elements from India inscribed in 2008: Tradition of Vedic Chanting, Ramlila, and Kutiyattam (Sanskrit theatre of Kerala).",
+              "Kumbh Mela was inscribed in 2017 and Yoga in 2016.",
+            ],
+            examPointsBn: [
+              "ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের (Intangible Cultural Heritage) তালিকায় ভারতের মোট ১৫টি উপাদান রয়েছে।",
+              "পশ্চিমবঙ্গের ২টি সংস্কৃতি এই তালিকায় রয়েছে: ১) ছৌ নাচ (২০১০ সালে অন্তর্ভুক্ত — পুরুলিয়া ছৌ) এবং ২) কলকাতার দুর্গাপূজা (ডিসেম্বর ২০২১-এ ১৪তম উপাদান হিসেবে অন্তর্ভুক্ত)।",
+              "১৫তম এবং সর্বশেষ ভারতীয় সংযোজন হলো 'গুজরাটের গরবা' (Garba of Gujarat)।",
+              "২০১৬ সালে 'যোগা' (Yoga) এবং ২০১৭ সালে 'কুম্ভমেলা' এই তালিকায় স্থান পেয়েছিল।",
+            ],
+            staticGkLinkEn: "UNESCO headquarters is located in Paris, France (founded on 16 November 1945); current Director-General is Audrey Azoulay.",
+            staticGkLinkBn: "ইউনেস্কোর (UNESCO) সদর দপ্তর ফ্রান্সের প্যারিসে অবস্থিত (প্রতিষ্ঠা: ১৬ নভেম্বর ১৯৪৫)।",
+            examTrapEn: "Trap: Santiniketan (2023) is a tangible UNESCO World Heritage Site (#41), whereas Durga Puja in Kolkata (2021) is on the UNESCO Intangible Cultural Heritage (ICH) list (#14).",
+            examTrapBn: "সতর্কতা: শান্তিনিকেতন (২০২৩) হলো ইউনেস্কো ওয়ার্ল্ড হেরিটেজ সাইট (৪১তম), আর কলকাতার দুর্গাপূজা (২০২১) হলো ইউনেস্কো অনন্য সাংস্কৃতিক ঐতিহ্য বা Intangible Heritage (১৪তম)।",
           },
-        },
-      ],
-    },
-    {
-      editionDate: "2026-01-26",
-      titleEn: "January 2026 Categorized Capsule — Republic Day Chief Guest, ISRO XPoSat & Karpoori Thakur",
-      titleBn: "জানুয়ারি ২০২৬ ক্যাটাগরিভিত্তিক ক্যাপসুল — প্রজাতন্ত্র দিবসের প্রধান অতিথি, ইসরোর XPoSat ও স্বচ্ছ সর্বেক্ষণ",
-      summaryEn: "Categorized January 2026 digest covering ISRO's PSLV-C58 / XPoSat (X-ray Polarimeter Satellite), Swachh Survekshan cleanest cities (Indore & Surat), and West Bengal Republic Day tableau.",
-      summaryBn: "জানুয়ারি ২০২৬-এর কারেন্ট অ্যাফেয়ার্স: ইসরোর PSLV-C58 / XPoSat মহাকাশ মিশন এবং স্বচ্ছ সর্বেক্ষণ পুরস্কারে ইন্দোর ও সুরাট।",
-      mnemonicsEn: "[PSLV-C58 = XPoSat (India's 1st X-Ray Polarimeter Satellite, 2nd in world after NASA's IXPE)] · [Cleanest Cities = Indore & Surat (Joint 1st); Cleanest Ganga Town = Varanasi]",
-      mnemonicsBn: "[PSLV-C58 = XPoSat (ভারতের ১ম এক্স-রে পোলারিমিটার উপগ্রহ)] · [স্বচ্ছ সর্বেক্ষণ = ইন্দোর ও সুরাট যৌথভাবে ১ম]",
-      topics: [
-        {
-          id: "ca-2026-01-26-1",
-          category: "Science & Technology",
-          headlineEn: "ISRO Launches PSLV-C58 / XPoSat — India's First Dedicated X-Ray Polarimeter Satellite",
-          headlineBn: "ইসরোর PSLV-C58 / XPoSat উৎক্ষেপণ — ভারতের প্রথম এক্স-রে পোলারিমিটার উপগ্রহ",
-          sourceTag: "ISRO · GKToday Science",
-          whyInNewsEn: "ISRO launched XPoSat (X-ray Polarimeter Satellite) aboard PSLV-C58 from Satish Dhawan Space Centre, Sriharikota to study black holes, neutron stars, and pulsar radiation.",
-          whyInNewsBn: "কৃষ্ণগহ্বর (Black Holes) ও নিউট্রন নক্ষত্রের এক্স-রে বিকিরণ গবেষণার জন্য ইসরো শ্রীহরিকোটা থেকে PSLV-C58 রকেটের মাধ্যমে XPoSat উপগ্রহ উৎক্ষেপণ করেছে।",
-          examPointsEn: [
-            "XPoSat makes India only the 2nd country in the world (after NASA's IXPE — Imaging X-ray Polarimetry Explorer launched in 2021) to have a dedicated space observatory for X-ray polarization.",
-            "Carries 2 scientific payloads: POLIX (Polarimeter Instrument in X-rays, built by Raman Research Institute, Bengaluru) and XSPECT (X-ray Spectroscopy and Timing, built by URSC, ISRO).",
-            "Placed in a 650 km Low Earth Orbit (LEO) with a mission life of 5 years.",
-            "Also tested an indigenous Hydrogen Fuel Cell and woman-robot astronaut payload precursor ('Vyommitra' subsystem) on the POEM-3 orbital platform.",
-          ],
-          examPointsBn: [
-            "নাসার IXPE (২০২১)-এর পর ভারত বিশ্বের মাত্র দ্বিতীয় দেশ হিসেবে মহাকাশে নিজস্ব এক্স-রে পোলারিমিটার অবজারভেটরি (XPoSat) স্থাপন করেছে।",
-            "এতে ২টি পেলোড রয়েছে: POLIX (বেঙ্গালুরুর রমন রিসার্চ ইনস্টিটিউট নির্মিত) এবং XSPECT (ইসরোর ইউ. আর. রাও স্যাটেলাইট সেন্টার নির্মিত)।",
-            "উপগ্রহটিকে ৬৫০ কিমি উচ্চতার লো-আর্থ অরবিটে (LEO) স্থাপন করা হয়েছে (মেয়াদকাল ৫ বছর)।",
-            "PSLV-C58 এর চতুর্থ পর্যায়টিকে (POEM-3) মহাকাশ পরীক্ষাগার হিসেবে ব্যবহার করে ফুয়েল সেল পরীক্ষা করা হয়েছে।",
-          ],
-          staticGkLinkEn: "AstroSat (launched in September 2015 via PSLV-C30) was India's first dedicated multi-wavelength space observatory.",
-          staticGkLinkBn: "২০১৫ সালে উৎক্ষেপিত 'AstroSat' ছিল ভারতের প্রথম মাল্টি-ওয়েভলেংথ মহাকাশ মানমন্দির।",
-          examTrapEn: "Trap: Aditya-L1 (PSLV-C57) studies the Sun from Lagrange Point L1 (1.5 million km from Earth), whereas XPoSat (PSLV-C58) studies cosmic X-rays from a 650 km LEO.",
-          examTrapBn: "সতর্কতা: আদিত্য-L1 (PSLV-C57) সূর্য গবেষণার জন্য, আর XPoSat (PSLV-C58) কৃষ্ণগহ্বর ও এক্স-রে পোলারাইজেশন গবেষণার জন্য।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2026-01-26-1",
-          category: "Science & Technology",
-          stem: {
-            en: "Which launch vehicle was used by ISRO to place India's first X-ray Polarimeter Satellite (XPoSat) into orbit?",
-            bn: "ভারতের প্রথম এক্স-রে পোলারিমিটার উপগ্রহ 'XPoSat'-কে কক্ষপথে স্থাপন করতে ইসরো কোন উৎক্ষেপণ যান (রকেট) ব্যবহার করেছে?",
+        ],
+        mcqs: [
+          {
+            id: "mcq-2025-12-28-1",
+            category: "West Bengal Special",
+            stem: {
+              en: "Which traditional dance form practised in Purulia district of West Bengal was inscribed on UNESCO's Intangible Cultural Heritage of Humanity list in 2010?",
+              bn: "পশ্চিমবঙ্গের পুরুলিয়া জেলায় প্রচলিত কোন ঐতিহ্যবাহী নৃত্যশৈলী ২০১০ সালে ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের (Intangible Cultural Heritage) তালিকায় স্থান পায়?",
+            },
+            options: {
+              A: { en: "Gambhira Dance", bn: "গম্ভীরা নাচ" },
+              B: { en: "Chhau Dance", bn: "ছৌ নাচ" },
+              C: { en: "Raibenshe Dance", bn: "রায়বেঁশে নাচ" },
+              D: { en: "Tusu Dance", bn: "টুসু নাচ" },
+            },
+            correctOption: "B",
+            explanation: {
+              en: "Chhau Dance (Purulia Chhau in West Bengal, Seraikella in Jharkhand, Mayurbhanj in Odisha) was inscribed on UNESCO's ICH list in 2010.",
+              bn: "২০১০ সালে ছৌ নাচ (পুরুলিয়া ছৌ, সেরাইকেলা ছৌ ও ময়ূরভঞ্জ ছৌ) ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের তালিকায় স্থান পায়।",
+            },
           },
-          options: {
-            A: { en: "LVM3-M4", bn: "LVM3-M4" },
-            B: { en: "PSLV-C57", bn: "PSLV-C57" },
-            C: { en: "PSLV-C58", bn: "PSLV-C58" },
-            D: { en: "GSLV-F14", bn: "GSLV-F14" },
-          },
-          correctOption: "C",
-          explanation: {
-            en: "PSLV-C58 launched XPoSat; PSLV-C57 launched Aditya-L1; LVM3-M4 launched Chandrayaan-3; GSLV-F14 launched INSAT-3DS.",
-            bn: "PSLV-C58 রকেটের মাধ্যমে XPoSat উৎক্ষেপণ করা হয় (PSLV-C57 ছিল আদিত্য-L1 এবং LVM3-M4 ছিল চন্দ্রযান-৩)।",
-          },
-        },
-      ],
-    },
-    {
-      editionDate: "2025-12-28",
-      titleEn: "December 2025 Categorized Capsule — Kolkata's Durga Puja & Garba UNESCO ICH, COP28 Dubai & Sahitya Akademi",
-      titleBn: "ডিসেম্বর ২০২৫ ক্যাটাগরিভিত্তিক ক্যাপসুল — ইউনেস্কো অনন্য সাংস্কৃতিক ঐতিহ্য, COP28 দুবাই ও সাহিত্য অকাদেমি পুরস্কার",
-      summaryEn: "Categorized December 2025 digest kicking off the 12-month WBPSC Clerkship 2026 preparation window: UNESCO Intangible Cultural Heritage list (Garba of Gujarat & Durga Puja in Kolkata), COP28 UAE Consensus, and Bengali Sahitya Akademi winners.",
-      summaryBn: "ডিসেম্বর ২০২৫-এর কারেন্ট অ্যাফেয়ার্স (ডিসেম্বর ২০২৬ ক্লার্কশিপ পরীক্ষার ১ বছরের প্রস্তুতি শুরু): ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্য, COP28 দুবাই এবং বাংলা সাহিত্য অকাদেমি।",
-      mnemonicsEn: "[15th UNESCO ICH of India = Garba of Gujarat (14th was Durga Puja in Kolkata, 2021)] · [COP28 = Dubai, UAE (Loss & Damage Fund operationalized)]",
-      mnemonicsBn: "[ভারতের ১৫তম ইউনেস্কো অনন্য সাংস্কৃতিক ঐতিহ্য = গুজরাটের গরবা (১৪তম ছিল কলকাতার দুর্গাপূজা, ২০২১)] · [COP28 = দুবাই]",
-      topics: [
-        {
-          id: "ca-2025-12-28-1",
-          category: "West Bengal Special",
-          headlineEn: "UNESCO Intangible Cultural Heritage (ICH) of Humanity: Kolkata's Durga Puja (14th) & Garba of Gujarat (15th)",
-          headlineBn: "ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্য (Intangible Cultural Heritage): কলকাতার দুর্গাপূজা (১৪তম) ও গুজরাটের গরবা (১৫তম)",
-          sourceTag: "UNESCO · Ministry of Culture",
-          whyInNewsEn: "UNESCO inscribed 'Garba of Gujarat' as the 15th element from India on its Representative List of the Intangible Cultural Heritage of Humanity, following 'Durga Puja in Kolkata' (14th).",
-          whyInNewsBn: "'কলকাতার দুর্গাপূজা' (১৪তম)-র পর 'গুজরাটের গরবা' ভারতের ১৫তম উপাদান হিসেবে ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের (ICH) তালিকায় স্থান পেয়েছে।",
-          examPointsEn: [
-            "India now has 15 elements inscribed on UNESCO's Representative List of the Intangible Cultural Heritage (ICH) of Humanity.",
-            "West Bengal elements on UNESCO's ICH list: 1) Chhau Dance (inscribed in 2010 — Purulia Chhau of WB, Seraikella Chhau of Jharkhand, Mayurbhanj Chhau of Odisha) and 2) Durga Puja in Kolkata (inscribed in December 2021 as the 14th element).",
-            "First 3 elements from India inscribed in 2008: Tradition of Vedic Chanting, Ramlila, and Kutiyattam (Sanskrit theatre of Kerala).",
-            "Kumbh Mela was inscribed in 2017 and Yoga in 2016.",
-          ],
-          examPointsBn: [
-            "ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের (Intangible Cultural Heritage) তালিকায় ভারতের মোট ১৫টি উপাদান রয়েছে।",
-            "পশ্চিমবঙ্গের ২টি সংস্কৃতি এই তালিকায় রয়েছে: ১) ছৌ নাচ (২০১০ সালে অন্তর্ভুক্ত — পুরুলিয়া ছৌ) এবং ২) কলকাতার দুর্গাপূজা (ডিসেম্বর ২০২১-এ ১৪তম উপাদান হিসেবে অন্তর্ভুক্ত)।",
-            "১৫তম এবং সর্বশেষ ভারতীয় সংযোজন হলো 'গুজরাটের গরবা' (Garba of Gujarat)।",
-            "২০১৬ সালে 'যোগা' (Yoga) এবং ২০১৭ সালে 'কুম্ভমেলা' এই তালিকায় স্থান পেয়েছিল।",
-          ],
-          staticGkLinkEn: "UNESCO headquarters is located in Paris, France (founded on 16 November 1945); current Director-General is Audrey Azoulay.",
-          staticGkLinkBn: "ইউনেস্কোর (UNESCO) সদর দপ্তর ফ্রান্সের প্যারিসে অবস্থিত (প্রতিষ্ঠা: ১৬ নভেম্বর ১৯৪৫)।",
-          examTrapEn: "Trap: Santiniketan (2023) is a tangible UNESCO World Heritage Site (#41), whereas Durga Puja in Kolkata (2021) is on the UNESCO Intangible Cultural Heritage (ICH) list (#14).",
-          examTrapBn: "সতর্কতা: শান্তিনিকেতন (২০২৩) হলো ইউনেস্কো ওয়ার্ল্ড হেরিটেজ সাইট (৪১তম), আর কলকাতার দুর্গাপূজা (২০২১) হলো ইউনেস্কো অনন্য সাংস্কৃতিক ঐতিহ্য বা Intangible Heritage (১৪তম)।",
-        },
-      ],
-      mcqs: [
-        {
-          id: "mcq-2025-12-28-1",
-          category: "West Bengal Special",
-          stem: {
-            en: "Which traditional dance form practised in Purulia district of West Bengal was inscribed on UNESCO's Intangible Cultural Heritage of Humanity list in 2010?",
-            bn: "পশ্চিমবঙ্গের পুরুলিয়া জেলায় প্রচলিত কোন ঐতিহ্যবাহী নৃত্যশৈলী ২০১০ সালে ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের (Intangible Cultural Heritage) তালিকায় স্থান পায়?",
-          },
-          options: {
-            A: { en: "Gambhira Dance", bn: "গম্ভীরা নাচ" },
-            B: { en: "Chhau Dance", bn: "ছৌ নাচ" },
-            C: { en: "Raibenshe Dance", bn: "রায়বেঁশে নাচ" },
-            D: { en: "Tusu Dance", bn: "টুসু নাচ" },
-          },
-          correctOption: "B",
-          explanation: {
-            en: "Chhau Dance (Purulia Chhau in West Bengal, Seraikella in Jharkhand, Mayurbhanj in Odisha) was inscribed on UNESCO's ICH list in 2010.",
-            bn: "২০১০ সালে ছৌ নাচ (পুরুলিয়া ছৌ, সেরাইকেলা ছৌ ও ময়ূরভঞ্জ ছৌ) ইউনেস্কোর অনন্য সাংস্কৃতিক ঐতিহ্যের তালিকায় স্থান পায়।",
-          },
-        },
-      ],
-    },
-  ];
+        ],
+      },
+    ];
 
   const todayIso = getTodayIso();
 
@@ -1689,29 +1683,29 @@ async function seedFullYearClerkshipArchive(): Promise<void> {
         ${ym.summaryEn},
         ${ym.summaryBn},
         ${JSON.stringify([
-          "https://www.gktoday.in/current-affairs/",
-          "https://www.pyqarena.com/",
-          "https://pib.gov.in",
-          "https://wb.gov.in",
-        ])}::jsonb,
+      "https://www.gktoday.in/current-affairs/",
+      "https://www.pyqarena.com/",
+      "https://pib.gov.in",
+      "https://wb.gov.in",
+    ])}::jsonb,
         ${JSON.stringify([
-          {
-            stepNumber: 1,
-            agentRole: "Web-Scout & Nested-Page Grounding Agent",
-            actionSummary: `Compiled unique PSCWB topics for ${ym.editionDate} (${meta.monthLabelEn}) with zero cross-date duplication`,
-            status: "completed",
-            durationMs: 480,
-            details: "Verified unique headlines across all stored dates in PostgreSQL.",
-          },
-          {
-            stepNumber: 2,
-            agentRole: "Monthly Category Classifier Agent",
-            actionSummary: "Classified topics into WB Special, Polity, Economy, Science, Sports, Awards, Defence & GI Tags",
-            status: "completed",
-            durationMs: 340,
-            details: "Prepared structured category buckets for Monthly Capsule PDF generation.",
-          },
-        ])}::jsonb,
+      {
+        stepNumber: 1,
+        agentRole: "Web-Scout & Nested-Page Grounding Agent",
+        actionSummary: `Compiled unique PSCWB topics for ${ym.editionDate} (${meta.monthLabelEn}) with zero cross-date duplication`,
+        status: "completed",
+        durationMs: 480,
+        details: "Verified unique headlines across all stored dates in PostgreSQL.",
+      },
+      {
+        stepNumber: 2,
+        agentRole: "Monthly Category Classifier Agent",
+        actionSummary: "Classified topics into WB Special, Polity, Economy, Science, Sports, Awards, Defence & GI Tags",
+        status: "completed",
+        durationMs: 340,
+        details: "Prepared structured category buckets for Monthly Capsule PDF generation.",
+      },
+    ])}::jsonb,
         ${JSON.stringify(ym.topics)}::jsonb,
         ${JSON.stringify(ym.mcqs)}::jsonb,
         ${ym.mnemonicsEn},
@@ -4318,23 +4312,23 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
             ? manualPoints
             : rawFileText
               ? rawFileText
-                  .split(/\n|\./)
-                  .map((s) => s.trim())
-                  .filter((s) => s.length > 15)
-                  .slice(0, 4)
+                .split(/\n|\./)
+                .map((s) => s.trim())
+                .filter((s) => s.length > 15)
+                .slice(0, 4)
               : [
-                  `Uploaded resource (${fileName || "Admin Entry"}) indexed for ${editionDate} WBPSC Prelims & Clerkship.`,
-                  `Category: ${resolvedCategory} — High-yield factual pointer for 100-Mark Clerkship & 200-Mark WBCS Prelims.`,
-                  `Verified and added to the ${editionDate} card deck and question bank.`,
-                ],
+                `Uploaded resource (${fileName || "Admin Entry"}) indexed for ${editionDate} WBPSC Prelims & Clerkship.`,
+                `Category: ${resolvedCategory} — High-yield factual pointer for 100-Mark Clerkship & 200-Mark WBCS Prelims.`,
+                `Verified and added to the ${editionDate} card deck and question bank.`,
+              ],
         examPointsBn:
           manualPoints.length > 0
             ? manualPoints
             : [
-                `${editionDate}-এর ডব্লিউবিপিএসসি ক্লার্কশিপ (১০০ নম্বর) এবং ডব্লিউবিসিএস প্রিলিমস (২০০ নম্বর)-এর জন্য সংরক্ষিত।`,
-                `বিভাগ: ${resolvedCategory} — গুরুত্বপূর্ণ তথ্য ও প্রশ্নোত্তর।`,
-                `অ্যাডমিন কর্তৃক সরাসরি কার্ড ডেক এবং প্রশ্নভাণ্ডারে সংযোজিত।`,
-              ],
+              `${editionDate}-এর ডব্লিউবিপিএসসি ক্লার্কশিপ (১০০ নম্বর) এবং ডব্লিউবিসিএস প্রিলিমস (২০০ নম্বর)-এর জন্য সংরক্ষিত।`,
+              `বিভাগ: ${resolvedCategory} — গুরুত্বপূর্ণ তথ্য ও প্রশ্নোত্তর।`,
+              `অ্যাডমিন কর্তৃক সরাসরি কার্ড ডেক এবং প্রশ্নভাণ্ডারে সংযোজিত।`,
+            ],
         staticGkLinkEn:
           (body.staticGkLinkEn || "").trim() ||
           `Syllabus Hook: ${resolvedCategory} — WBPSC Clerkship & WBCS General Studies.`,
@@ -4502,10 +4496,10 @@ Synthesize ONE complete Bilingual (English + Bengali / বাংলা) Current 
           ${finalTopic.whyInNewsEn},
           ${finalTopic.whyInNewsBn},
           ${JSON.stringify(
-            existing?.source_urls?.length
-              ? existing.source_urls
-              : ["https://www.gktoday.in/current-affairs/", "https://pib.gov.in"]
-          )}::jsonb,
+        existing?.source_urls?.length
+          ? existing.source_urls
+          : ["https://www.gktoday.in/current-affairs/", "https://pib.gov.in"]
+      )}::jsonb,
           ${JSON.stringify(updatedTrace)}::jsonb,
           ${JSON.stringify(updatedTopics)}::jsonb,
           ${JSON.stringify(updatedMcqs)}::jsonb,
@@ -5444,29 +5438,29 @@ async function extractAndChunkUploadedCaDocument(params: {
     try {
       const parts: any[] = [];
 
-    if (
-      params.fileBase64 &&
-      (params.fileFormat === "PDF" || params.fileFormat === "IMAGE")
-    ) {
-      const cleanBase64 = params.fileBase64.replace(/^data:[^;]+;base64,/, "");
-      // Only attach inlineData if size is reasonable (< 10MB base64)
-      if (cleanBase64.length > 20 && cleanBase64.length < 10 * 1024 * 1024) {
-        parts.push({
-          inlineData: {
-            mimeType:
-              params.fileFormat === "PDF"
-                ? "application/pdf"
-                : params.mimeType.startsWith("image/")
-                  ? params.mimeType
-                  : "image/png",
-            data: cleanBase64,
-          },
-        });
+      if (
+        params.fileBase64 &&
+        (params.fileFormat === "PDF" || params.fileFormat === "IMAGE")
+      ) {
+        const cleanBase64 = params.fileBase64.replace(/^data:[^;]+;base64,/, "");
+        // Only attach inlineData if size is reasonable (< 10MB base64)
+        if (cleanBase64.length > 20 && cleanBase64.length < 10 * 1024 * 1024) {
+          parts.push({
+            inlineData: {
+              mimeType:
+                params.fileFormat === "PDF"
+                  ? "application/pdf"
+                  : params.mimeType.startsWith("image/")
+                    ? params.mimeType
+                    : "image/png",
+              data: cleanBase64,
+            },
+          });
+        }
       }
-    }
 
-    parts.push({
-      text: `You are the WBPSC Current Affairs Vector DB Ingestion & RAG Chunking Agent.
+      parts.push({
+        text: `You are the WBPSC Current Affairs Vector DB Ingestion & RAG Chunking Agent.
 Document Title: "${params.title}"
 Source / Publisher: "${params.sourcePublisher}"
 Scope: "${params.scopeLabel}" (${params.scopeType})
@@ -5480,67 +5474,67 @@ Each chunk MUST include:
 - headlineEn & headlineBn (Bilingual English & Bengali title)
 - contentEn & contentBn (Detailed exam-ready paragraph with dates, articles, schemes, static GK links)
 - keyFacts (3 concise bullet facts)`,
-    });
+      });
 
-    const { response } = await generateContentWithFallback(
-      {
-        contents: [{ role: "user", parts }],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              summaryEn: { type: Type.STRING },
-              summaryBn: { type: Type.STRING },
-              chunks: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    category: { type: Type.STRING },
-                    headlineEn: { type: Type.STRING },
-                    headlineBn: { type: Type.STRING },
-                    contentEn: { type: Type.STRING },
-                    contentBn: { type: Type.STRING },
-                    keyFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
+      const { response } = await generateContentWithFallback(
+        {
+          contents: [{ role: "user", parts }],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                summaryEn: { type: Type.STRING },
+                summaryBn: { type: Type.STRING },
+                chunks: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      category: { type: Type.STRING },
+                      headlineEn: { type: Type.STRING },
+                      headlineBn: { type: Type.STRING },
+                      contentEn: { type: Type.STRING },
+                      contentBn: { type: Type.STRING },
+                      keyFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    },
+                    required: [
+                      "category",
+                      "headlineEn",
+                      "headlineBn",
+                      "contentEn",
+                      "contentBn",
+                      "keyFacts",
+                    ],
                   },
-                  required: [
-                    "category",
-                    "headlineEn",
-                    "headlineBn",
-                    "contentEn",
-                    "contentBn",
-                    "keyFacts",
-                  ],
                 },
               },
+              required: ["summaryEn", "summaryBn", "chunks"],
             },
-            required: ["summaryEn", "summaryBn", "chunks"],
           },
         },
-      },
-      14000
-    );
-    const parsed = JSON.parse(response.text || "{}");
-    if (Array.isArray(parsed.chunks) && parsed.chunks.length >= 2) {
-      return {
-        summaryEn:
-          parsed.summaryEn ||
-          `Indexed ${parsed.chunks.length} bilingual Current Affairs vector chunks from ${params.fileName} (${params.sourcePublisher} · ${params.scopeLabel}).`,
-        summaryBn:
-          parsed.summaryBn ||
-          `${params.sourcePublisher} (${params.scopeLabel}) থেকে ${toBengaliNumber(parsed.chunks.length)}টি কারেন্ট অ্যাফেয়ার্স ভেক্টর চাঙ্ক সংরক্ষিত হয়েছে।`,
-        chunks: parsed.chunks.map((c: any) => ({
-          category: normalizeCategory(c.category),
-          headlineEn: String(c.headlineEn || params.title),
-          headlineBn: String(c.headlineBn || params.title),
-          contentEn: String(c.contentEn || ""),
-          contentBn: String(c.contentBn || ""),
-          keyFacts: Array.isArray(c.keyFacts)
-            ? c.keyFacts.map((k: any) => String(k))
-            : [],
-        })),
-      };
+        14000
+      );
+      const parsed = JSON.parse(response.text || "{}");
+      if (Array.isArray(parsed.chunks) && parsed.chunks.length >= 2) {
+        return {
+          summaryEn:
+            parsed.summaryEn ||
+            `Indexed ${parsed.chunks.length} bilingual Current Affairs vector chunks from ${params.fileName} (${params.sourcePublisher} · ${params.scopeLabel}).`,
+          summaryBn:
+            parsed.summaryBn ||
+            `${params.sourcePublisher} (${params.scopeLabel}) থেকে ${toBengaliNumber(parsed.chunks.length)}টি কারেন্ট অ্যাফেয়ার্স ভেক্টর চাঙ্ক সংরক্ষিত হয়েছে।`,
+          chunks: parsed.chunks.map((c: any) => ({
+            category: normalizeCategory(c.category),
+            headlineEn: String(c.headlineEn || params.title),
+            headlineBn: String(c.headlineBn || params.title),
+            contentEn: String(c.contentEn || ""),
+            contentBn: String(c.contentBn || ""),
+            keyFacts: Array.isArray(c.keyFacts)
+              ? c.keyFacts.map((k: any) => String(k))
+              : [],
+          })),
+        };
       }
     } catch {
       // Fallback to deterministic chunk extraction below
